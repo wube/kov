@@ -32,6 +32,8 @@ Some of the changes are just additions, that could eventually become part of the
 
 [Type based parameter resolution](#type-based-parameter-resolution)
 
+[accumulative](#accumulative)
+
 ## No includes
 The main idea is simple, you should be just able to completely remove #include from the language without any replacement, including forward declarations.
 When you want to start to use some symbol from the project you just start using it, it is there all the time, it doesn't matter if it is defined in cpp, or hpp, or in the same file later on, all symbols are available all the time.
@@ -310,3 +312,42 @@ Since A, B, C are different types, we can use the type resolution to figure out 
 ```
 foo(B(3), C(4));
 ```
+
+# accumulative
+We tend to have class of methods, which are virtual, but are meant to accumulate the code from all the levels of the hierarchy, for example the save method.
+
+```
+class A
+{
+public:
+  virtual void save(Serialiser& output) const { output << x; }
+  int x;
+};
+
+class B
+{
+  using super = A;
+public:
+  virtual void save(Serialiser& output) const override { super::save(output); output << y; }
+  int y;
+};
+```
+
+The equivalent syntax would be:
+
+```
+class A
+{
+public:
+  accumulate void save(Serialiser& output) const { output << x; }
+  int x;
+};
+
+class B
+{
+public:
+  accumulate void save(Serialiser& output) const override { output << y; }
+  int y;
+};
+```
+We don't have to call the super::save(output), but we also don't need to define the super, as we use this idiom almost exclusively to create these accumulated calls.
