@@ -14,6 +14,10 @@ Some of the changes are just additions, that could eventually become part of the
 
 [Required this](#required-this)
 
+[Default explicit](#default-explicit)
+
+[Default break in switch](#default-break)
+
 
 ## No includes
 The main idea is simple, you should be just able to completely remove #include from the language without any replacement.
@@ -111,3 +115,39 @@ Lets make it
 
 ## Required this
 Simple as that, currently writing `this->x` is optional, we learned to put it into our code standards for a good reason. It is really useful to know, that we talk about x in the current class, and not a local or global variable.
+
+## Default explicit
+We have learned to put make almost all of the construcotrs and bool operators to be explicit, as otherwise, very unexpected things tends to happen otherwise.
+So all constructors and conversion operators would be explicit by default, and "implicit" would have to be specified for the current default behaviour.
+
+## Default break in switch
+Missing break in swithc statements is one of the more annoyin gotchas in code like this:
+
+```
+void Position::move(Direction direction)
+{
+  switch (direction)
+  {
+    case Direction::North: this->y--; // oups missing break makes this behave differently than planned
+    case Direction::East: this->x++;
+    case Direction::South: this->y++;
+    case Direction::West: this->x--;
+  }
+}
+```
+The fallthrough mechanics is useful from time to time, but is much less frequent, even the fact, that some compilers now require you to add [[fallthrough]] when you forget a break shows that this is an issue.
+
+So the proposal would be, that when you actually want a fallthrough, you have to explicitelly state it.
+```
+// alternative implementation of Direction::isVertical
+Direction::isVertical()
+{
+  switch (this)
+  {
+    case Direction::North: fallthrough;
+    case Direction::South: return true;
+    case Direction::East: fallthrough;
+    case Direction::West: return false;
+  }
+}
+```
