@@ -62,6 +62,7 @@ The problems I would like to solve:
 
 The proposed syntax:
 
+```
 enum class Direction : uint8_t
 {
   {
@@ -73,7 +74,7 @@ enum class Direction : uint8_t
   }
   constexpr bool isVertical() const { return this->value == North || this->value == South; }
 };
-`
+```
 
 1. The class and the enum is the same thing, and member functions are allowed to be defined.
 2. The str method has default implementation which returns "North", "East", "South", "West" and "None values", custom implementation can be provided.
