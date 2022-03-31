@@ -7,9 +7,13 @@ Some of the changes are just additions, that could eventually become part of the
 # Changes
 
 [No includes](#no-includes)
+
 [Real enum class](#real-enum-class)
+
 [This is a reference](#this-is-a-reference)
+
 [It is requried to specify this](#it-is-requried-to-specify-this)
+
 
 ## No includes
 The main idea is simple, you should be just able to completely remove #include from the language without any replacement.
