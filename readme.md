@@ -120,6 +120,8 @@ Lets write it this way now:
 ## Required this
 Simple as that, currently writing `this->x` is optional, we learned to put it into our code standards for a good reason. It is really useful to know, that we talk about x in the current class, and not a local or global variable.
 
+It tends to happen, that adding a local variable can suddenly change the existing code in an unexpected way when the this is ommited.
+
 ## Required override
 Adding the override keyword to methods that are overriding a base class method is currently optional, but some of the compilers are able to identify when its ommited and emit a warning.
 This shouldn't be even a warning, lets make it always required.
