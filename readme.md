@@ -30,6 +30,7 @@ Some of the changes are just additions, that could eventually become part of the
 
 [Named parameter passing](#named-parameter-passing)
 
+[Type based parameter resolution](#type-based-parameter-resolution)
 
 ## No includes
 The main idea is simple, you should be just able to completely remove #include from the language without any replacement, including forward declarations.
@@ -284,7 +285,7 @@ It would allow to specify which of the parameters with default values are specif
 
 So with this function:
 ```
-int foo(int a = 0, int b = 0, int c = 0);
+int foo(int a = 1, int b = 2, int c = 3);
 ```
 
 We could call it like this:
@@ -296,3 +297,16 @@ The main advantages:
 1. More readable code, especially when the parameters are bools or numbers
 2. Deduplication, as having to pass the default value of *a* to be able to pass be basically duplicates the the definition of the default value
 3. Shorter code
+
+# Type based parameter resolution
+Related to the previous, but based on type overloading
+
+The function would have these parameters
+```
+int foo(A a = A(1), B b = B(2), C c = C(3));
+```
+
+Since A, B, C are different types, we can use the type resolution to figure out how to call the method without specifying the parameter name
+```
+foo(B(3), C(4));
+```
