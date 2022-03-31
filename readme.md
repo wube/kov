@@ -22,7 +22,7 @@ Some of the changes are just additions, that could eventually become part of the
 
 
 ## No includes
-The main idea is simple, you should be just able to completely remove #include from the language without any replacement.
+The main idea is simple, you should be just able to completely remove #include from the language without any replacement, including forward declarations.
 When you want to start to use some symbol from the project you just start using it, it is there all the time, it doesn't matter if it is defined in cpp, or hpp, or in the same file later on, all symbols are available all the time.
 We wouldn't have include path, but something very similiar, we could call it something like "scope-expansion-path", which would basically define all the files that are part of your code.
 This implies, that it would no longer be possible to create two duplicate symbols on different compilation units, which is considered an advantage, as it forces better symbol scoping. (classes, namespaces)
@@ -30,6 +30,8 @@ This implies, that it would no longer be possible to create two duplicate symbol
 The real goal is to actually improve compilation time, not make it worse, so core changes to the way compilation is done woudl have to be done, mainly we need to make sure that every cpp/hpp file is opened and compiled only once (or maybe twice if we have two step model for the symbols mapping).
 
 Compared to the current model, when the string class hpp file (for example) can be parsed thousands of times in a project, as it is basically parsed for every compilation unit. This somewhat relates to the modules part of C++ standard.
+
+The compiler needs to be able to detect and error on the circuiler symbol dependency.
 
 ## Real enum class
 Member method of enums. There are currently way to *almost* achieve it by some tricks, but they are not perfect, and require some duplication.
