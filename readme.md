@@ -40,10 +40,9 @@ Compared to the current model, when the string class hpp file (for example) can 
 The compiler needs to be able to detect and error on the circular symbol dependency.
 
 ## Real enum class
-Member method of enums. There are currently way to *almost* achieve it by some tricks, but they are not perfect, and require some duplication.
+Member method of enums. There are currently ways to *almost* achieve it by some tricks, but they are not perfect, and require a lot of  ugly boilerplate.
 
-
-Here is an simplified example of the current typical implenetation of enum-like class in C++
+Here is a typical simplified example of the current typical implenetation of enum-like class in C++
 ```
 class Direction
 {
