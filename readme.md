@@ -26,6 +26,8 @@ Some of the changes are just additions, that could eventually become part of the
 
 [Safe navigation operator (?->)](#safe-navigation-operator)
 
+[Elvis operator](#elvis-operator)
+
 
 ## No includes
 The main idea is simple, you should be just able to completely remove #include from the language without any replacement, including forward declarations.
@@ -265,3 +267,13 @@ B* getB(A* a)
 
 The return value of the chain is always related to the last thing in the chain, if its pointer, it just always returns null if it short-circuits.
 It could also work for non-pointer objects, and in that case, it uses the Default constructor to return empty value in case of short-circuit.
+
+# Elvis operator
+https://en.wikipedia.org/wiki/Elvis_operator
+
+Instead of writing:
+``` return a ? a : b;```
+we could write
+``` return a ?: b;```
+
+This is especially useful when a is an expression.
