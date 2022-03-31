@@ -12,7 +12,7 @@ Some of the changes are just additions, that could eventually become part of the
 
 [This is a reference](#this-is-a-reference)
 
-[It is requried to specify this](#it-is-requried-to-specify-this)
+[Required this](#required-this)
 
 
 ## No includes
@@ -109,5 +109,5 @@ I don't like to write
 Lets make it
 `this[7]` and `!this`
 
-## It is requried to specify this
+## Required this
 Simple as that, currently writing `this->x` is optional, we learned to put it into our code standards for a good reason. It is really useful to know, that we talk about x in the current class, and not a local or global variable.
