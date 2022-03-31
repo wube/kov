@@ -20,6 +20,8 @@ Some of the changes are just additions, that could eventually become part of the
 
 [Default break in switch](#default-break-in-switch)
 
+[Abort on wrong enum value in switch by default](#abort-on-wrong-enum-value-in-switch-by-default)
+
 [Typed union](#typed-union)
 
 
