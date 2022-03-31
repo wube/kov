@@ -20,6 +20,8 @@ Some of the changes are just additions, that could eventually become part of the
 
 [Default break in switch](#default-break-in-switch)
 
+[Typed union](#typed-union)
+
 
 ## No includes
 The main idea is simple, you should be just able to completely remove #include from the language without any replacement, including forward declarations.
@@ -166,4 +168,61 @@ Direction::isVertical()
     case Direction::West: return false;
   }
 }
+```
+
+## Typed union
+We are aware, that std::variant exist, but it has some problems.
+1. The template magic behind it makes any bigger variant so unfriendly to fast compiled times, that we avoid it on purpose. (I have an experience, where a single boost variant with 200+ elements in a header file consumed more than 40% of compilation time of a big project)
+
+2. The most typical usage of union is in tandem with enum class, which leads to a typical ugly boilierplate around it to make work.
+
+
+The proposal is very WIP, but the goal would be to have something along these lines:
+
+```
+// type definition
+typed union Property
+{
+  {
+    {int, Integer}, // unlike some library class that would combine enum + variant, this makes sure that the enum and type definitions are defined together
+    {double, Double},
+    {std::string, String},
+    {std::string, Comment}
+  }
+
+  std::string str(); // as our enum class, this allows to have methods
+};
+
+std::string Property::str()
+{
+  switch (this)
+  {
+    case Integer: return ssprintf("%d", this.get(Integer));
+    case Double: return ssprintf("%g", this.get(Integer));
+    case String: return this.get(String);
+    case Comment: return ssprintf("//%s", this.get(Comment));
+  }
+};
+
+Property property;
+property.set(Property::Integer, 5);
+property.set(Property::String, "hello");
+property.set(Property::Comment, "test");
+
+if (property == Property::Integer)
+  printf("%d", property.get(Property::Integer));
+```
+
+Currently, I would like to find a nicer way to access the individual values, basic ideas:
+
+As a template:
+```
+this<Integer> = 5 // (rvalue of the union)
+property<Integer> = 5
+```
+
+As an array:
+```
+this[Integer] = 5 // (rvalue of the union)
+property[Integer] = 5
 ```
