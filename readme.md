@@ -197,32 +197,20 @@ std::string Property::str()
 {
   switch (this)
   {
-    case Integer: return ssprintf("%d", this.get(Integer));
-    case Double: return ssprintf("%g", this.get(Integer));
-    case String: return this.get(String);
-    case Comment: return ssprintf("//%s", this.get(Comment));
+    case Integer: return ssprintf("%d", this[Integer]);
+    case Double: return ssprintf("%g", this[Integer]);
+    case String: return this[String];
+    case Comment: return ssprintf("//%s", this[Comment]);
   }
 };
 
 Property property;
-property.set(Property::Integer, 5);
-property.set(Property::String, "hello");
-property.set(Property::Comment, "test");
+property[Integer] = 5;
+property[String] = "hello";
+property[Comment] = "This is a comment";
 
 if (property == Property::Integer)
-  printf("%d", property.get(Property::Integer));
+  printf("%d", property[Integer]);
 ```
 
-Currently, I would like to find a nicer way to access the individual values, basic ideas:
-
-As a template:
-```
-this<Integer> = 5 // (rvalue of the union)
-property<Integer> = 5
-```
-
-As an array:
-```
-this[Integer] = 5 // (rvalue of the union)
-property[Integer] = 5
-```
+If the [] operator is used with wrong type, it would either throw, or return an empty value?
