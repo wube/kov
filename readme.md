@@ -32,7 +32,7 @@ Some of the changes are just additions, that could eventually become part of the
 
 [Type based parameter resolution](#type-based-parameter-resolution)
 
-[accumulative](#accumulative)
+[accumulate](#accumulate)
 
 ## No includes
 The main idea is simple, you should be just able to completely remove #include from the language without any replacement, including forward declarations.
@@ -313,7 +313,7 @@ Since A, B, C are different types, we can use the type resolution to figure out 
 foo(B(3), C(4));
 ```
 
-# accumulative
+# accumulate
 We tend to have class of methods, which are virtual, but are meant to accumulate the code from all the levels of the hierarchy, for example the save method.
 
 ```
