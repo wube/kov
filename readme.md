@@ -17,7 +17,7 @@ Member method of enums. There are currently way to *almost* achieve it by some t
 
 
 Here is an simplified example of the current typical implenetation of enum-like class in C++
-`
+```
 class Direction
 {
 public:
@@ -53,7 +53,7 @@ public:
 protected:
   uint8_t value;
 };
-`
+```
 
 The problems I would like to solve:
 1. The duplication of the value definitions for nicer scope
