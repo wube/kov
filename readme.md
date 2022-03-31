@@ -31,7 +31,7 @@ The real goal is to actually improve compilation time, not make it worse, so cor
 
 Compared to the current model, when the string class hpp file (for example) can be parsed thousands of times in a project, as it is basically parsed for every compilation unit. This somewhat relates to the modules part of C++ standard.
 
-The compiler needs to be able to detect and error on the circuiler symbol dependency.
+The compiler needs to be able to detect and error on the circular symbol dependency.
 
 ## Real enum class
 Member method of enums. There are currently way to *almost* achieve it by some tricks, but they are not perfect, and require some duplication.
