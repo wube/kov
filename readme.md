@@ -28,6 +28,8 @@ Some of the changes are just additions, that could eventually become part of the
 
 [Elvis operator](#elvis-operator)
 
+[Named parameter passing](#named-parameter-passing)
+
 
 ## No includes
 The main idea is simple, you should be just able to completely remove #include from the language without any replacement, including forward declarations.
@@ -276,3 +278,21 @@ we could write
 ``` return a ?: b;```
 
 This is especially useful when a is an expression.
+
+# Named parameter passing
+It would allow to specify which of the parameters with default values are specified in a function call.
+
+So with this function:
+```
+int foo(int a = 0, int b = 0, int c = 0);
+```
+
+We could call it like this:
+```
+int foo(b : 3, c : 4);
+```
+
+The main advantages:
+1. More readable code, especially when the parameters are bools or numbers
+2. Deduplication, as having to pass the default value of *a* to be able to pass be basically duplicates the the definition of the default value
+3. Shorter code
