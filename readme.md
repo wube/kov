@@ -112,8 +112,9 @@ We are used to write this->, but it doesn't make sense, as you can't change this
 This would make any usage of custom operators on this nicer, and make it more unified with rest of the code, where reference means that you can't change the value and it can't be nullptr.
 
 I don't like to write
-`(*this)[7]` or `!*this`
-Lets make it
+`(*this)[7]` (operator [] on this object) or `!*this` (negation of operator bool on this object)
+
+Lets write it this way now:
 `this[7]` and `!this`
 
 ## Required this
