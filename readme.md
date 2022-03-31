@@ -246,9 +246,23 @@ It shouldn't work only for pointers, but for objects with operator bool.
 
 It should be also usable for cases when we want to return optional value, like this:
 
+Instead of
+```
 B* getB(A* a)
 {
   if (!a)
     return nullptr;
   return a->b;
 }
+```
+
+We could write:
+```
+B* getB(A* a)
+{
+  return a?->b;
+}
+```
+
+The return value of the chain is always related to the last thing in the chain, if its pointer, it just always returns null if it short-circuits.
+It could also work for non-pointer objects, and in that case, it uses the Default constructor to return empty value in case of short-circuit.
