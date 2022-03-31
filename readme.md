@@ -10,7 +10,7 @@ Some of the changes are just additions, that could eventually become part of the
 
 [Real enum class](#real-enum-class)
 
-[This is a reference](#this-is-a-reference)
+[*this* is a reference](#this-is-a-reference)
 
 [Required this](#required-this)
 
@@ -118,7 +118,7 @@ for (Direction direction : Direction::all)
 or basically any iterator based algorithms like `std::find_if(Direction::all.begin(), Direction::all.end(), [](Direction direction){ return direction.isVertical(); });`
 
 
-## this is a reference
+## *this* is a reference
 The only real reason, why this isn't a reference is historical, as this was added before references were a thing.
 We are used to write this->, but it doesn't make sense, as you can't change this, and it shouldn't be nullptr. You can currently call member methods on nulllptr this, but I consider it a corner case.
 This would make any usage of custom operators on this nicer, and make it more unified with rest of the code, where reference means that you can't change the value and it can't be nullptr.
