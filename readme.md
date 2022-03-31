@@ -14,6 +14,8 @@ Some of the changes are just additions, that could eventually become part of the
 
 [Required this](#required-this)
 
+[Required override](#required-override)
+
 [Default explicit](#default-explicit)
 
 [Default break in switch](#default-break)
@@ -115,6 +117,10 @@ Lets make it
 
 ## Required this
 Simple as that, currently writing `this->x` is optional, we learned to put it into our code standards for a good reason. It is really useful to know, that we talk about x in the current class, and not a local or global variable.
+
+## Required override
+Adding the override keyword to methods that are overriding a base class method is currently optional, but some of the compilers are able to identify when its ommited and emit a warning.
+This shouldn't be even a warning, lets make it always required.
 
 ## Default explicit
 We have learned to put make almost all of the construcotrs and bool operators to be explicit, as otherwise, very unexpected things tends to happen otherwise.
