@@ -78,7 +78,7 @@ enum class Direction : uint8_t
 
 1. The class and the enum is the same thing, and member functions are allowed to be defined.
 2. The str method has default implementation which returns "North", "East", "South", "West" and "None" values, custom implementation can be provided.
-3. There will a way to iterate all the values naturally, probably by letting the compiler auto-generate the static all property (or something else dunno)
+3. There will be a way to iterate all the values naturally, probably by letting the compiler auto-generate the static all property (or something else dunno)
 
 This means, that all the standard ways to work with it would be possible:
 
