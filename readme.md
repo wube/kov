@@ -24,6 +24,8 @@ Some of the changes are just additions, that could eventually become part of the
 
 [Typed union](#typed-union)
 
+[Safe navigation operator (?->)](#safe-navigation-operator)
+
 
 ## No includes
 The main idea is simple, you should be just able to completely remove #include from the language without any replacement, including forward declarations.
@@ -223,3 +225,30 @@ if (property == Property::Integer)
 ```
 
 If the [] operator is used with wrong type, it would either throw, or return an empty value?
+
+# Safe navigation operator
+https://en.wikipedia.org/wiki/Safe_navigation_operator
+
+For expressions without return value, the usage is pretty straightforward.
+
+instead of
+```
+if (a)
+  if (B* b = a->b)
+    b->foo();
+```
+do
+```
+a?->b?->foo();
+```
+
+It shouldn't work only for pointers, but for objects with operator bool.
+
+It should be also usable for cases when we want to return optional value, like this:
+
+B* getB(A* a)
+{
+  if (!a)
+    return nullptr;
+  return a->b;
+}
