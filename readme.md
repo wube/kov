@@ -49,7 +49,7 @@ public:
   const char* str() const;
   constexpr bool isVertical() const { return this->value == North || this->value == South; }
 
-  static const std::array<Direction, 4> allDirections;
+  static const std::array<Direction, 4> all;
 protected:
   uint8_t value;
 };
@@ -77,9 +77,18 @@ enum class Direction : uint8_t
 ```
 
 1. The class and the enum is the same thing, and member functions are allowed to be defined.
-2. The str method has default implementation which returns "North", "East", "South", "West" and "None values", custom implementation can be provided.
-3. There will 
+2. The str method has default implementation which returns "North", "East", "South", "West" and "None" values, custom implementation can be provided.
+3. There will a way to iterate all the values naturally, probably by letting the compiler auto-generate the static all property (or something else dunno)
 
+This means, that all the standard ways to work with it would be possible:
+
+The most frequent motivation, the for each loop
+```
+for (Direction direction : Direction::all)
+  printf("%s", direction.str());
+```
+
+or basically any iterator based algorithms like `std::find_if(Direction::all.begin(), Direction::all.end(), [](Direction direction){ return direction.isVertical(); });`
 
 
 ## this is a reference
