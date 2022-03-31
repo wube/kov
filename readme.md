@@ -189,11 +189,10 @@ We are aware, that std::variant exist, but it has some problems.
 2. The most typical usage of union is in tandem with enum class, which leads to a typical ugly boilierplate around it to make work.
 
 
-The proposal is very WIP, but the goal would be to have something along these lines:
-
+This is basically just extension of how the enum works, but every value has associated union type value.
 ```
 // type definition
-typed union Property
+union enum
 {
   {
     {int, Integer}, // unlike some library class that would combine enum + variant, this makes sure that the enum and type definitions are defined together
