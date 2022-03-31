@@ -27,6 +27,10 @@ When you want to start to use some symbol from the project you just start using 
 We wouldn't have include path, but something very similiar, we could call it something like "scope-expansion-path", which would basically define all the files that are part of your code.
 This implies, that it would no longer be possible to create two duplicate symbols on different compilation units, which is considered an advantage, as it forces better symbol scoping. (classes, namespaces)
 
+The real goal is to actually improve compilation time, not make it worse, so core changes to the way compilation is done woudl have to be done, mainly we need to make sure that every cpp/hpp file is opened and compiled only once (or maybe twice if we have two step model for the symbols mapping).
+
+Compared to the current model, when the string class hpp file (for example) can be parsed thousands of times in a project, as it is basically parsed for every compilation unit. This somewhat relates to the modules part of C++ standard.
+
 ## Real enum class
 Member method of enums. There are currently way to *almost* achieve it by some tricks, but they are not perfect, and require some duplication.
 
