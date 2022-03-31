@@ -170,6 +170,13 @@ Direction::isVertical()
 }
 ```
 
+## Abort on wrong enum value in switch by default
+In the above example of Direction::isVertical, we have to do some kind of error handling to make the compiler happy, and to make sure it crashes if there is a different (unsupported) value in the enum.
+
+If switch doesn't contain a default, it would:
+1. Compile Error if not all of the values are mentioned (warning in most compilers)
+2. Runtime abort (throw?) when invalid enum value is present
+
 ## Typed union
 We are aware, that std::variant exist, but it has some problems.
 1. The template magic behind it makes any bigger variant so unfriendly to fast compiled times, that we avoid it on purpose. (I have an experience, where a single boost variant with 200+ elements in a header file consumed more than 40% of compilation time of a big project)
