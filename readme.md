@@ -46,6 +46,10 @@ Compared to the current model, when the string class hpp file (for example) can 
 
 The compiler needs to be able to detect and error on the circular symbol dependency.
 
+Implications:
+1. Order of definitions doesn't matter at all, yet runtime static variables assignment should still respect the order in the given file.
+2. Macros could still exist, but there would have to be some changes. We would probably have 2 types of macros: A) global macro, this would apply to macros specified on the commandline of the compiler and also in the code, these macros would be visible in the whole project regardles on where defined, this macro can't removed by #undef B) local macro, specified in the context of one file for some macro magic, visible only in the one file, and could be #undef
+
 ## Real enum class
 Member method of enums. There are currently ways to *almost* achieve it by some tricks, but they are not perfect, and require a lot of  ugly boilerplate.
 
