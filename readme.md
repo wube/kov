@@ -200,7 +200,7 @@ This is basically just extension of how the enum works, but every value has asso
 union enum
 {
   {
-    {int, Integer}, // unlike some library class that would combine enum + variant, this makes sure that the enum and type definitions are defined together
+    {int, Integer}, // the import part is, that the type and enum definitions are defined together
     {double, Double},
     {std::string, String},
     {std::string, Comment}
@@ -247,9 +247,9 @@ do
 a?->b?->foo();
 ```
 
-It shouldn't work only for pointers, but for objects with operator bool.
+This would work for any types that are convertible to bool, so pointers and objects with bool operator would work.
 
-It should be also usable for cases when we want to return optional value, like this:
+Usage in expressions that return value are also possible
 
 Instead of
 ```
@@ -269,8 +269,9 @@ B* getB(A* a)
 }
 ```
 
-The return value of the chain is always related to the last thing in the chain, if its pointer, it just always returns null if it short-circuits.
-It could also work for non-pointer objects, and in that case, it uses the Default constructor to return empty value in case of short-circuit.
+The return value of the chain is always related to the last thing in the chain, thre are few requirements for this to be possible to use:
+1. The final type needs to have a default value (in case of pointer it is nullptr, otherwise, the default constructor)
+2. All the values in the chan need to be convertible to bool (as above)
 
 # Elvis operator
 https://en.wikipedia.org/wiki/Elvis_operator
@@ -280,7 +281,7 @@ Instead of writing:
 we could write
 ``` return a ?: b;```
 
-This is especially useful when a is an expression.
+This is especially useful when `a` is an expression.
 
 # Named parameter passing
 It would allow to specify which of the parameters with default values are specified in a function call.
