@@ -269,9 +269,9 @@ B* getB(A* a)
 }
 ```
 
-The return value of the chain is always related to the last thing in the chain, thre are few requirements for this to be possible to use:
+The return value of the chain is always related to the last thing in the chain, there are 2 requirements for this to be possible to use:
 1. The final type needs to have a default value (in case of pointer it is nullptr, otherwise, the default constructor)
-2. All the values in the chan need to be convertible to bool (as above)
+2. All the values in the chain need to be convertible to bool (as above)
 
 # Elvis operator
 https://en.wikipedia.org/wiki/Elvis_operator
