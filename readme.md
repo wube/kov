@@ -21,6 +21,11 @@ Some of the changes are just additions, that could eventually become part of the
 - [Type based parameter resolution](#type-based-parameter-resolution)
 - [accumulate](#accumulate)
 
+# The adaptation cost
+- [Using existing libraries](#using-existing-libraries)
+- [Converting existing code](#converting-existing-code)
+- [IDE support](#ide-support)
+
 ## Real enum class
 Member method of enums. There are currently ways to *almost* achieve it by some tricks, but they are not perfect, and require a lot of  ugly boilerplate.
 
@@ -327,3 +332,18 @@ public:
 };
 ```
 We don't have to call the super::save(output), but we also don't need to define the super, as we use this idiom almost exclusively to create these accumulated calls.
+
+# Using existing libraries
+Based on what is mentioned in the [compilation changes](compilation/index.md) section, it might be possible to make it quite easy to use the existing libraries as is.
+We could have a backwards-compatibile compilation mode which compiles the libraries in the old and slow way to generate our sombol-tree, which could be cached and used for compilation of our projects.
+
+# Converting existing code
+The cost of converting existing code would depend on the way the code is written, but for the typical cases, I can imagine that the conversion could be mostly automated.
+1. Changing this to be required is probably going to be a lot of changes, but could be automated.
+2. The same for changing this to be a reference.
+3. Include removal is probably the easy part, as long as the program doesn't use #includes in some smart way, to introduce different sets of symbols or macros to the scope
+4. With the global scope approach, it could happen that there could be clashes of symbols that were previously in separate cpp files.
+
+# IDE support
+This one is tricky, as there are lots of IDES out there and we can't control them.
+Yet, I can imagine that if the compiler is very performant, and provides some kind of API to the IDE to be able to understand the code without doing its own compilation in the background, the adaptation could be reasonably easy. I have no idea how much is this doable by some extensions, and how much it would require direct cooperations with the IDE creators.
