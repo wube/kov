@@ -1,3 +1,5 @@
+The work-name is k++
+
 # Motivation
 The motivation is to create a version of C++ which solves some of the biggest issues we have.
 The goal is to make the new version very simple to pick-up by existing C++ programmers, and to make it reasonably easy to convert existing codebases to it.
@@ -204,7 +206,7 @@ This is basically just extension of how the enum works, but every value has asso
 union enum
 {
   {
-    {int, Integer}, // the import part is, that the type and enum definitions are defined together
+    {int, Integer}, // the important part is, that the type and enum definitions are defined together
     {double, Double},
     {std::string, String},
     {std::string, Comment}
