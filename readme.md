@@ -1,6 +1,4 @@
-The work-name is k++
-
-# Motivation
+# k++ (working name) Motivation
 The motivation is to create a version of C++ which solves some of the biggest issues we have.
 The goal is to make the new version very simple to pick-up by existing C++ programmers, and to make it reasonably easy to convert existing codebases to it.
 Some of the changes are just additions, that could eventually become part of the C++ standard in the future, but some of them are not backwards compatibile.
@@ -8,49 +6,20 @@ Some of the changes are just additions, that could eventually become part of the
 
 # Changes
 
-[No includes](#no-includes)
-
-[Real enum class](#real-enum-class)
-
-[*this* is a reference](#this-is-a-reference)
-
-[Required this](#required-this)
-
-[Required override](#required-override)
-
-[Default explicit](#default-explicit)
-
-[Default break in switch](#default-break-in-switch)
-
-[Abort on wrong enum value in switch by default](#abort-on-wrong-enum-value-in-switch-by-default)
-
-[Typed union](#typed-union)
-
-[Safe navigation operator (?->)](#safe-navigation-operator)
-
-[Elvis operator](#elvis-operator)
-
-[Named parameter passing](#named-parameter-passing)
-
-[Type based parameter resolution](#type-based-parameter-resolution)
-
-[accumulate](#accumulate)
-
-## No includes
-The main idea is simple, you should be just able to completely remove #include from the language without any replacement, including forward declarations.
-When you want to start to use some symbol from the project you just start using it, it is there all the time, it doesn't matter if it is defined in cpp, or hpp, or in the same file later on, all symbols are available all the time.
-We wouldn't have include path, but something very similiar, we could call it something like "scope-expansion-path", which would basically define all the files that are part of your code.
-This implies, that it would no longer be possible to create two duplicate symbols on different compilation units, which is considered an advantage, as it forces better symbol scoping. (classes, namespaces)
-
-The real goal is to actually improve compilation time, not make it worse, so core changes to the way compilation is done woudl have to be done, mainly we need to make sure that every cpp/hpp file is opened and compiled only once (or maybe twice if we have two step model for the symbols mapping).
-
-Compared to the current model, when the string class hpp file (for example) can be parsed thousands of times in a project, as it is basically parsed for every compilation unit. This somewhat relates to the modules part of C++ standard.
-
-The compiler needs to be able to detect and error on the circular symbol dependency.
-
-Implications:
-1. Order of definitions doesn't matter at all, yet runtime static variables assignment should still respect the order in the given file.
-2. Macros could still exist, but there would have to be some changes. We would probably have 2 types of macros: A) global macro, this would apply to macros specified on the commandline of the compiler and also in the code, these macros would be visible in the whole project regardles on where defined, this macro can't removed by #undef B) local macro, specified in the context of one file for some macro magic, visible only in the one file, and could be #undef
+- [Compilation changes](compilation/index.md)
+- [Real enum class](#real-enum-class)
+- [*this* is a reference](#this-is-a-reference)
+- [Required this](#required-this)
+- [Required override](#required-override)
+- [Default explicit](#default-explicit)
+- [Default break in switch](#default-break-in-switch)
+- [Abort on wrong enum value in switch by default](#abort-on-wrong-enum-value-in-switch-by-default)
+- [Typed union](#typed-union)
+- [Safe navigation operator (?->)](#safe-navigation-operator)
+- [Elvis operator](#elvis-operator)
+- [Named parameter passing](#named-parameter-passing)
+- [Type based parameter resolution](#type-based-parameter-resolution)
+- [accumulate](#accumulate)
 
 ## Real enum class
 Member method of enums. There are currently ways to *almost* achieve it by some tricks, but they are not perfect, and require a lot of  ugly boilerplate.
