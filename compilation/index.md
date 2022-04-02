@@ -58,7 +58,7 @@ All of the threads performing steps 1 + 2 + 3 have to work on shared data, but t
 # Templates resolution
 In the phase 1, templates are indexed as other symbols, just with generic types.
 
-But then, we will have to resolve the template type resolution requests and we need to make sure, that each of the templated types and code is generated exactly once. This means, that if some of the threads makes a request for vector<int> to be registered as type, this can happen:
+But then, we will have to resolve the template type resolution requests and we need to make sure, that each of the templated types and code is generated exactly once. This means, that if some of the threads makes a request for vector&lt;int&gt; to be registered as type, this can happen:
 1. It is already indexed, so we just reference it.
 2. Some other thread is generating it, we wait until it is finished.
 3. We generate the code. (This could obviously trigger a lot of cascading code generation requests, and it is improtant to allow more workers to participate on the tasks)
