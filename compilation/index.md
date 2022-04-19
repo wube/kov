@@ -12,7 +12,7 @@ When you want to start to use some symbol from the project you just start using 
 We wouldn't have include path, but something very similiar, we could call it something like "scope-expansion-path", which would basically define all the files that are part of your code.
 This implies, that it would no longer be possible to create two duplicate symbols on different compilation units, which is considered an advantage, as it forces better symbol scoping. (classes, namespaces)
 
-The real goal is to actually improve compilation time, not make it worse, so core changes to the way compilation is done would have to be done, mainly we need to make sure that every source file is opened and compiled only once (or maybe twice if we have two step model for the symbols mapping).
+The real goal is to actually improve compilation time, not make it worse, so core changes to the way compilation is done would have to be done, mainly we need to make sure that every source file is opened and compiled only once.
 
 Compared to the current model, when the string.hpp file (for example) can be parsed thousands of times in a project, as it is basically parsed for every compilation unit. This somewhat relates to the modules part of C++ standard.
 
@@ -40,8 +40,7 @@ Instead of the compiler having independent compilation forks, the compiler would
 Let me try to do high-level proposal of how the full recompilation could work:
 
 1. The individual threads of the compilers would just start opening all the relevant files, facing a lot of code that uses unknown symbols.
-   In this phase, the compiler would create just an internal tree-like structure of what is what, so if it encounters function like this, without knowing what is A or B, it can still 
-    add it to the structure, with B and A as unresolved type references and a.b as unresloved member reference etc, but we would already have indexed, that function foo exists and what is the code.
+   In this phase, the compiler would create just an internal tree-like structure of what is what, so if it encounters function like this, without knowing what is A or B, it can still add it to the structure, with B and A as unresolved type references and a.b as unresloved member reference etc, but we would already have indexed, that function foo exists and what is the code.
 
 ```
 B foo(A a)
