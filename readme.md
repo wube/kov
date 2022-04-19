@@ -28,7 +28,7 @@ The goal is to make the new version of C++ very simple to pick-up by existing C+
 - [Elvis operator](#elvis-operator)
 - [Named parameter passing](#named-parameter-passing)
 - [Type based parameter resolution](#type-based-parameter-resolution)
-- [Don't require typename](#dont-require-typename)
+- [Don't require typename for dependent types](#dont-require-typename-for-dependent-types)
 - [Test tools](#test-tools)
 - [accumulate](#accumulate)
 
