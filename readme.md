@@ -11,7 +11,7 @@ The motivation is to create a version of C++ which solves some of the biggest is
  - No way to edit code without the need to thing about files.
 
 ## The goal
-The goal is to make the new version of C++ very simple to pick-up by existing C++ programmers, and to make it reasonably easy to convert existing codebases to it, while being able to use all existing C++ libraries easily.
+The goal is to make the new version of C++ very simple to pick-up by existing C++ programmers, and to make it reasonably easy to convert existing codebases to it, while being able to use all the existing C++ libraries easily.
 
 # Changes
 - [Compilation changes](compilation/index.md)
