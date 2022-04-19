@@ -1,11 +1,19 @@
-# k++ (working name) Motivation
+# Lets make C++ great ~~again~~
 The motivation is to create a version of C++ which solves some of the biggest issues we have.
-The goal is to make the new version very simple to pick-up by existing C++ programmers, and to make it reasonably easy to convert existing codebases to it.
-Some of the changes are just additions, that could eventually become part of the C++ standard in the future, but some of them are not backwards compatibile.
 
+## Issues
+ - Stupid slow compilation times
+ - Stupid bloat of #include definitions and forward declarations
+ - Need to re-parse and recompile all the files we touch from scratch as we work
+ - No tight integration (fast and reliable) of the compiled code structure and editor features.
+ - Missing some basic syntactic sugar
+ - No reasonable package hierarchy system (the namespace stacking is little bit weird)
+ - No way to edit code without the need to thing about files.
+
+## The goal
+The goal is to make the new version of C++ very simple to pick-up by existing C++ programmers, and to make it reasonably easy to convert existing codebases to it, while being able to use all existing C++ libraries easily.
 
 # Changes
-
 - [Compilation changes](compilation/index.md)
 - [Real enum class](#real-enum-class)
 - [*this* is a reference](#this-is-a-reference)
