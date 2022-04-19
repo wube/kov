@@ -9,6 +9,7 @@ The motivation is to create a version of C++ which solves some of the biggest is
  - Missing some basic syntactic sugar
  - No reasonable package hierarchy system (the namespace stacking is a little bit weird)
  - No way to edit the code without the need to think about files.
+ - No multiplatform compilers
 
 ## The goal
 The goal is to make the new version of C++ very simple to pick-up by existing C++ programmers, and to make it reasonably easy to convert existing codebases to it, while being able to use all the existing C++ libraries easily.
@@ -27,6 +28,8 @@ The goal is to make the new version of C++ very simple to pick-up by existing C+
 - [Elvis operator](#elvis-operator)
 - [Named parameter passing](#named-parameter-passing)
 - [Type based parameter resolution](#type-based-parameter-resolution)
+- [Don't require typename](#dont-require-typename)
+- [Test tools](#test-tools)
 - [accumulate](#accumulate)
 
 # The adaptation cost
@@ -301,6 +304,18 @@ Since A, B, C are different types, we can use the type resolution to figure out 
 ```
 foo(B(3), C(4));
 ```
+
+# Don't require typename for dependent types
+Not all compilers need that, so lets just not require it ever.
+Same with the weird " template " word coming out of nowhere, just because the compiler can't figure it out.
+https://en.cppreference.com/w/cpp/language/dependent_name
+
+# Test tools
+We should have ways to bring the test as close to the actual code as possible, and some standardised way to run/select the tests.
+On the class levels, we might just have specially marked static methods testing the class related logic, ideally we would have a switch to disable/enable showing
+these to avoid seeing bloat when discovering code structure.
+We need a standrdised test dependency system.
+C++ code coverage tools are either expensive, or very basic, so it would be nice to have this as a standard part of the compiler.
 
 # accumulate
 We tend to have class of methods, which are virtual, but are meant to accumulate the code from all the levels of the hierarchy, for example the save method.
