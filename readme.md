@@ -8,7 +8,7 @@ The motivation is to create a version of C++ which solves some of the biggest is
  - No tight integration (fast and reliable) of the compiled code structure and editor features.
  - Missing some basic syntactic sugar
  - No reasonable package hierarchy system (the namespace stacking is little bit weird)
- - No way to edit code without the need to thing about files.
+ - No way to edit code without the need to think about files.
 
 ## The goal
 The goal is to make the new version of C++ very simple to pick-up by existing C++ programmers, and to make it reasonably easy to convert existing codebases to it, while being able to use all the existing C++ libraries easily.
