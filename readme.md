@@ -312,9 +312,12 @@ https://en.cppreference.com/w/cpp/language/dependent_name
 
 # Test tools
 We should have ways to bring the test as close to the actual code as possible, and some standardised way to run/select the tests.
+
 On the class levels, we might just have specially marked static methods testing the class related logic, ideally we would have a switch to disable/enable showing
 these to avoid seeing bloat when discovering code structure.
+
 We need a standrdised test dependency system.
+
 C++ code coverage tools are either expensive, or very basic, so it would be nice to have this as a standard part of the compiler.
 
 # accumulate
