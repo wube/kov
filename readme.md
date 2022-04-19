@@ -5,10 +5,10 @@ The motivation is to create a version of C++ which solves some of the biggest is
  - Stupid slow compilation times
  - Stupid bloat of #include definitions and forward declarations
  - Need to re-parse and recompile all the files we touch from scratch as we work
- - No tight integration (fast and reliable) of the compiled code structure and editor features.
+ - No tight integration (fast and reliable) of the compiled code structure and yhe editor features.
  - Missing some basic syntactic sugar
- - No reasonable package hierarchy system (the namespace stacking is little bit weird)
- - No way to edit code without the need to think about files.
+ - No reasonable package hierarchy system (the namespace stacking is a little bit weird)
+ - No way to edit the code without the need to think about files.
 
 ## The goal
 The goal is to make the new version of C++ very simple to pick-up by existing C++ programmers, and to make it reasonably easy to convert existing codebases to it, while being able to use all the existing C++ libraries easily.
@@ -19,7 +19,7 @@ The goal is to make the new version of C++ very simple to pick-up by existing C+
 - [*this* is a reference](#this-is-a-reference)
 - [Required this](#required-this)
 - [Required override](#required-override)
-- [Default explicit](#default-explicit)
+- [Implicit explicit, Explicit implicit](#implicit-explicit-explicit-implicit)
 - [Default break in switch](#default-break-in-switch)
 - [Abort on wrong enum value in switch by default](#abort-on-wrong-enum-value-in-switch-by-default)
 - [Typed union](#typed-union)
@@ -35,7 +35,7 @@ The goal is to make the new version of C++ very simple to pick-up by existing C+
 - [IDE support](#ide-support)
 
 ## Real enum class
-Member method of enums. There are currently ways to *almost* achieve it by some tricks, but they are not perfect, and require a lot of  ugly boilerplate.
+This is mainly about allowing enums to have member methods. There are currently ways to *almost* achieve it by some tricks, but they are not perfect, and require a lot of  ugly boilerplate.
 
 Here is a typical simplified example of the current typical implenetation of enum-like class in C++
 ```
@@ -58,21 +58,21 @@ public:
   static constexpr Enum South = Enum::South;
   static constexpr Enum West = Enum::West;
   static constexpr Enum None = Enum::None;
-  constexpr Direction() : value(uint8_t(Direction::None)) {}
-  constexpr Direction(Enum value) : value(uint8_t(value)) {}
-  bool operator==(const Enum value) const { return this->value == uint8_t(value); }
+  constexpr Direction() = default;
+  constexpr Direction(Enum value) : value(value) {}
+  bool operator==(const Enum value) const { return this->value == value; }
   bool operator==(const Direction& direction) const { return this->value == direction.value; }
-  bool operator!=(const Enum value) const { return this->value != uint8_t(value); }
+  bool operator!=(const Enum value) const { return this->value != value; }
   bool operator!=(const Direction& direction) const { return this->value != direction.value; }
-  operator Enum() const { return Enum(this->value); }
-  explicit operator bool() const { return this->value != uint8_t(Enum::None); }
+  operator Enum() const { return this->value; }
+  explicit operator bool() const { return this->value != Enum::None; }
   Enum getEnum() const { return Enum(this->value); }
   const char* str() const;
   constexpr bool isVertical() const { return this->value == North || this->value == South; }
 
   static const std::array<Direction, 4> all;
-protected:
-  uint8_t value;
+private:
+  Direction value = Direction::None;
 };
 ```
 
@@ -94,6 +94,7 @@ enum class Direction : uint8_t
     None = 4
   }
   constexpr bool isVertical() const { return this->value == North || this->value == South; }
+  constexpr explicit operator bool() const { return this->value != Enum::None; }
 };
 ```
 
@@ -113,12 +114,12 @@ or basically any iterator based algorithms like `std::find_if(Direction::all.beg
 
 
 ## *this* is a reference
-The only real reason, why this isn't a reference is historical, as this was added before references were a thing.
-We are used to write this->, but it doesn't make sense, as you can't change this, and it shouldn't be nullptr. You can currently call member methods on nulllptr this, but I consider it a corner case.
-This would make any usage of custom operators on this nicer, and make it more unified with rest of the code, where reference means that you can't change the value and it can't be nullptr.
+The only real reason why this isn't a reference is historical, as this was added before references were a thing.
+We are used to write this->, but it doesn't make sense, as you can't change this, and it shouldn't be nullptr. You can currently call member methods on nulllptr this, but I consider it a corner case, and some compilers actually treat the `this == nullptr` comparison to be invalid.
+This would make any usage of custom operators on *this* nicer, and make it more unified with rest of the code, where reference means that you can't change the value and it can't be nullptr.
 
 I don't like to write
-`(*this)[7]` (operator [] on this object) or `!*this` (negation of operator bool on this object)
+`(*this)[7]` (operator [] on *this* object) or `!*this` (negation of operator bool on this object)
 
 Lets write it this way now:
 `this[7]` and `!this`
@@ -132,7 +133,7 @@ It tends to happen, that adding a local variable can suddenly change the existin
 Adding the override keyword to methods that are overriding a base class method is currently optional, but some of the compilers are able to identify when its ommited and emit a warning.
 This shouldn't be even a warning, lets make it always required.
 
-## Default explicit
+## Implicit explicit, explicit implicit
 We have learned to put make almost all of the construcotrs and bool operators to be explicit, as otherwise, very unexpected things tends to happen otherwise.
 So all constructors and conversion operators would be explicit by default, and "implicit" would have to be specified for the current default behaviour.
 
@@ -178,7 +179,6 @@ If switch doesn't contain a default, it would:
 ## Typed union
 We are aware, that std::variant exist, but it has some problems.
 1. The template magic behind it makes any bigger variant so unfriendly to fast compiled times, that we avoid it on purpose. (I have an experience, where a single boost variant with 200+ elements in a header file consumed more than 40% of compilation time of a big project)
-
 2. The most typical usage of union is in tandem with enum class, which leads to a typical ugly boilierplate around it to make work.
 
 
