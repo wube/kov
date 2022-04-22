@@ -4,7 +4,8 @@
 - [The current compilation model](#the-current-compilation-model)
 - [The proposed changes](#the-proposed-changes)
 - [Template resolutions](#template-resolution)
-- [Implications](#implications)
+- [Continous compiler presence](#continous-compiler-presence)
+- [Conclusion](#conclusion)
 
 ## No includes
 The main idea is simple, you should be just able to completely remove #include from the language without any replacement, including forward declarations.
@@ -64,8 +65,16 @@ But then, we will have to resolve the template type resolution requests and we n
 
 This could mean that a lot of threads could wait for some of the popular templates to be done, but the worst case of all of the threads waiting for one template to be done is at most as bad as all of the threads duplicitly compiling the same template on its own, and then adding work to the linker to deduplicate it.
 
-# Implications
-1. Once the code has to be recompiled, changing one heavily used class shouldn't require to recompile everything that uses that. We should be able to precisly detect which of the symbols change, and thus precisly detect which parts of our compile tree needs to be recompiled. For example, when I change parameter of 1 method in a heavily used class, it should just trigger recompilation of parts that uses that method.
-   This also means, that whitespace changes shouldn't require any recompilation (apart the reparse of the one file to compare the structure)
-2. The IDE could easily hold the code-structure, ideally using directly API of the compiler, so it is actually precise, and not half-guessed. I'm talking about features like, go to definition/declaration, find usages etc. These would be fast and fully reliable.
-3. In the best case scenario, we could have a code editor, that would work directly with the parsed tree of the compilation and would communicate changes with the compiler as you edit the code in real time to update the structure as you edit, this is a little bit of sci-fi though.
+# Continous compiler presence
+The next important change is, that for the contiuous programmer work, we wouldn't use the compiler just as an external tool to process our textual files, but the compiler process would keep running, and it would keep its binary representation of the code in memory waiting for:
+1. Another recompilation request, where it could precisely figure out what needs to be recompiled
+2. IDE API requests the programmer needs to navigate the code
+3. IDE API requests to apply the changes in the compiler on the fly, so it is as much up-to-date as possible.
+
+# Conclusion
+The expected results should be:
+
+1. Dramatical compile time reduction (as well as disk space reduction)
+2. No linking
+3. No includes
+4. Deduplication of the code parsing (compiler and ide)
