@@ -84,8 +84,16 @@ The problems I would like to solve:
 1. The duplication of the value definitions for nicer scope
 2. The need of custom constructors and operators as the value is inside
 3. The need to specify and fill allDirections for nice iteration of all enum values
+4. Even with all the boilerplate, some of the expressions don't really work as if it was enum with classes, for example
 
-The proposed syntax:
+```
+Direction foo(bool useParameter, Direction input)
+{
+  return useParameter ? input : Direction::North; // some compilers have problem with this, as one result is the class Direction, and one is the enum
+}
+```
+
+Instead, we would use the proposed syntax:
 
 ```
 enum class Direction : uint8_t
