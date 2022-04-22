@@ -279,7 +279,7 @@ This is especially useful when `a` is an expression.
 # Const deduplication
 The *const* mechanics in C++ often implies code duplication or ugly hacks.
 
-### Method const duplication*
+### Method const duplication
 Very often, we end up with duplicate methods like this, for retrieving *const* and non-const versions of the data based on the const-ness of the parent object:
 
 ```
@@ -316,7 +316,7 @@ For the class scope deduplication, we could use the keyword *class_const*, which
 ```
 class iterator
 {
-  class_const X& operator*() const { return x; }
+  class_const X& operator*() const { return *x; }
   X* x;
 };
 ```
