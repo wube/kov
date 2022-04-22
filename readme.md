@@ -5,11 +5,12 @@ The motivation is to create a version of C++ which solves some of the biggest is
  - Stupid slow compilation times
  - Stupid bloat of #include definitions and forward declarations
  - Need to re-parse and recompile all the files we touch from scratch as we work
- - No tight integration (fast and reliable) of the compiled code structure and yhe editor features.
+ - No tight integration (fast and reliable) of the compiled code structure and the editor features.
  - Missing some basic syntactic sugar
  - No reasonable package hierarchy system (the namespace stacking is a little bit weird)
  - No way to edit the code without the need to think about files.
- - No multiplatform compilers
+ - No multiplatform compilers (this leads to the never ending clashes between different compiler quirks when doing multiplatform development)
+ - const corectness implied code duplication
 
 ## The goal
 The goal is to make the new version of C++ very simple to pick-up by existing C++ programmers, and to make it reasonably easy to convert existing codebases to it, while being able to use all the existing C++ libraries easily.
@@ -26,6 +27,7 @@ The goal is to make the new version of C++ very simple to pick-up by existing C+
 - [Typed union](#typed-union)
 - [Safe navigation operator (?->)](#safe-navigation-operator)
 - [Elvis operator](#elvis-operator)
+- [Const deduplication](#const-deduplication)
 - [Named parameter passing](#named-parameter-passing)
 - [Type based parameter resolution](#type-based-parameter-resolution)
 - [Don't require typename for dependent types](#dont-require-typename-for-dependent-types)
@@ -273,6 +275,66 @@ we could write
 ``` return a ?: b;```
 
 This is especially useful when `a` is an expression.
+
+# Const deduplication
+The *const* mechanics in C++ often implies code duplication or ugly hacks.
+
+### Method const duplication*
+Very often, we end up with duplicate methods like this, for retrieving *const* and non-const versions of the data based on the const-ness of the parent object:
+
+```
+class A
+{
+public:
+  const B* getB() const { return b; }
+  B* getB() { return b; }
+private:
+  B* b;
+}
+```
+
+### Class const duplication
+Typical example are iterators, which have to be duplicated also in the standard library, for example:
+
+`std::vector::iterator`
+`std::vector::const_iterator`
+
+The std uses template magic to partially deduplicate it, but is not a nice read.
+
+So we could have a keyword *both_const*, which would basically be mapped to the same value (*const* or non const) in the whole context of the method based on the current usage.
+```
+class A
+{
+public:
+  both_const B* getB() both_const { return b; }
+private:
+  B* b;
+};
+```
+
+For the class scope deduplication, we could use the keyword *class_const*, which would be used by this
+```
+class iterator
+{
+  class_const X& operator*() const { return x; }
+  X* x;
+};
+```
+This basically means, that we defined 2 types by this one definition (as with templates), and they could be accessed like this:
+
+```
+iterator a;
+iterator::const b; // as const_iterator, so you can move it, but not the value it points to
+const iterator a; // you can't move it, but you can change the value
+const iterator::const b; // as const const_iterator you can't move it nor change the value
+```
+When the iterator is retrieved from the container, we can use the *both_const* mechanism to specify which *subtype* of the iterator is to be returned to deduplicate even the begin/end methods.
+
+class Container
+{
+  iterator::both_const begin() both_const { return iterator::both_const(data); }
+  X* data;
+};
 
 # Named parameter passing
 It would allow to specify which of the parameters with default values are specified in a function call.
