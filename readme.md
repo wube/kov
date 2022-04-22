@@ -330,11 +330,30 @@ const iterator::const b; // as const const_iterator you can't move it nor change
 ```
 When the iterator is retrieved from the container, we can use the *both_const* mechanism to specify which *subtype* of the iterator is to be returned to deduplicate even the begin/end methods.
 
+```
 class Container
 {
   iterator::both_const begin() both_const { return iterator::both_const(data); }
   X* data;
 };
+```
+
+Both of the class_const and both_const can be used to specify type.
+
+In this example, we use the class_const of A to specify which const variant of B should be used for the b property.
+```
+class A
+{
+  class B
+  {
+    class_const int* x;
+  };
+  B::class_const b;
+};
+```
+
+### Safe final code deduplication
+
 
 # Named parameter passing
 It would allow to specify which of the parameters with default values are specified in a function call.
