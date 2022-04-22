@@ -2,14 +2,13 @@
 The motivation is to create a version of C++ which solves some of the biggest issues we have.
 
 ## Issues
- - Stupid slow compilation times
- - Stupid bloat of #include definitions and forward declarations
- - Need to re-parse and recompile all the files we touch from scratch as we work
+ - Stupid slow compilation times.
+ - Stupid bloat of #include definitions and forward declarations.
+ - The need to re-parse and recompile all the files we touch from scratch as we work.
  - No tight integration (fast and reliable) of the compiled code structure and the editor features.
- - Missing some basic syntactic sugar
- - No reasonable package hierarchy system (the namespace stacking is a little bit weird)
- - No way to edit the code without the need to think about files.
- - No multiplatform compilers (this leads to the never ending clashes between different compiler quirks when doing multiplatform development)
+ - Missing some basic syntactic sugar (mentioned below).
+ - No option to be able to edit the code without the need to think about files or cpp/hpp bros.
+ - Limited support of multiplatform compilers (this leads to the never ending clashes between different compiler quirks when doing multiplatform development)
  - const corectness implied code duplication
 
 ## The goal
