@@ -52,7 +52,7 @@ B foo(A a)
 2. Now we know that all symbols are indexed, and we can try to match all of the unresolved type references.
 3. We know the sizes of the objects, and we have fully specified tree of all the symbols, so we can optimise the code and finish the compilation process by generating machine code.
 
-All of the threads performing steps 1 + 2 + 3 have to work on shared data, but there are strategies to make it possible.
+All of the threads performing steps 1 + 2 + 3 have to work on shared data, but we live in a modern days where things like this are not really a problem.
 
 # Templates resolution
 In the phase 1, templates are indexed as other symbols, just with generic types.
