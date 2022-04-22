@@ -182,9 +182,8 @@ If switch doesn't contain a default, it would:
 
 ## Typed union
 We are aware, that std::variant exist, but it has some problems.
-1. The template magic behind it makes any bigger variant so unfriendly to fast compiled times, that we avoid it on purpose. (I have an experience, where a single boost variant with 200+ elements in a header file consumed more than 40% of compilation time of a big project)
+1. The template magic behind it makes any bigger variant so unfriendly to compile times, that we avoid it on purpose. (I have an experience, where a single boost variant with 200+ elements in a header file consumed more than 40% of compilation time of a big project)
 2. The most typical usage of union is in tandem with enum class, which leads to a typical ugly boilierplate around it to make work.
-
 
 This is basically just extension of how the enum works, but every value has associated union type value.
 ```
@@ -201,6 +200,8 @@ union enum
   std::string str(); // as our enum class, this allows to have methods
 };
 
+...
+
 std::string Property::str()
 {
   switch (this)
@@ -212,6 +213,8 @@ std::string Property::str()
   }
 };
 
+...
+
 Property property;
 property[Integer] = 5;
 property[String] = "hello";
@@ -221,7 +224,7 @@ if (property == Property::Integer)
   printf("%d", property[Integer]);
 ```
 
-If the [] operator is used with wrong type, it would either throw, or return an empty value?
+If the [] operator is used with wrong type, it would either throw, or return an empty value, but obviously, there would be more specific methods.
 
 # Safe navigation operator
 https://en.wikipedia.org/wiki/Safe_navigation_operator
@@ -300,7 +303,7 @@ Typical example are iterators, which have to be duplicated also in the standard 
 
 The std uses template magic to partially deduplicate it, but is not a nice read.
 
-So we could have a keyword *both_const*, which would basically be mapped to the same value (*const* or non const) in the whole context of the method based on the current usage.
+So we could have a keyword *both_const*, which would be basically  mapped to the same value (*const* or non const) in the whole context of the method based on the current usage.
 ```
 class A
 {
@@ -351,8 +354,12 @@ class A
 };
 ```
 
-### Safe final code deduplication
-
+TODO:
+1. There still needs to be some syntax to allow some methods to be used only in const or non-const version of the class
+2. Consider having some constexpr if to check even inside methods
+3. 
+### Simplier final code deduplication
+Since the compiler would know that both of the variants are close together, it could have easier time to deduplicate the const/non const variants if possible.
 
 # Named parameter passing
 It would allow to specify which of the parameters with default values are specified in a function call.
