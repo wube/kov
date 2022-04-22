@@ -1,4 +1,4 @@
-# Lets make C++ great ~~again~~
+# Lets make C++ great
 The motivation is to create a version of C++ which solves some of the biggest issues we have.
 
 ## Issues
