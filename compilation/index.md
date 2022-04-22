@@ -10,7 +10,7 @@
 The main idea is simple, you should be just able to completely remove #include from the language without any replacement, including forward declarations.
 When you want to start to use some symbol from the project you just start using it, it is there all the time, it doesn't matter if it is defined in cpp, or hpp (which would be optional now), or in the same file later on, all symbols are available all the time.
 We wouldn't have include path, but something very similiar, we could call it something like "scope-expansion-path", which would basically define all the files that are part of your code.
-This implies, that it would no longer be possible to create two duplicate symbols on different compilation units, which is considered an advantage, as it forces better symbol scoping. (classes, namespaces)
+This implies, that it would no longer be possible to create two duplicate symbols on different compilation units, which is considered an advantage, as it forces better symbol scoping.
 
 The real goal is to actually improve compilation time, not make it worse, so core changes to the way compilation is done would have to be done, mainly we need to make sure that every source file is opened and compiled only once.
 
