@@ -317,10 +317,10 @@ For the class scope deduplication, we could use the keyword *class_const*, which
 class iterator
 {
   class_const X& operator*() const { return *x; }
-  X* x;
+  class_const X* x;
 };
 ```
-This basically means, that we defined 2 types by this one definition (as with templates), and they could be accessed like this:
+This basically means, that we defined 2 types by this one definition (as with templates), one has const in in the place of all class_const, and one nothing, and they could be accessed like this:
 
 ```
 iterator a;
