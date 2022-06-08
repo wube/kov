@@ -27,11 +27,11 @@ Implications:
 This is based on my basic understanding of how the compiler works, let me know if I'm wrong.
 
 The current compilation method is problematic:
-1. The preprocessor (unaware of how the language works), blindly pastes all the include files to create (typically huge) cpp file for the compiler. It is typically huge once you include any of the typical things from the std, like string, as it cascades into a lot of other includes, my measures were hundrets of thousands of lines.
-2. At this point, vast, vast majority of the code to be compiled are duplications from the libraries. The compiler has to take each of the files, and compile it independently. At this step, we can take advantage of threading, but it is a big task anyway, here we create the obj files.
+1. The preprocessor (unaware of how the language works), blindly pastes all the include files to create (typically huge) cpp file for the compiler. It is typically huge once you include any of the typical things from the std, like string, as it cascades into a lot of other includes, my measures were hundreds of thousands of lines.
+2. At this point, the vast, vast majority of the code to be compiled are duplications from the libraries. The compiler has to take each of the files, and compile it independently. At this step, we can take advantage of threading, but it is a big task anyway, here we create the obj files.
 3. All the obj files are processed, and the data deduplicated to create the final code structure and the resulting binaries.
 
-This is partially solved by unity builds (merging several cpp files together to reduce duplication), and by precompiled headers, but it is just a bandaid, and we are still typically left with very cpu-demanding compilation process.
+This is partially solved by unity builds (merging several cpp files together to reduce duplication), and by precompiled headers, but it is just a bandaid, and we are still typically left with very CPU-demanding compilation process.
 Another problem of this approach is, that changing anything in include files used in a lot of places results in recompilation of big part of the project.
 
 # The proposed changes
@@ -67,14 +67,14 @@ This could mean that a lot of threads could wait for some of the popular templat
 
 # Continous compiler presence
 The next important change is, that for the contiuous programmer work, we wouldn't use the compiler just as an external tool to process our textual files, but the compiler process would keep running, and it would keep its binary representation of the code in memory waiting for:
-1. Another recompilation request, where it could precisely figure out what needs to be recompiled
-2. IDE API requests the programmer needs to navigate the code
+1. Another recompilation request, where it could precisely figure out what needs to be recompiled.
+2. IDE API requests the programmer needs to navigate the code.
 3. IDE API requests to apply the changes in the compiler on the fly, so it is as much up-to-date as possible.
 
 # Conclusion
 The expected results should be:
 
-1. Dramatical compile time reduction (as well as disk space reduction)
-2. No linking
-3. No includes
-4. Deduplication of the code parsing (compiler and ide)
+1. Dramatic compile time reduction (as well as disk space reduction).
+2. No linking.
+3. No includes.
+4. Deduplication of the code parsing (compiler and IDE).
