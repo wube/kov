@@ -146,27 +146,27 @@ Adding the override keyword to methods that are overriding a base class method i
 This shouldn't be even a warning, lets make it always required.
 
 ## Implicit explicit, explicit implicit
-We have learned to put make almost all of the construcotrs and bool operators to be explicit, as otherwise, very unexpected things tends to happen otherwise.
+We have learned to put make almost all of the constructors and bool operators to be explicit, as otherwise, very unexpected things tends to happen.
 So all constructors and conversion operators would be explicit by default, and "implicit" would have to be specified for the current default behaviour.
 
 ## Default break in switch
-Missing break in swithc statements is one of the more annoyin gotchas in code like this:
+Missing break in switch statements is one of the more annoying gotchas in code like this:
 
 ```
 void Position::move(Direction direction)
 {
   switch (direction)
   {
-    case Direction::North: this->y--; // oups missing break makes this behave differently than planned
+    case Direction::North: this->y--; // oops missing break makes this behave differently than planned
     case Direction::East: this->x++;
     case Direction::South: this->y++;
     case Direction::West: this->x--;
   }
 }
 ```
-The fallthrough mechanics is useful from time to time, but is much less frequent, even the fact, that some compilers now require you to add [[fallthrough]] when you forget a break shows that this is an issue.
+The fallthrough mechanic is useful from time to time, but is much less frequent, even the fact, that some compilers now require you to add `[[fallthrough]]` when you forget a break shows that this is an issue.
 
-So the proposal would be, that when you actually want a fallthrough, you have to explicitelly state it.
+So the proposal would be, that when you actually want a fallthrough, you have to explicitly state it.
 ```
 // alternative implementation of Direction::isVertical
 Direction::isVertical()
@@ -185,15 +185,15 @@ Direction::isVertical()
 In the above example of Direction::isVertical, we have to do some kind of error handling to make the compiler happy, and to make sure it crashes if there is a different (unsupported) value in the enum.
 
 If switch doesn't contain a default, it would:
-1. Compile Error if not all of the values are mentioned (warning in most compilers)
-2. Runtime abort (throw?) when invalid enum value is present
+1. Compile Error if not all of the values are mentioned (warning in most compilers).
+2. Runtime abort (throw?) when invalid enum value is present.
 
 ## Typed union
 We are aware, that std::variant exist, but it has some problems.
-1. The template magic behind it makes any bigger variant so unfriendly to compile times, that we avoid it on purpose. (I have an experience, where a single boost variant with 200+ elements in a header file consumed more than 40% of compilation time of a big project)
+1. The template magic behind it makes any bigger variant so unfriendly to compile times, that we avoid it on purpose. (I have an experience, where a single boost variant with 200+ elements in a header file consumed more than 40% of compilation time of a big project).
 2. The most typical usage of union is in tandem with enum class, which leads to a typical ugly boilierplate around it to make work.
 
-This is basically just extension of how the enum works, but every value has associated union type value.
+This is basically just extension of how the enum works, but every value has an associated union type value.
 ```
 // type definition
 union enum
@@ -366,8 +366,8 @@ TODO:
 1. There still needs to be some syntax to allow some methods to be used only in const or non-const version of the class
 2. Consider having some constexpr if to check even inside methods
 3. 
-### Simplier final code deduplication
-Since the compiler would know that both of the variants are close together, it could have easier time to deduplicate the const/non const variants if possible.
+### Simpler final code deduplication
+Since the compiler would know that both of the variants are close together, it could have easier time to deduplicate the const/non-const variants if possible.
 
 # Named parameter passing
 It would allow to specify which of the parameters with default values are specified in a function call.
@@ -411,7 +411,7 @@ We should have ways to bring the test as close to the actual code as possible, a
 On the class levels, we might just have specially marked static methods testing the class related logic, ideally we would have a switch to disable/enable showing
 these to avoid seeing bloat when discovering code structure.
 
-We need a standrdised test dependency system.
+We need a standardised test dependency system.
 
 C++ code coverage tools are either expensive, or very basic, so it would be nice to have this as a standard part of the compiler.
 
@@ -466,5 +466,5 @@ The cost of converting existing code would depend on the way the code is written
 4. With the global scope approach, it could happen that there could be clashes of symbols that were previously in separate cpp files.
 
 # IDE support
-This one is tricky, as there are lots of IDES out there and we can't control them.
+This one is tricky, as there are lots of IDEs out there and we can't control them.
 Yet, I can imagine that if the compiler is very performant, and provides some kind of API to the IDE to be able to understand the code without doing its own compilation in the background, the adaptation could be reasonably easy. I have no idea how much is this doable by some extensions, and how much it would require direct cooperations with the IDE creators.
