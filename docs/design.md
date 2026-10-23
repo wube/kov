@@ -117,6 +117,96 @@ replacements, in the order of how much code they remove:
 The spellings above are the working proposal; each is settled and recorded here when the feature
 is implemented.
 
+### 8. Compile-time iteration, reflection, enums, typed unions, tests (proposed 2026-10-24)
+The spellings below are proposed for kovarex's review; they implement items 1 and 3 to 6 of
+section 7. Everything here is instantiated at compile time by the same machinery as templates:
+a body written once is checked and generated once per element.
+
+**8.1 Compile-time lists.** `types<A, B, C>` is a list of types. A `const` array or a brace list
+of constants is a list of values. Data that belongs to a type is a static member of the type
+(`static const char* name = "custom-input";` in `CustomInputID`), not a second column of the
+list, so the X-macro lists with strings become `types<...>` plus `T::name`.
+
+**8.2 `for constexpr`.** The body is instantiated once per element; the loop variable is a type
+or a constant:
+```
+for constexpr (typename T : types<CustomInputID, EntityID, ItemID>)
+  registerLoader<T>(T::name);
+for constexpr (int i : {1, 2, 4})
+  table[i] = make(i);
+switch (type)
+{
+  for constexpr (typename T : messageTypes)
+    case T::kind: return parse<T>();
+}
+```
+At namespace and class scope the body may hold function definitions and explicit
+specialisations, which share their spelled name and differ by the element's type (overloads);
+it may not declare data members or variables, because there is no way to name them per element
+and no token pasting. Per-element data is an array indexed by the element, or a typed union.
+
+**8.3 Reflection.** `members(T)` is the list of T's non-static data members, bases first, in
+declaration order; each member `m` has `m.name` (a string literal), `m.type` (usable where a
+type is written), `m.offset`, and `object.[m]` is that member of `object`. `enumerators(E)`
+lists an enum's values with `e.name` and `e.value`. `nameof(x)` is the last name of `x` as a
+string literal (`nameof(this->sprite)` is `"sprite"`, `nameof(Direction)` is `"Direction"`).
+In `if constexpr`, types compare with `==` (`if constexpr (m.type == bool)`).
+```
+template<typename T> void addValues(const T& object, Values& result)
+{
+  for constexpr (auto m : members(T))
+    result.add(object.[m], m.name);
+}
+```
+Reflection reads declarations; it never creates names. Save and load written this way replace
+the `accumulate` idea of section 6 for the serialisation case.
+
+**8.4 Real enums**, the proposal's syntax with the inner brace block for the values:
+```
+enum class Direction : u8
+{
+  { North, East, South, West, None }
+  bool isVertical() const { return this == North || this == South; }
+};
+Direction::count                       // 5
+for (Direction d : Direction::values)  // iteration, in declaration order
+d.str()                                // "North"; a user-written str() replaces the generated one
+Direction::fromStr("North")            // Optional<Direction>
+switch (d) { case North: ... }         // exhaustive, no default; an invalid value aborts
+```
+Inside the enum's methods `this` is the value and the enumerators are in scope unqualified.
+Comparison, copying and `switch` work on the value; the underlying type is explicit or `i32`.
+
+**8.5 Typed unions**, the proposal's `union enum`: an enum whose every value carries a typed
+payload, stored as the tag plus storage for the largest alternative.
+```
+union enum Property : u8
+{
+  { {int, Integer}, {double, Double}, {String, Text}, {String, Comment} }
+  String str() const;
+};
+Property p;
+p[Integer] = 5;                        // sets the tag, constructs the value (destroying the old one)
+if (p == Property::Integer) use(p[Integer]);   // p[Integer] on another tag: release_assert
+switch (p) { case Integer: return format("{}", p[Integer]); case Text: return p[Text]; ... }
+```
+Alternatives are listed by `alternatives(Property)` for reflection. `InputAction`,
+`EditorAction`, `NetworkMessage`, `UpgradableEntity` in Factorio are this shape.
+
+**8.6 Tests in the compiler.**
+```
+test "Direction::isVertical"
+{
+  check(Direction::North.isVertical());
+  check(Direction::East.str() == "East");
+}
+```
+A `test "name" { ... }` declaration may appear at namespace scope or inside a class (where it
+sees private members). `check(expr)` records a failure with the expression text, the location
+and the operand values and continues; `require(expr)` ends the test. Tests are compiled only
+with `kovc --tests`, which generates the runner (`--run-test <name or file>` selects); without
+the switch they cost nothing. Fixtures are ordinary classes constructed in the test.
+
 ## Benchmark target
 
 Factorio: ~1.3M lines of own C++ in ~8,000 files (~1.6M with tests). Today's full rebuild
