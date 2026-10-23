@@ -55,6 +55,8 @@ namespace
     uint32_t label = 0;
     uint32_t stringCount = 0;
     bool blockTerminated = false;
+    bool debug = true;        // config::debug: asserts are compiled in
+    bool usesAssert = false;  // some assert was emitted: the module needs kov_assert_failed
     std::string currentBlock = "entry";
     FunctionDecl* currentFunction = nullptr;
     const Ty* currentReturn = nullptr;
@@ -1141,6 +1143,7 @@ namespace
           break;
         case NodeKind::CaseStmt: visit(static_cast<CaseStmt*>(n)->value); break;
         case NodeKind::ReturnStmt: visit(static_cast<ReturnStmt*>(n)->value); break;
+        case NodeKind::AssertStmt: visit(static_cast<AssertStmt*>(n)->cond); break;
         default: break;
       }
     }
@@ -1617,6 +1620,8 @@ namespace
     Value callFunction(FunctionDecl* f, const TemplateArgs& args, const Ty* classTy, const std::string& thisArg,
                        const std::string& sret, Span<Expr*> callArgs, Node* at, const std::string& indirect = "")
     {
+      if (!conditionHolds(f))
+        return {"", types.voidType(), false}; // conditional(false): no call, arguments not evaluated
       std::string name = indirect.empty() ? useFunction(f, args, classTy) : indirect;
       Signature s;
       const Ty* ret;
@@ -1665,6 +1670,30 @@ namespace
         const Ty* pt = position < s.paramTys.size() ? s.paramTys[position] : nullptr;
         argText += std::string(argText.empty() ? "" : ", ") + argumentText(pt, arg, at);
         ++position;
+      }
+      if (callArgs.size() < f->params.size())
+      {
+        // Parameters the call left out take their default arguments, evaluated at the call site
+        // (the expression's literals belong to the callee's file; a `caller` location to this one).
+        ParsedFile* callerFile = currentFile;
+        for (size_t i = callArgs.size(); i < f->params.size(); ++i)
+        {
+          auto* pd = static_cast<ParamDecl*>(f->params[i]);
+          if (!pd->defaultValue || pd->isPack)
+            break;
+          const Ty* pt = position < s.paramTys.size() ? s.paramTys[position] : nullptr;
+          std::string text;
+          if (pd->defaultValue->kind == NodeKind::CallerExpr)
+            text = "ptr " + callerLocation(pt, at);
+          else
+          {
+            currentFile = f->file;
+            text = argumentText(pt, pd->defaultValue, at);
+            currentFile = callerFile;
+          }
+          argText += std::string(argText.empty() ? "" : ", ") + text;
+          ++position;
+        }
       }
       std::string sig = (s.variadic || !indirect.empty()) ? signatureText(s) + " " : s.returnType + " ";
       if (s.returnType == "void")
@@ -1970,6 +1999,12 @@ namespace
       const std::vector<Token>& toks = *currentFile->tokens;
       for (size_t i = l->token; i < toks.size() && toks[i].getKind() == TokenKind::String; ++i)
         bytes += decodeString(spelling(uint32_t(i)));
+      return cStringConstant(bytes);
+    }
+
+    // A NUL-terminated string constant; returns its global name.
+    std::string cStringConstant(std::string bytes)
+    {
       bytes += '\0';
       std::string name = "@.str" + std::to_string(stringCount++);
       std::string escaped;
@@ -1986,6 +2021,105 @@ namespace
       }
       decls += name + " = private unnamed_addr constant [" + std::to_string(bytes.size()) + " x i8] c\"" + escaped + "\"\n";
       return name;
+    }
+
+    // Line and column (1-based) of a token of the current file.
+    std::pair<uint32_t, uint32_t> lineColumnOf(uint32_t token)
+    {
+      const std::vector<Token>& toks = *currentFile->tokens;
+      const Token& t = toks[std::min<size_t>(token, toks.size() - 1)];
+      uint32_t line = 1, lineStart = 0;
+      for (uint32_t i = 0; i < t.offset && i < currentFile->text.size(); ++i)
+        if (currentFile->text[i] == '\n')
+        {
+          ++line;
+          lineStart = i + 1;
+        }
+      return {line, t.offset - lineStart + 1};
+    }
+
+    // The source text from one token up to (not including) another.
+    std::string sourceText(uint32_t fromToken, uint32_t toToken)
+    {
+      const std::vector<Token>& toks = *currentFile->tokens;
+      if (fromToken >= toks.size() || toToken <= fromToken)
+        return "";
+      const Token& first = toks[fromToken];
+      const Token& last = toks[std::min<size_t>(toToken - 1, toks.size() - 1)];
+      return std::string(currentFile->text.substr(first.offset, last.offset + last.length - first.offset));
+    }
+
+    // Builds a CallerLocation {file, line, column, function} for the call at `at`, in a fresh slot.
+    std::string callerLocation(const Ty* pt, Node* at)
+    {
+      const Ty* t = types.stripRef(pt);
+      if (!t || !isClass(t))
+        unsupported(at, "a caller location parameter whose type is not a class");
+      StructInfo& info = structFor(t, at);
+      if (info.fieldTypes.size() < 4)
+        unsupported(at, "a caller location class without its four fields (file, line, column, function)");
+      std::string addr = newObjectSlot(t, at);
+      uint32_t token = at->kind == NodeKind::CallExpr ? static_cast<CallExpr*>(at)->callee->token : at->token; // the callee's name
+      auto [line, column] = lineColumnOf(token);
+      std::string function = currentFunction ? global.qualifiedName(currentFunction) : std::string();
+      fn += "  store ptr " + cStringConstant(currentFile->path) + ", ptr " + gep(info.name, addr, 0) + "\n";
+      fn += "  store i32 " + std::to_string(line) + ", ptr " + gep(info.name, addr, 1) + "\n";
+      fn += "  store i32 " + std::to_string(column) + ", ptr " + gep(info.name, addr, 2) + "\n";
+      fn += "  store ptr " + cStringConstant(function) + ", ptr " + gep(info.name, addr, 3) + "\n";
+      return addr;
+    }
+
+    // conditional(expr) on a function: false means the function and every call to it vanish.
+    bool conditionHolds(FunctionDecl* f)
+    {
+      if (!f->condition)
+        return true;
+      ParsedFile* saved = currentFile;
+      currentFile = f->file;
+      std::optional<int64_t> v = evalConst(f->condition);
+      currentFile = saved;
+      if (!v)
+        unsupported(f, "a conditional(...) whose condition is not a compile-time constant");
+      return *v != 0;
+    }
+
+    // LLVM function attributes for [[noinline]] and [[forceinline]].
+    static std::string attributeText(Decl* d)
+    {
+      std::string s;
+      if (d->attributes & ATTR_NoInline)
+        s += "noinline ";
+      if (d->attributes & ATTR_ForceInline)
+        s += "alwaysinline ";
+      return s;
+    }
+
+    // The default assert handler, unless the program defines `extern "C" kov_assert_failed`.
+    void finishAssertRuntime()
+    {
+      if (!usesAssert || declaredNames["@kov_assert_failed"])
+        return;
+      std::string format = cStringConstant("%s:%u:%u: assertion failed: %s\n");
+      if (!declaredNames["@fprintf"])
+      {
+        decls += "declare i32 @fprintf(ptr, ptr, ...)\n";
+        declaredNames["@fprintf"] = true;
+      }
+      if (!declaredNames["@__acrt_iob_func"])
+      {
+        decls += "declare ptr @__acrt_iob_func(i32)\n";
+        declaredNames["@__acrt_iob_func"] = true;
+      }
+      if (!declaredNames["@abort"])
+      {
+        decls += "declare void @abort()\n";
+        declaredNames["@abort"] = true;
+      }
+      body += "define void @kov_assert_failed(ptr %file, i32 %line, i32 %column, ptr %expression) noinline {\nentry:\n"
+              "  %err = call ptr @__acrt_iob_func(i32 2)\n"
+              "  %0 = call i32 (ptr, ptr, ...) @fprintf(ptr %err, ptr " + format + ", ptr %file, i32 %line, i32 %column, ptr %expression)\n"
+              "  call void @abort()\n  unreachable\n}\n";
+      declaredNames["@kov_assert_failed"] = true;
     }
 
     // --- values ---
@@ -3292,6 +3426,13 @@ namespace
         case NodeKind::IfStmt:
         {
           auto* i = static_cast<IfStmt*>(s);
+          if (i->isConstexpr && !i->init && i->cond && i->cond->kind != NodeKind::VariableDecl && i->cond->kind != NodeKind::DeclStmt)
+            if (std::optional<int64_t> known = evalConst(static_cast<Expr*>(i->cond)))
+            {
+              // if constexpr with a known condition: only the taken branch exists.
+              statement(*known ? i->then : i->else_);
+              break;
+            }
           pushScope();
           if (i->init)
             statement(i->init);
@@ -3310,6 +3451,23 @@ namespace
           }
           startBlock(jL);
           popScope();
+          break;
+        }
+        case NodeKind::AssertStmt:
+        {
+          auto* a = static_cast<AssertStmt*>(s);
+          if (!a->release && !debug)
+            break; // assert compiles to nothing outside debug builds
+          Value cond = condition(a->cond, s);
+          destroyTemps();
+          std::string okL = newLabel("assert.ok"), failL = newLabel("assert.fail");
+          fn += "  br i1 " + cond.text + ", label %" + okL + ", label %" + failL + "\n";
+          startBlock(failL);
+          auto [line, column] = lineColumnOf(a->token);
+          fn += "  call void @kov_assert_failed(ptr " + cStringConstant(currentFile->path) + ", i32 " + std::to_string(line) + ", i32 " +
+                std::to_string(column) + ", ptr " + cStringConstant(sourceText(a->startToken, a->endToken)) + ")\n  unreachable\n";
+          usesAssert = true;
+          startBlock(okL);
           break;
         }
         case NodeKind::WhileStmt:
@@ -3601,6 +3759,8 @@ namespace
 
     void emitFunction(FunctionDecl* f, const TemplateArgs& args, const Ty* classTy)
     {
+      if (!conditionHolds(f))
+        return; // conditional(false): the function does not exist in this build
       currentFile = f->file;
       if (!args.empty())
         global.retypeFor(f, args, classTy);
@@ -3644,7 +3804,7 @@ namespace
           params += params.empty() ? "..." : ", ...";
         std::string name = functionName(f, args, classTy);
         declaredNames[name] = true;
-        std::string header = "define " + s.returnType + " " + name + "(" + params + ") {\nentry:\n";
+        std::string header = "define " + s.returnType + " " + name + "(" + params + ") " + attributeText(f) + "{\nentry:\n";
         pushScope();
         size_t slot = 0;
         if (s.hasThis)
@@ -3753,10 +3913,11 @@ namespace
   };
 }
 
-CodegenResult generateLLVM(std::vector<std::unique_ptr<ParsedFile>>& files, GlobalScope& global, const SymbolTable& symbols)
+CodegenResult generateLLVM(std::vector<std::unique_ptr<ParsedFile>>& files, GlobalScope& global, const SymbolTable& symbols, bool debug)
 {
   CodegenResult result;
   Emitter e(global, symbols, result);
+  e.debug = debug;
   std::vector<FunctionDecl*> functions;
   for (auto& file : files)
     e.collectFunctions(file->decls, functions);
@@ -3769,6 +3930,7 @@ CodegenResult generateLLVM(std::vector<std::unique_ptr<ParsedFile>>& files, Glob
     e.worklist.pop_front();
     e.emitFunction(inst.f, inst.args, inst.classTy);
   }
+  e.finishAssertRuntime();
   result.ir = "; Kov v0: generated by kovc\n"
               "target datalayout = \"e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\n"
               "target triple = \"x86_64-pc-windows-msvc\"\n\n" +

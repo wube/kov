@@ -60,14 +60,14 @@ different part of the list above:
   statements of the language. The compiler has the
   expression text and the location; a failed assert reports both and the values of the operands
   (it knows the AST, so `assert(a == b)` prints `a` and `b`). `assert` compiles to nothing when
-  `config.debug` is false.
+  `config::debug` is false.
 - For the `LOG_*` family, `LOG_AND_ABORT`, `LOG_ENUM_AND_ABORT` and the graphics error helpers
   (about 3,100 uses): any function can take an implicit caller location. A parameter declared
   `CallerLocation here = caller` is filled at each call site. `logError("...", args...)` is then a plain variadic
   function using the type-safe `format` (no `printf` attribute, see G).
 - For what must vanish from a build (`LOG_DEBUG`, `LOG_VERBOSE`, `ZoneScoped`, dev-only tools):
   a function can be declared conditional on a compile-time constant,
-  `conditional(config.debugLog) void logDebug(...)`. When the condition is false, calls to it
+  `conditional(config::debugLog) void logDebug(...)`. When the condition is false, calls to it
   compile to nothing and their arguments are not evaluated. This covers the debug log levels,
   profiling zones (`ZoneScoped`) and dev-only tools without a macro per level.
 
@@ -197,11 +197,11 @@ are empty defines read by `#ifdef`, or `0`/`1` constants (`DEBUG_BAD_SHIFTINGS 0
 exists only on Switch), single statements, and `#include`s.
 
 Kov: the configuration is a set of typed compile-time constants given by the build (the "global
-macros" of design.md, made typed): `config.platform == Platform::Switch`, `config.debug`,
-`config.steam`, `config.graphics == Graphics::Metal`. `if constexpr` on them is allowed at every
+macros" of design.md, made typed): `config::platform == Platform::Switch`, `config::debug`,
+`config::steam`, `config::graphics == Graphics::Metal`. `if constexpr` on them is allowed at every
 scope, so a class, a member or a function can exist only on one platform without a preprocessor,
-and a file can state `requires config.platform == Platform::Switch;` at its top to be skipped
-entirely elsewhere. Debug-only members (`DEV_TOOL_VARIABLE`) are `if constexpr (config.devTools)`
+and a file can state `requires config::platform == Platform::Switch;` at its top to be skipped
+entirely elsewhere. Debug-only members (`DEV_TOOL_VARIABLE`) are `if constexpr (config::devTools)`
 around the declaration.
 
 ### I. Constants and string tables (222 uses)
@@ -220,7 +220,7 @@ function pointers (`VulkanImpl::`, `OpenCLImpl::`); `load_m128i` casts for an in
 `toCStr(x)` is `toStr(x).c_str()`; `STR(x)`/`ARG_STRING_TYPE` paste `L` onto string literals.
 
 Kov: C import brings in declarations and constants, not function-like macros, so `min`/`max` cannot
-be hijacked; the rest are functions, `if constexpr` on `config.platform`, and String conversions.
+be hijacked; the rest are functions, `if constexpr` on `config::platform`, and String conversions.
 
 ### K. Inline code snippets (224 uses)
 

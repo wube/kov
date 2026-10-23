@@ -1,0 +1,50 @@
+// The small macro replacements: assert statements, caller locations, conditional functions,
+// if constexpr on config constants at both scopes, `_` locals and attributes.
+
+struct Guard
+{
+  const char* name;
+  Guard(const char* name) : name(name) { println("enter {}", name); }
+  ~Guard() { println("leave {}", this->name); }
+};
+
+void note(const char* text, CallerLocation here = caller)
+{
+  println("{} at line {} column {} in {}", text, int(here.line), int(here.column), here.function);
+}
+
+conditional(config::debug) void debugOnly(const char* text) { println("debug: {}", text); }
+conditional(!config::debug) void releaseOnly(const char* text) { println("release: {}", text); }
+
+if constexpr (config::debug)
+{
+  int buildKind() { return 1; }
+}
+else
+{
+  int buildKind() { return 2; }
+}
+
+[[noinline]] int twice(int x) { return x * 2; }
+
+int main()
+{
+  int x = twice(21);
+  assert(x == 42);
+  release_assert(x > 0);
+  note("first");
+  note("second");
+  debugOnly("shown");
+  releaseOnly("hidden");
+  if constexpr (config::platform == Platform::Windows)
+    println("windows");
+  else
+    println("elsewhere");
+  println("build kind {}", buildKind());
+  {
+    Guard _("a");
+    Guard _("b");
+    println("inside");
+  }
+  return 0;
+}

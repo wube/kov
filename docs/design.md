@@ -89,20 +89,31 @@ replacements, in the order of how much code they remove:
    and the standard runner selects; `check(expr)` reports the text, the location and the operand
    values and records the failure instead of aborting.
 2. `assert`/`release_assert` as statements of the language (text, location, operand values;
-   `assert` compiles to nothing when `config.debug` is false); an implicit caller location
-   parameter (`CallerLocation here = caller`, filled at the call site); `conditional(config.x)`
+   `assert` compiles to nothing when `config::debug` is false); an implicit caller location
+   parameter (`CallerLocation here = caller`, filled at the call site); `conditional(config::x)`
    functions whose calls compile to nothing, arguments unevaluated, when the condition is false.
+   Done 2026-10-24: `assert(expr);` and `release_assert(expr);` are statements; a failure prints
+   `file:line:column: assertion failed: <expression text>` through `kov_assert_failed`, which a
+   program may define itself as `extern "C"` (debugger break, test exception); `CallerLocation`
+   lives in `stdlib/core/Location.kov`; `conditional(expr)` is written where `static` would be.
+   Operand values in the message: later.
 3. Compile-time reflection: `for constexpr (m : members(T))` with `m.name`, `m.type` and
    `object.[m]`; `enumerators(E)` and `count(E)`; `nameof(expr)`.
 4. `if constexpr` and `for constexpr` at every scope (function, class, namespace), over typed
    `config` constants and type lists (`types<A, B, C>`, or `const` arrays of structs for lists
-   with data). A file may start with `requires config.platform == Platform::X;`.
+   with data). A file may start with `requires config::platform == Platform::X;`.
+   Done 2026-10-24: `--config name=value` (and `--release`) generate a `config` namespace of
+   `const` values plus `enum class Platform { Windows, Linux, Mac }`; `if constexpr` folds at
+   statement scope on any constant, and at namespace and class scope on conditions of config
+   constants and literals (the parser evaluates those, so the other branch is never parsed);
+   `requires <condition>;` at the top of a file. `for constexpr` and type lists: not yet.
 5. Typed unions (`union enum`, section 6).
 6. Real enums with `str()`, `fromStr()`, `count` and iteration (section 6).
 7. `_` as a name that may be declared any number of times in a scope, each an unnamed local that
-   lives to the end of the scope.
+   lives to the end of the scope. Done 2026-10-24.
 8. Attributes for the real compiler modifiers: `[[noinline]]`, `[[forceinline]]`,
-   `[[vectorcall]]`, `[[optimize]]`, `[[no_sanitize]]`.
+   `[[vectorcall]]`, `[[optimize]]`, `[[no_sanitize]]`. Done 2026-10-24 for `noinline` and
+   `forceinline`; the others are accepted and ignored for now.
 The spellings above are the working proposal; each is settled and recorded here when the feature
 is implemented.
 
@@ -133,7 +144,8 @@ The smallest language that is still Kov, as the target of the first code generat
      that the C++ reading turns every `QueryPerformanceFrequency(&f);` into a declaration).
   No `typename` or `template` disambiguators (as in the proposal).
 - **Types.** `bool`, `i8/i16/i32/i64`, `u8/u16/u32/u64`, `f32/f64`, `char` (UTF-8 code unit),
-  pointers, references, arrays, `const`. `int` is an alias of `i32`, `size_t`/`usize` of `u64`.
+  pointers, references, arrays, `const`. `int` is an alias of `i32`, `size_t`/`usize` of `u64`
+  (the short names exist in the compiler since 2026-10-24; `f32`/`f64` not yet).
 - **Declarations.** Functions, `struct`/`class` with methods, bases, constructors and
   destructors, `enum class` with methods, `using` aliases, global and local variables, `auto`.
   Simple templates (type parameters, full specialisation, `if constexpr`).

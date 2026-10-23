@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <optional>
 #include <string>
 
 namespace
@@ -30,17 +31,42 @@ namespace
       : toks(tokens), text(text.data()), symbols(symbols), out(out), arena(out.arena)
     {
       kwImport = symbols.intern("import");
+      kwAssert = symbols.intern("assert");
+      kwReleaseAssert = symbols.intern("release_assert");
+      kwCaller = symbols.intern("caller");
+      kwConditional = symbols.intern("conditional");
+      kwUnderscore = symbols.intern("_");
+      kwConfig = symbols.intern("config");
       kwImplicit = symbols.intern("implicit");
       kwFallthrough = symbols.intern("fallthrough");
       kwBothConst = symbols.intern("both_const");
       kwClassConst = symbols.intern("class_const");
       kwAccumulate = symbols.intern("accumulate");
     }
-    uint32_t kwImplicit, kwFallthrough, kwBothConst, kwClassConst, kwAccumulate, kwImport;
+    uint32_t kwImplicit, kwFallthrough, kwBothConst, kwClassConst, kwAccumulate, kwImport, kwAssert, kwReleaseAssert, kwCaller,
+             kwConditional, kwUnderscore, kwConfig;
+    uint8_t pendingAttributes = 0;   // [[noinline]] and friends seen before the current declaration.
+    Expr* pendingCondition = nullptr; // conditional(expr) seen in the current specifiers.
 
     void parseTranslationUnit()
     {
       size_t mark = scratch.size();
+      if (config && at(Kw::requires_))
+      {
+        // `requires config::platform == Platform::Windows;` first in a file: the file exists only
+        // when the condition holds.
+        advance();
+        Expr* cond = parseExpression();
+        expect(P::Semi, "expected ';' after the file's requires condition");
+        std::optional<ConfigValue> value = configValue(cond);
+        if (!value || !value->isNumber)
+          error("a file's requires condition needs config constants and literals");
+        else if (value->number == 0)
+        {
+          out.decls = makeSpan<Decl*>(mark);
+          return;
+        }
+      }
       while (!at(TokenKind::End))
       {
         if (at(P::RBrace))
@@ -72,6 +98,7 @@ namespace
   public:
     bool externC = false; // Inside extern "C".
     bool cMode = false;   // Preprocessed C text (imported headers): no macro heuristics.
+    const ConfigValues* config = nullptr; // Build configuration, for declaration-scope if constexpr.
   private:
     bool conditionMode = false; // Declarations inside `if (...)` end at ')' instead of ';'.
     bool inRequires = false;    // Inside a requires-clause names are always template-ids.
@@ -319,6 +346,16 @@ namespace
         {
           advance();
           advance();
+          if (atIdent())
+          {
+            std::string_view a = spelling();
+            if (a == "noinline")
+              pendingAttributes |= ATTR_NoInline;
+            else if (a == "forceinline")
+              pendingAttributes |= ATTR_ForceInline;
+            else if (a == "vectorcall")
+              pendingAttributes |= ATTR_VectorCall;
+          }
           int level = 2;
           while (level > 0 && !at(TokenKind::End))
           {
@@ -937,6 +974,153 @@ namespace
 
     // Parses one declaration (possibly producing several Decl nodes, e.g. `int a, b;`) and pushes
     // the results onto scratch.
+    // --- build configuration ---
+
+    // Evaluates a condition made of literals, config constants (`config::name`) and the operators
+    // ! && || == != < > <= >= + - on them. An enum-valued config constant compares equal to a
+    // qualified name whose last part spells its value: `config::platform == Platform::Windows`.
+    std::optional<ConfigValue> configValue(Expr* e, int depth = 0)
+    {
+      if (!e || depth > 32)
+        return std::nullopt;
+      switch (e->kind)
+      {
+        case NodeKind::ParenExpr: return configValue(static_cast<ParenExpr*>(e)->inner, depth + 1);
+        case NodeKind::LiteralExpr:
+        {
+          auto* l = static_cast<LiteralExpr*>(e);
+          ConfigValue v;
+          if (l->literalKind == TokenKind::Keyword)
+          {
+            v.number = l->keyword == Kw::true_ ? 1 : 0;
+            return v;
+          }
+          if (l->literalKind != TokenKind::Number)
+            return std::nullopt;
+          const Token& t = toks[l->token];
+          std::string digits;
+          for (char c : std::string_view(text + t.offset, t.length))
+            if (c != '\'')
+              digits += c;
+          while (!digits.empty() && strchr("uUlLzZ", digits.back()))
+            digits.pop_back();
+          try
+          {
+            v.number = std::stoll(digits, nullptr, 0);
+          }
+          catch (...)
+          {
+            return std::nullopt;
+          }
+          return v;
+        }
+        case NodeKind::NameExpr:
+        {
+          auto* n = static_cast<NameExpr*>(e);
+          if (n->name.parts.size() == 2 && n->name.parts[0].symbol == kwConfig)
+          {
+            if (!config)
+              return std::nullopt;
+            auto it = config->find(std::string(symbols.name(n->name.parts[1].symbol)));
+            return it == config->end() ? std::nullopt : std::optional<ConfigValue>(it->second);
+          }
+          ConfigValue v;
+          v.isNumber = false;
+          v.text = std::string(symbols.name(n->name.last().symbol));
+          return v;
+        }
+        case NodeKind::UnaryExpr:
+        {
+          auto* u = static_cast<UnaryExpr*>(e);
+          auto v = configValue(u->operand, depth + 1);
+          if (!v || !v->isNumber || u->isKeyword)
+            return std::nullopt;
+          if (P(u->op) == P::Bang)
+            v->number = !v->number;
+          else if (P(u->op) == P::Minus)
+            v->number = -v->number;
+          else
+            return std::nullopt;
+          return v;
+        }
+        case NodeKind::BinaryExpr:
+        {
+          auto* b = static_cast<BinaryExpr*>(e);
+          auto l = configValue(b->lhs, depth + 1), r = configValue(b->rhs, depth + 1);
+          if (!l || !r || b->isKeyword)
+            return std::nullopt;
+          ConfigValue v;
+          P op = P(b->op);
+          if (!l->isNumber || !r->isNumber)
+          {
+            if (op != P::EqEq && op != P::NotEq)
+              return std::nullopt;
+            bool equal = l->isNumber == r->isNumber && (l->isNumber ? l->number == r->number : l->text == r->text);
+            v.number = op == P::EqEq ? equal : !equal;
+            return v;
+          }
+          switch (op)
+          {
+            case P::AndAnd: v.number = l->number && r->number; break;
+            case P::OrOr: v.number = l->number || r->number; break;
+            case P::EqEq: v.number = l->number == r->number; break;
+            case P::NotEq: v.number = l->number != r->number; break;
+            case P::Less: v.number = l->number < r->number; break;
+            case P::Greater: v.number = l->number > r->number; break;
+            case P::LessEq: v.number = l->number <= r->number; break;
+            case P::GreaterEq: v.number = l->number >= r->number; break;
+            case P::Plus: v.number = l->number + r->number; break;
+            case P::Minus: v.number = l->number - r->number; break;
+            default: return std::nullopt;
+          }
+          return v;
+        }
+        default: return std::nullopt;
+      }
+    }
+
+    // `if constexpr (condition) { declarations } else { declarations }` at namespace or class
+    // scope. The condition is evaluated here, from config constants and literals, and only the
+    // declarations of the taken branch are kept; the others are skipped without being parsed.
+    void parseStaticIf(Scope scope, bool alreadyTaken)
+    {
+      advance();
+      advance();
+      expect(P::LParen, "expected '(' after if constexpr");
+      Expr* cond = parseExpression();
+      expect(P::RParen, "expected ')'");
+      std::optional<ConfigValue> value = configValue(cond);
+      if (!value || !value->isNumber)
+        error("if constexpr at declaration scope needs a condition made of config constants and literals");
+      bool take = !alreadyTaken && value && value->isNumber && value->number != 0;
+      parseStaticIfBranch(scope, take);
+      if (accept(Kw::else_))
+      {
+        if (at(Kw::if_) && at(Kw::constexpr_, 1))
+          parseStaticIf(scope, alreadyTaken || take);
+        else
+          parseStaticIfBranch(scope, !alreadyTaken && !take);
+      }
+    }
+
+    void parseStaticIfBranch(Scope scope, bool keep)
+    {
+      if (!at(P::LBrace))
+      {
+        error("expected '{' after the if constexpr condition");
+        return;
+      }
+      if (!keep)
+      {
+        skipBalanced();
+        return;
+      }
+      advance();
+      while (!at(P::RBrace) && !at(TokenKind::End))
+        parseDeclaration(scope);
+      expect(P::RBrace, "expected '}' closing if constexpr");
+    }
+
     void parseDeclaration(Scope scope)
     {
       DepthGuard guard(*this);
@@ -970,6 +1154,7 @@ namespace
 
     void parseDeclarationInner(Scope scope, TemplateHeader templ)
     {
+      pendingAttributes = 0;
       skipAttributes();
       uint32_t start = pos;
       if (at(TokenKind::End))
@@ -988,6 +1173,11 @@ namespace
         advance();
         m->endToken = pos;
         pushDecl(m);
+        return;
+      }
+      if (at(Kw::if_) && at(Kw::constexpr_, 1) && scope != Scope::Local)
+      {
+        parseStaticIf(scope, false);
         return;
       }
       if (at(Kw::template_))
@@ -1199,6 +1389,13 @@ namespace
         VariableDecl* v = decl<VariableDecl>(start);
         v->type = d.type;
         v->name = d.name;
+        if (scope == Scope::Local && v->name.parts.size() == 1 && v->name.parts[0].symbol == kwUnderscore)
+        {
+          // `_`: an unnamed local that lives to the end of the scope; every `_` is a distinct object.
+          NamePart part;
+          part.symbol = symbols.intern("_" + std::to_string(start));
+          v->name.parts = makeSpanOf(std::vector<NamePart>{part});
+        }
         v->flags |= flags | d.flags;
         v->bitfield = d.bitfield;
         v->structuredBindings = d.structuredBindings;
@@ -1268,6 +1465,14 @@ namespace
         else if (atIdent(kwImplicit) && !at(P::LParen, 1)) { advance(); flags |= DF_Implicit; }
         else if (atIdent(kwBothConst) && !at(P::LParen, 1)) { advance(); flags |= DF_BothConst; }
         else if (atIdent(kwAccumulate) && !at(P::LParen, 1) && !at(P::ColonColon, 1)) { advance(); flags |= DF_Accumulate; }
+        else if (atIdent(kwConditional) && at(P::LParen, 1))
+        {
+          // conditional(expr): the function exists only while expr, a config constant, is true.
+          advance();
+          advance();
+          pendingCondition = parseExpression();
+          expect(P::RParen, "expected ')' after the condition");
+        }
         else if (at(Kw::explicit_))
         {
           advance();
@@ -1525,7 +1730,15 @@ namespace
         p->type = f;
       }
       if (accept(P::Assign))
-        p->defaultValue = parseAssignment();
+      {
+        if (atIdent(kwCaller) && (at(P::Comma, 1) || at(P::RParen, 1)))
+        {
+          p->defaultValue = node<CallerExpr>(pos); // the compiler fills in the call site
+          advance();
+        }
+        else
+          p->defaultValue = parseAssignment();
+      }
       else if (at(P::LBrace))
         p->defaultValue = parseBraceInit();
       return p;
@@ -1542,6 +1755,10 @@ namespace
       f->flags |= flags | d.flags;
       f->trailingReturn = d.trailingReturn;
       f->requiresClause = d.requiresClause ? d.requiresClause : templ.requiresClause;
+      f->condition = pendingCondition;
+      pendingCondition = nullptr;
+      f->attributes = pendingAttributes;
+      pendingAttributes = 0;
       f->templateParams = templ.params;
       f->isTemplate = templ.present;
       const NamePart& last = d.name.last();
@@ -2202,6 +2419,7 @@ namespace
 
     Stmt* parseStatementInner()
     {
+      pendingAttributes = 0;
       skipAttributes();
       uint32_t start = pos;
       if (at(TokenKind::End))
@@ -2378,6 +2596,19 @@ namespace
         advance();
         advance();
         return node<FallthroughStmt>(start);
+      }
+      if ((atIdent(kwAssert) || atIdent(kwReleaseAssert)) && at(P::LParen, 1))
+      {
+        AssertStmt* s = node<AssertStmt>(start);
+        s->release = atIdent(kwReleaseAssert);
+        advance();
+        advance();
+        s->startToken = pos;
+        s->cond = parseExpression();
+        s->endToken = pos;
+        expect(P::RParen, "expected ')' after the asserted expression");
+        expect(P::Semi, "expected ';' after assert");
+        return s;
       }
       // Label.
       if (atIdent() && at(P::Colon, 1) && !at(P::ColonColon, 1))
@@ -3553,6 +3784,8 @@ namespace
   template<> constexpr NodeKind Parser::nodeKindOf<AsmDecl>() { return NodeKind::AsmDecl; }
   template<> constexpr NodeKind Parser::nodeKindOf<FriendDecl>() { return NodeKind::FriendDecl; }
   template<> constexpr NodeKind Parser::nodeKindOf<ImportDecl>() { return NodeKind::ImportDecl; }
+  template<> constexpr NodeKind Parser::nodeKindOf<AssertStmt>() { return NodeKind::AssertStmt; }
+  template<> constexpr NodeKind Parser::nodeKindOf<CallerExpr>() { return NodeKind::CallerExpr; }
   template<> constexpr NodeKind Parser::nodeKindOf<BlockStmt>() { return NodeKind::BlockStmt; }
   template<> constexpr NodeKind Parser::nodeKindOf<ExprStmt>() { return NodeKind::ExprStmt; }
   template<> constexpr NodeKind Parser::nodeKindOf<DeclStmt>() { return NodeKind::DeclStmt; }
@@ -3699,7 +3932,8 @@ namespace
   }
 }
 
-void parseFile(std::vector<Token>& tokens, std::string_view text, SymbolTable& symbols, ParsedFile& out, bool cMode)
+void parseFile(std::vector<Token>& tokens, std::string_view text, SymbolTable& symbols, ParsedFile& out, bool cMode,
+               const ConfigValues* config)
 {
   filterDirectives(tokens, text);
   if (cMode)
@@ -3723,5 +3957,6 @@ void parseFile(std::vector<Token>& tokens, std::string_view text, SymbolTable& s
   Parser parser(tokens, text, symbols, out);
   parser.externC = cMode;
   parser.cMode = cMode;
+  parser.config = config;
   parser.parseTranslationUnit();
 }

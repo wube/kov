@@ -88,12 +88,12 @@ struct Span
   X(VariableDecl) X(UsingAliasDecl) X(UsingDirectiveDecl) X(UsingNameDecl) X(TemplateParamDecl) \
   X(StaticAssertDecl) X(MacroDecl) X(ErrorDecl) X(EmptyDecl) X(AsmDecl) X(FriendDecl) X(ImportDecl) \
   /* statements */ \
-  X(BlockStmt) X(ExprStmt) X(DeclStmt) X(IfStmt) X(ForStmt) X(RangeForStmt) X(WhileStmt) \
+  X(BlockStmt) X(ExprStmt) X(DeclStmt) X(IfStmt) X(AssertStmt) X(ForStmt) X(RangeForStmt) X(WhileStmt) \
   X(DoStmt) X(SwitchStmt) X(CaseStmt) X(DefaultStmt) X(ReturnStmt) X(BreakStmt) X(ContinueStmt) \
   X(GotoStmt) X(LabelStmt) X(TryStmt) X(EmptyStmt) X(ErrorStmt) X(FallthroughStmt) X(AsmStmt) X(MacroStmt) \
   /* expressions */ \
   X(NameExpr) X(LiteralExpr) X(ThisExpr) X(CallExpr) X(IndexExpr) X(MemberExpr) X(UnaryExpr) \
-  X(BinaryExpr) X(ConditionalExpr) X(CastExpr) X(NamedCastExpr) X(SizeofExpr) X(NewExpr) \
+  X(BinaryExpr) X(ConditionalExpr) X(CastExpr) X(NamedCastExpr) X(SizeofExpr) X(CallerExpr) X(NewExpr) \
   X(DeleteExpr) X(LambdaExpr) X(BraceInitExpr) X(ThrowExpr) X(FunctionalCastExpr) X(TypeidExpr) \
   X(FoldExpr) X(RequiresExpr) X(ErrorExpr) X(ParenExpr)
 
@@ -172,6 +172,8 @@ enum class Access : uint8_t { Default, Public, Protected, Private };
 struct Scope;
 struct Ty;
 struct ParsedFile;
+constexpr uint8_t ATTR_NoInline = 1, ATTR_ForceInline = 2, ATTR_VectorCall = 4; // Decl::attributes, from [[...]]
+
 struct Decl : Node
 {
   ParsedFile* file = nullptr; // The file this declaration was parsed from.
@@ -182,6 +184,7 @@ struct Decl : Node
   Decl* parent = nullptr;     // Lexically enclosing declaration, set by the parser.
   Scope* ownScope = nullptr;  // Set by the resolver for namespaces, classes and enums.
   std::atomic<const Ty*> cachedType{nullptr}; // Declared type, filled lazily by the type checker (non-dependent only).
+  uint8_t attributes = 0;     // ATTR_* bits.
 };
 
 struct LambdaExpr;
@@ -221,6 +224,7 @@ struct FunctionDecl : Decl
   struct CtorInit { QualifiedName member; Span<Expr*> args; bool braced; bool isPack; };
   Span<CtorInit> ctorInits;
   Expr* requiresClause = nullptr;
+  Expr* condition = nullptr; // conditional(expr): calls compile to nothing while expr is false.
 };
 struct VariableDecl : Decl
 {
@@ -249,6 +253,7 @@ struct BlockStmt : Stmt { Span<Stmt*> stmts; };
 struct ExprStmt : Stmt { Expr* expr; };
 struct DeclStmt : Stmt { Span<Decl*> decls; };
 struct IfStmt : Stmt { Stmt* init = nullptr; Node* cond; Stmt* then; Stmt* else_ = nullptr; bool isConstexpr = false; };
+struct AssertStmt : Stmt { Expr* cond; uint32_t startToken, endToken; bool release = false; }; // tokens of the expression text // assert(cond); release_assert(cond);
 struct ForStmt : Stmt { Stmt* init = nullptr; Node* cond = nullptr; Expr* step = nullptr; Stmt* body; };
 struct RangeForStmt : Stmt { Decl* var; Expr* range; Stmt* body; };
 struct WhileStmt : Stmt { Node* cond; Stmt* body; };
@@ -291,6 +296,7 @@ struct ConditionalExpr : Expr { Expr* cond; Expr* then; Expr* else_; }; // then 
 struct CastExpr : Expr { Type* type; Expr* operand; };
 struct NamedCastExpr : Expr { Kw castKind; Type* type; Expr* operand; };
 struct SizeofExpr : Expr { Kw sizeofKind; Type* type = nullptr; Expr* operand = nullptr; bool isPack = false; };
+struct CallerExpr : Expr {}; // `caller` as a default argument: the compiler fills in the call site.
 struct NewExpr : Expr { Type* type; Span<Expr*> placement; Span<Expr*> args; bool braced = false; bool global = false; };
 struct DeleteExpr : Expr { Expr* operand; bool isArray; bool global; };
 struct LambdaCapture

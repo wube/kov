@@ -1,0 +1,14 @@
+// Source locations.
+
+// The place a function was called from. A parameter declared `CallerLocation here = caller` is
+// filled in by the compiler at every call that leaves it out:
+//
+//   void log(const char* text, CallerLocation here = caller);
+//   log("hello");   // here = {"main.kov", 12, 3, "main"}
+struct CallerLocation
+{
+  const char* file;
+  uint32_t line;
+  uint32_t column;
+  const char* function;
+};

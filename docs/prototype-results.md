@@ -309,6 +309,25 @@ only when `(` or `[` follows it (`R (*f)(int)`). On Factorio this turned two mis
 clean ones (208 errors in 59 files, 99.27% clean) and changed nothing else: parse 0.074 s,
 resolve 0.078 s, 78.2% of member accesses bound, 76.4% of expressions typed. 13 run-tests pass.
 
+## Macro replacements, first batch (2026-10-24)
+
+The small items of design.md section 7, all in one round: `assert(expr);` and
+`release_assert(expr);` as statements, `CallerLocation here = caller` default arguments,
+`conditional(expr)` functions, `--config name=value` / `--release` as a generated `config`
+namespace, `if constexpr` folded at statement scope and evaluated by the parser at namespace and
+class scope, `requires <condition>;` at the top of a file, `_` locals, `[[noinline]]` and
+`[[forceinline]]`. Default arguments in general were missing from codegen and came with it.
+
+`asserts.kov` covers all of them; a failing assert prints
+`fail.kov:4:3: assertion failed: items > 5 && items < 10` on stderr and aborts (the default
+`kov_assert_failed`, which a program may replace by defining it `extern "C"`); the same program
+built with `--release` runs through, since `assert` compiles to nothing there. 14 run-tests pass.
+
+On Factorio the only change is the intended one: `assert` and `release_assert` statements are
+parsed as such and their conditions typed, so the two names left the unresolved list (identifiers
+unresolved 41,476 -> 34,494 in the "other" group, expressions typed 76.4% -> 76.9%); parse
+0.075 s, 99.27% of files clean, resolve 0.075 s, unchanged.
+
 ## Lessons
 
 - **Windows memory allocation serialises parallel work.** The first parser version allocated and

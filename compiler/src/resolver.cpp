@@ -309,6 +309,15 @@ struct GlobalScope::Impl
       opSymbols[i] = symbols.intern("operator" + std::string(punctuatorSpelling(P(i))));
     auto add = [&](const char* name, const Ty* t) { builtinNames.push_back({symbols.intern(name), t}); };
     add("int8_t", types.intType(8));
+    add("i8", types.intType(8));
+    add("i16", types.intType(16));
+    add("i32", types.intType(32));
+    add("i64", types.intType(64));
+    add("u8", types.intType(8, true));
+    add("u16", types.intType(16, true));
+    add("u32", types.intType(32, true));
+    add("u64", types.intType(64, true));
+    add("usize", types.sizeType());
     add("int16_t", types.intType(16));
     add("int32_t", types.intType(32));
     add("int64_t", types.intType(64));
@@ -2970,6 +2979,7 @@ struct GlobalScope::Impl
             walkParam(static_cast<ParamDecl*>(p));
           walkType(f->trailingReturn);
           walkExpr(f->requiresClause);
+          walkExpr(f->condition);
           for (const FunctionDecl::CtorInit& init : f->ctorInits)
           {
             Lookup l = impl.lookupQualified(init.member, scope, &locals, 0);
@@ -3139,6 +3149,7 @@ struct GlobalScope::Impl
           break;
         }
         case NodeKind::ExprStmt: walkExpr(static_cast<ExprStmt*>(s)->expr); break;
+        case NodeKind::AssertStmt: walkExpr(static_cast<AssertStmt*>(s)->cond); break;
         case NodeKind::DeclStmt:
           for (Decl* d : static_cast<DeclStmt*>(s)->decls)
             walkLocalDecl(d);
@@ -3253,6 +3264,7 @@ struct GlobalScope::Impl
       switch (e->kind)
       {
         case NodeKind::NameExpr: return record(e, resolveName(static_cast<NameExpr*>(e)));
+        case NodeKind::CallerExpr: return record(e, types.unknown()); // typed by the parameter it defaults
         case NodeKind::LiteralExpr: return record(e, typeOfLiteral(static_cast<LiteralExpr*>(e)));
         case NodeKind::ThisExpr: return record(e, thisType ? thisType : unknown(Why::Unsupported));
         case NodeKind::CallExpr: return record(e, typeOfCall(static_cast<CallExpr*>(e)));

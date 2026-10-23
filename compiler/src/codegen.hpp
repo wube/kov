@@ -15,4 +15,6 @@ struct CodegenResult
   size_t structs = 0;
 };
 
-CodegenResult generateLLVM(std::vector<std::unique_ptr<ParsedFile>>& files, GlobalScope& global, const SymbolTable& symbols);
+// debug: config::debug; `assert` statements compile to nothing when it is false.
+CodegenResult generateLLVM(std::vector<std::unique_ptr<ParsedFile>>& files, GlobalScope& global, const SymbolTable& symbols,
+                           bool debug = true);

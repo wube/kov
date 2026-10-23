@@ -1,0 +1,10 @@
+first at line 35 column 3 in main
+second at line 36 column 3 in main
+debug: shown
+windows
+build kind 1
+enter a
+enter b
+inside
+leave b
+leave a
