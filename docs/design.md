@@ -2,8 +2,8 @@
 
 Kov is a C++-like language with a new compiler built around one idea: **no includes at the
 deepest level of how the compiler works**, so that builds are orders of magnitude faster.
-Original proposal: https://github.com/wube/kov (language changes in the README,
-compilation model in `compilation/index.md`).
+The original proposal lives in this repository: [readme.md](../readme.md) (language changes)
+and [compilation/index.md](../compilation/index.md) (compilation model).
 
 This file records decisions that have been made. When a decision changes, update it here.
 
