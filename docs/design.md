@@ -201,7 +201,9 @@ qualified Kov names with parameter types, quoted, so there is no mangling scheme
    `Vector<T>`, virtual functions, lambdas, `HashMap`, `Optional` and `toString`/`println`
    and variadic templates with a type-safe `format` followed the same day, then the C header
    importer: `extern "C" import` of the UCRT and `windows.h`, see "C header import" in
-   prototype-results.md). Next inside this item: a first real program beyond tests.
+   prototype-results.md; the first real program, `programs/kovlex`, the Kov lexer in Kov, runs
+   as fast as its C++ transliteration on the Factorio corpus, 2026-10-24). Real programs live
+   under `programs/<name>/`.
 4. Macro replacements (section 7), the small ones first because real programs and the converter
    need them: `assert`/`release_assert`, caller location, `conditional` functions, `config`
    constants with `if constexpr` at every scope, `_` locals, attributes; then the ones that need

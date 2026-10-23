@@ -281,7 +281,7 @@ declarations. The preprocessed text is cached by content hash under the temp dir
 | import                              | declarations | parse errors | first build | cached  |
 |-------------------------------------|-------------:|-------------:|------------:|--------:|
 | stdio.h, string.h, math.h, stdlib.h |        3,575 |            0 |     0.085 s | 0.002 s |
-| windows.h, stdio.h                  |       44,856 |           18 |     0.195 s | 0.033 s |
+| windows.h, stdio.h                  |       40,678 |           17 |     0.195 s | 0.033 s |
 
 (The `imports:` line of kovc. The first-build time is the two clang invocations; the cached time
 is reading, lexing and parsing the preprocessed text on one thread.)
@@ -300,7 +300,8 @@ the builtin type, MSVC calling conventions dropped from the token stream in C mo
 macro-specifier heuristic switched off there (it was skipping `LONG` in `LONG const*`, the cause
 of 119 of the original 144 `windows.h` errors). The remaining 18 are `static` after
 `__declspec`, `POINTER_32` and a few expression forms; none affected the programs. `--errors N`
-lists them.
+lists them. (Declaration counts as of 2026-10-24, after the macro filter learned to keep `_A_SUBDIR`
+and drop SAL annotations whose bodies are calls.)
 
 One grammar decision fell out of it: `QueryPerformanceFrequency(&frequency);` parsed as a
 declaration of a reference `frequency` of type `QueryPerformanceFrequency` (the C++ reading of
@@ -327,6 +328,42 @@ On Factorio the only change is the intended one: `assert` and `release_assert` s
 parsed as such and their conditions typed, so the two names left the unresolved list (identifiers
 unresolved 41,476 -> 34,494 in the "other" group, expressions typed 76.4% -> 76.9%); parse
 0.075 s, 99.27% of files clean, resolve 0.075 s, unchanged.
+
+## First real program: kovlex (2026-10-24)
+
+`programs/kovlex/kovlex.kov` is the Kov lexer written in Kov: 575 lines, the C++ lexer of
+`compiler/src/lexer.cpp` ported line for line (symbol table over slices of the file texts, the
+same token layout without the bit fields, a directory walk through `io.h`, timing through
+`windows.h`). It needed one compiler fix on the way: the C importer dropped every macro with a
+leading underscore, so `_A_SUBDIR` did not exist; now only `__`-prefixed names stay out.
+kovc compiles it with the standard library (10 files, 1,132 lines) in 15 ms of its own work
+(parse 2 ms, index 5 ms, resolve 6 ms, codegen 2 ms; the cached `windows.h` import adds 34 ms),
+then clang spends 0.19 s on the 156 KB of IR.
+
+To separate code quality from algorithm, `kovlex.cpp` is the same program transliterated to C++
+(`std::vector`, `std::string`, `#include`), built with the same clang at -O2
+(`build_cpp.cmd`); `run.cmd` builds and times everything. On the Factorio corpus, one thread:
+
+| lexer | lex time | throughput | counts |
+|---|---:|---:|---|
+| kovlex, Kov | 0.139 s | 390 MB/s, 60.7 M tokens/s | 1,326,156 lines, 8,440,831 tokens, 98,907 identifiers, 0 errors |
+| kovlex, C++ transliteration | 0.144 s | 376 MB/s, 58.6 M tokens/s | identical |
+| kovc's lexer, `--lex-only -j 1` | 0.743 s | 73 MB/s, 11.4 M tokens/s | identical (plus the generated config file) |
+| kovc's lexer, 32 threads | 0.076 s | 716 MB/s | |
+
+(Three runs each, best shown; the spread is 0.139-0.142 s for Kov and 0.143-0.145 s for C++.
+Both binaries are 191,488 bytes.)
+
+So the code Kov generates for this program is the code clang generates for the C++ version: same
+backend, same instructions, within 3%. The 5x gap to kovc's own lexer is the thread-safe design
+of that lexer (a sharded `unordered_map` behind a `shared_mutex`, two lookups per word, a vector
+per file), not the language, and it says that lexer could be several times faster on 32 threads
+too.
+
+What the program exercised in Kov v0 for the first time together: C imports of four headers
+with their structs and constants, `Vector<T>` of structs and of `String`, references and
+pointers to members through `this->`, `switch` on characters, 64-bit arithmetic, `static`
+methods, default member initializers, recursion over directories, `main(argc, argv)`.
 
 ## Lessons
 

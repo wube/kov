@@ -185,20 +185,30 @@ namespace
       std::string body = line.substr(nameEnd + 1);
       while (!body.empty() && (body.back() == ' ' || body.back() == '\r'))
         body.pop_back();
-      if (name.empty() || name[0] == '_' || body.empty())
-        continue;
-      bool hasDigit = false, ok = true;
+      if (name.empty() || name.rfind("__", 0) == 0 || body.empty())
+        continue; // __FILE__-style internals stay out; _A_SUBDIR-style constants come in
+      bool hasNumber = false, ok = true, call = false;
       int quotes = 0;
-      for (char c : body)
+      for (size_t i = 0; i < body.size(); ++i)
       {
+        char c = body[i];
+        bool prevIdent = i > 0 && (isalnum((unsigned char)body[i - 1]) || body[i - 1] == '_');
         if (c == '"')
           ++quotes;
         else if (isdigit((unsigned char)c))
-          hasDigit = true;
+          hasNumber = hasNumber || !prevIdent; // a digit inside a name (_SAL1_1_) is not a number
         else if (!(isalnum((unsigned char)c) || strchr("_ .+-*/()<>|&~!^,'\\xX", c)))
           ok = false;
+        if (c == '(')
+        {
+          size_t j = i;
+          while (j > 0 && body[j - 1] == ' ')
+            --j;
+          if (j > 0 && (isalnum((unsigned char)body[j - 1]) || body[j - 1] == '_'))
+            call = true; // `name(`: a function-like macro or a call, not a constant; `)(` in casts is fine
+        }
       }
-      if (!ok || (quotes != 0 && quotes != 2) || (!hasDigit && quotes == 0))
+      if (!ok || call || (quotes != 0 && quotes != 2) || (!hasNumber && quotes == 0))
         continue;
       out += "const auto " + name + " = " + body + ";\n";
     }

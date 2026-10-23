@@ -12,6 +12,8 @@ simple templates, own standard library, C-only interop.
   clang-cl from VS 2022). Benchmarks live in `compiler/bench/`, test inputs in `compiler/tests/`.
 - `stdlib/`: the standard library, written in Kov and compiled from source with every program
   (`kovc` finds it next to the compiler; `--std DIR` or `--no-std` override that).
+- `programs/`: real Kov programs, one directory each (`kovlex`: the lexer in Kov, with its C++
+  transliteration and `run.cmd` timing both on the Factorio corpus).
 
 ## Machine
 - Work happens on PC-PRACOVNA (Windows 10, Ryzen 9 9950X 16C/32T, 128 GB RAM).
