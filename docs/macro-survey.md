@@ -54,15 +54,19 @@ builds), `LOG_D3D_ERROR`/`LOG_METAL_ERROR`/`OPENGL_INTERFACE_CHECK_ERRORS` (`__f
 Three things are needed, and they are the same three everywhere: the text of an expression, the
 caller's location, and "compile to nothing in this configuration, do not evaluate the arguments".
 
-Kov:
-- `assert(expr)` and `release_assert(expr)` are statements of the language. The compiler has the
+Kov answers with three parts that work together; they are not alternatives, each covers a
+different part of the list above:
+- For `assert` and `release_assert` (6,229 uses): `assert(expr)` and `release_assert(expr)` are
+  statements of the language. The compiler has the
   expression text and the location; a failed assert reports both and the values of the operands
   (it knows the AST, so `assert(a == b)` prints `a` and `b`). `assert` compiles to nothing when
   `config.debug` is false.
-- Any function can take an implicit caller location: a parameter declared `CallerLocation here =
-  caller` is filled at each call site. `logError("...", args...)` is then a plain variadic
+- For the `LOG_*` family, `LOG_AND_ABORT`, `LOG_ENUM_AND_ABORT` and the graphics error helpers
+  (about 3,100 uses): any function can take an implicit caller location. A parameter declared
+  `CallerLocation here = caller` is filled at each call site. `logError("...", args...)` is then a plain variadic
   function using the type-safe `format` (no `printf` attribute, see G).
-- A function can be declared conditional on a compile-time constant:
+- For what must vanish from a build (`LOG_DEBUG`, `LOG_VERBOSE`, `ZoneScoped`, dev-only tools):
+  a function can be declared conditional on a compile-time constant,
   `conditional(config.debugLog) void logDebug(...)`. When the condition is false, calls to it
   compile to nothing and their arguments are not evaluated. This covers the debug log levels,
   profiling zones (`ZoneScoped`) and dev-only tools without a macro per level.
