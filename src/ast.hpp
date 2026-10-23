@@ -125,7 +125,7 @@ struct QualifiedName
 // --- Types ---
 
 struct Type : Node {};
-struct NamedType : Type { QualifiedName name; bool typename_ = false; };
+struct NamedType : Type { QualifiedName name; bool typename_ = false; Decl* resolved = nullptr; };
 struct BuiltinType : Type { Kw keyword; uint8_t longCount = 0; bool isUnsigned = false, isSigned = false; };
 struct PointerType : Type { Type* pointee; };
 struct LRefType : Type { Type* referenced; };
@@ -154,6 +154,7 @@ enum DeclFlags : uint32_t
 
 enum class Access : uint8_t { Default, Public, Protected, Private };
 
+struct Scope;
 struct Decl : Node
 {
   uint32_t flags = 0;
@@ -161,6 +162,7 @@ struct Decl : Node
   Span<Decl*> templateParams; // TemplateParamDecl*. Non-empty for templates.
   bool isTemplate = false;    // `template<...>` was present (possibly empty for specializations).
   Decl* parent = nullptr;     // Lexically enclosing declaration, set by the parser.
+  Scope* ownScope = nullptr;  // Set by the resolver for namespaces, classes and enums.
 };
 
 struct NamespaceDecl : Decl { uint32_t name = UINT32_MAX; Span<Decl*> decls; bool isInline = false; QualifiedName nested; };
@@ -246,7 +248,7 @@ struct MacroStmt : Stmt { uint32_t name; };
 // --- Expressions ---
 
 struct Expr : Node {};
-struct NameExpr : Expr { QualifiedName name; };
+struct NameExpr : Expr { QualifiedName name; Decl* resolved = nullptr; };
 struct LiteralExpr : Expr { TokenKind literalKind; Kw keyword; }; // keyword for true/false/nullptr
 struct ThisExpr : Expr {};
 struct CallExpr : Expr { Expr* callee; Span<Expr*> args; };

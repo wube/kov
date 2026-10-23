@@ -1,7 +1,9 @@
 // kovc: the Kov compiler. Currently the speed-test prototype: parallel lexing of a file tree.
 #include "lexer.hpp"
 #include "parser.hpp"
+#include "resolver.hpp"
 #include "source.hpp"
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -19,6 +21,7 @@ namespace
     bool dumpTokens = false;
     bool parse = true;
     int showErrors = 20;
+    int showUnresolved = 25;
     int repeat = 1;
   };
 
@@ -63,6 +66,8 @@ namespace
   }
 
   double seconds(std::chrono::steady_clock::duration d);
+  void runResolve(std::vector<std::unique_ptr<ParsedFile>>& parsed, SymbolTable& symbols, const Options& options,
+                  std::vector<SourceFile>& files, std::vector<LexResult>& lexed);
 
   uint32_t lineOf(const std::string& text, uint32_t offset)
   {
@@ -110,6 +115,57 @@ namespace
         printf("  %s:%u: %s (at '%.*s')\n", files[i].path.string().c_str(), lineOf(files[i].text, t.offset), d.message,
                int(std::min<uint32_t>(t.length, 30)), files[i].text.data() + t.offset);
       }
+    runResolve(parsed, symbols, options, files, lexed);
+  }
+
+  void runResolve(std::vector<std::unique_ptr<ParsedFile>>& parsed, SymbolTable& symbols, const Options& options,
+                  std::vector<SourceFile>& files, std::vector<LexResult>& lexed)
+  {
+    using Clock = std::chrono::steady_clock;
+    GlobalScope global;
+    auto start = Clock::now();
+    parallelFor(parsed.size(), options.threads, [&](size_t i) { global.indexFile(*parsed[i]); });
+    double indexTime = seconds(Clock::now() - start);
+    start = Clock::now();
+    global.finishIndex();
+    double finishTime = seconds(Clock::now() - start);
+    printf("index:   %.3f s  (+%.3f s for out-of-line class definitions): %zu scopes, %zu entries\n", indexTime, finishTime,
+           global.scopeCount(), global.entryCount());
+
+    std::vector<ResolveStats> stats(parsed.size());
+    start = Clock::now();
+    for (size_t i = 0; i < stats.size(); ++i)
+      stats[i].fileIndex = uint32_t(i);
+    for (size_t i = 0; i < stats.size(); ++i)
+      stats[i].fileIndex = uint32_t(i);
+    parallelFor(parsed.size(), options.threads, [&](size_t i) { global.resolveFile(*parsed[i], symbols, stats[i]); });
+    double resolveTime = seconds(Clock::now() - start);
+    ResolveStats total;
+    for (const ResolveStats& s : stats)
+      total.add(s);
+    uint64_t types = total.typesResolved + total.typesDependent + total.typesUnresolved;
+    uint64_t names = total.namesLocal + total.namesMember + total.namesGlobal + total.namesDependent + total.namesUnresolved;
+    uint64_t project = total.typesUnresolved + total.namesUnresolved - total.qualifiedUnresolvedStd - total.unresolvedMacroLike;
+    printf("resolve: %.3f s\n", resolveTime);
+    printf("  type names:  %llu  (%.1f%% resolved, %.1f%% dependent on template parameters, %.1f%% unresolved)\n",
+           (unsigned long long)types, 100.0 * total.typesResolved / std::max<uint64_t>(1, types),
+           100.0 * total.typesDependent / std::max<uint64_t>(1, types), 100.0 * total.typesUnresolved / std::max<uint64_t>(1, types));
+    printf("  identifiers: %llu  (%.1f%% local, %.1f%% member, %.1f%% namespace/global, %.1f%% dependent, %.1f%% unresolved)\n",
+           (unsigned long long)names, 100.0 * total.namesLocal / std::max<uint64_t>(1, names),
+           100.0 * total.namesMember / std::max<uint64_t>(1, names), 100.0 * total.namesGlobal / std::max<uint64_t>(1, names),
+           100.0 * total.namesDependent / std::max<uint64_t>(1, names), 100.0 * total.namesUnresolved / std::max<uint64_t>(1, names));
+    printf("  member accesses deferred to type checking: %llu\n", (unsigned long long)total.membersDeferred);
+    printf("  unresolved: %llu std::, %llu macro-like, %llu other\n", (unsigned long long)total.qualifiedUnresolvedStd,
+           (unsigned long long)total.unresolvedMacroLike, (unsigned long long)project);
+    std::vector<std::pair<uint32_t, uint32_t>> top(total.unresolvedSymbols.begin(), total.unresolvedSymbols.end());
+    std::sort(top.begin(), top.end(), [](auto& a, auto& b) { return a.second > b.second; });
+    for (size_t i = 0; i < top.size() && int(i) < options.showUnresolved; ++i)
+    {
+      ResolveStats::Where w = total.unresolvedFirst[top[i].first];
+      const Token& t = lexed[w.file].tokens[std::min<size_t>(w.token, lexed[w.file].tokens.size() - 1)];
+      printf("    %6u  %-28.*s first at %s:%u\n", top[i].second, int(symbols.name(top[i].first).size()),
+             symbols.name(top[i].first).data(), files[w.file].path.string().c_str(), lineOf(files[w.file].text, t.offset));
+    }
   }
 
   double seconds(std::chrono::steady_clock::duration d)
@@ -148,6 +204,8 @@ int main(int argc, char** argv)
       options.parse = false;
     else if (arg == "--errors" && i + 1 < argc)
       options.showErrors = atoi(argv[++i]);
+    else if (arg == "--unresolved" && i + 1 < argc)
+      options.showUnresolved = atoi(argv[++i]);
     else if (arg[0] == '-')
     {
       usage();

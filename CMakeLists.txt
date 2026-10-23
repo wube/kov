@@ -13,6 +13,7 @@ add_executable(kovc
   src/main.cpp
   src/lexer.cpp
   src/parser.cpp
+  src/resolver.cpp
   src/source.cpp
 )
 target_include_directories(kovc PRIVATE src)
