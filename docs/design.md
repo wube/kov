@@ -106,9 +106,11 @@ one-line change in a widely used header.
       `new`, `auto` deduction, range-for element types, lambdas (return type from the body).
    4. Member accesses through the object's type: this binds the accesses the resolver had to
       defer and is the first real use of class template instantiation.
-   5. Later: checking template bodies per instantiation (exactly once, with the wait/produce
-      protocol from the proposal), full overload resolution with conversions, constexpr
-      evaluation.
+   5. Checking template bodies per instantiation, exactly once, with the produce/wait protocol
+      from the proposal (done 2026-10-23: 4,100 instantiations, 17,000 bodies, under 0.1 s of
+      CPU on Factorio).
+   6. Later: full overload resolution with conversions, members through templated bases,
+      constexpr evaluation, per-instantiation diagnostics and expression types.
 3. Compiler that runs real Kov programs via LLVM.
 3. Standard library, C import, converter from Factorio-style C++ to Kov.
 4. Persistent compiler + IDE integration.

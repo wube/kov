@@ -37,6 +37,8 @@ struct ResolveStats
   uint64_t unknownName = 0, unknownBase = 0, unknownMember = 0, unknownOverload = 0, unknownDeduction = 0,
            unknownAutoReturn = 0, unknownUnsupported = 0, unknownOperator = 0, unknownAuto = 0;
   uint64_t callsResolved = 0, callsAmbiguousArity = 0;
+  // Expressions typed while checking template bodies for an instantiation (also included above).
+  uint64_t instExprsTyped = 0, instExprsDependent = 0, instExprsUnknown = 0;
 
   void add(const ResolveStats& o);
 };
@@ -57,6 +59,13 @@ public:
   size_t scopeCount() const;
   size_t entryCount() const;
   size_t typeCount() const;
+  struct InstantiationStats
+  {
+    size_t classes, functions, bodies, requests, waits;
+    double seconds;
+  };
+  InstantiationStats instantiationStats() const;
+
 
 private:
   struct Impl;

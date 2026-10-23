@@ -169,8 +169,10 @@ enum class Access : uint8_t { Default, Public, Protected, Private };
 
 struct Scope;
 struct Ty;
+struct ParsedFile;
 struct Decl : Node
 {
+  ParsedFile* file = nullptr; // The file this declaration was parsed from.
   uint32_t flags = 0;
   Access access = Access::Default;
   Span<Decl*> templateParams; // TemplateParamDecl*. Non-empty for templates.
@@ -297,6 +299,8 @@ struct ParsedFile
 {
   Arena arena;
   Span<Decl*> decls;
+  const std::vector<Token>* tokens = nullptr; // Set by parseFile; the driver keeps the vector alive.
+  std::string_view text;
   std::vector<Diagnostic> diagnostics;
   uint32_t declCount = 0; // All declaration nodes created.
   uint32_t functionBodies = 0;

@@ -103,7 +103,10 @@ namespace
         continue;
       if (round > 0)
         for (size_t i = 0; i < files.size(); ++i)
+        {
           lexed[i].tokens = std::move(tokens[i]);
+          parsed[i]->tokens = &lexed[i].tokens;
+        }
     }
     uint64_t decls = 0, bodies = 0, nodes = 0, errors = 0, filesWithErrors = 0, arenaBytes = 0, lines = 0;
     for (size_t i = 0; i < files.size(); ++i)
@@ -190,6 +193,13 @@ namespace
            (unsigned long long)total.unknownAuto, (unsigned long long)total.unknownOperator, (unsigned long long)total.unknownUnsupported);
     printf("  calls resolved to a function: %llu (%llu with several arity matches)\n", (unsigned long long)total.callsResolved,
            (unsigned long long)total.callsAmbiguousArity);
+    GlobalScope::InstantiationStats inst = global.instantiationStats();
+    uint64_t instExprs = total.instExprsTyped + total.instExprsDependent + total.instExprsUnknown;
+    printf("instantiate: %zu class and %zu function template instantiations checked once each (%zu requests, %zu waits), %.3f s of CPU\n",
+           inst.classes, inst.functions, inst.requests, inst.waits, inst.seconds);
+    printf("  %zu member bodies checked inside instantiations; %llu expressions there (%.1f%% typed, %.1f%% dependent, %.1f%% unknown)\n",
+           inst.bodies, (unsigned long long)instExprs, 100.0 * total.instExprsTyped / std::max<uint64_t>(1, instExprs),
+           100.0 * total.instExprsDependent / std::max<uint64_t>(1, instExprs), 100.0 * total.instExprsUnknown / std::max<uint64_t>(1, instExprs));
     std::vector<std::pair<uint32_t, uint32_t>> missing(total.missingMembers.begin(), total.missingMembers.end());
     std::sort(missing.begin(), missing.end(), [](auto& a, auto& b) { return a.second > b.second; });
     if (!missing.empty() && options.showUnresolved > 0)

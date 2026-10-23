@@ -148,10 +148,36 @@ unknown expressions, 52k are unresolved names, 75k an unknown object type, 11k `
 initialised from such expressions, 6k constructs not modelled yet (brace initialisers,
 `typeid`, folds).
 
-Not done yet, in order of value: checking template bodies once per instantiation with the
-proposal's produce/wait protocol (the real test of the template design), implicit conversions
-in overload resolution, members inherited through templated bases (`Derived<int> : Base<T>`
-currently stays dependent), constexpr evaluation.
+Not done at this stage: implicit conversions in overload resolution, members inherited through
+templated bases (`Derived<int> : Base<T>` currently stays dependent), constexpr evaluation.
+
+## Stage 3: template bodies checked once per instantiation (2026-10-23)
+
+This is the proposal's template model made concrete: an instantiation is a (template,
+arguments) pair; the first thread that needs it claims it in a shared registry and checks the
+bodies, any other thread finds it done or in progress and only waits if it needs a result (the
+deduced return type of an `auto` function). Class template instantiations check every member
+function body, including out-of-line `void Foo<T>::f()` definitions, which the indexer now
+attaches to their class. Function template instantiations check the body with the deduced
+arguments plus the class arguments of the object they were called on.
+
+| | |
+|---|---|
+| class template instantiations checked | 953 |
+| function template instantiations checked | 3,166 |
+| requests that found the work done or in progress | 59,702 requests in total, 0 waits |
+| member bodies checked inside instantiations | 17,001 |
+| expressions typed inside instantiations | 293,899 (62% typed, 9% dependent, 29% unknown) |
+| CPU spent on instantiation checking | 0.06 s single-threaded, 0.16 s summed over 32 threads |
+| resolve + check + instantiate, wall time | **0.031 s** on 32 threads, 0.33 s single-threaded |
+
+So for Factorio, "each instantiation exactly once" is about 4,000 instantiations and 17,000
+bodies, and it costs less than a tenth of a second of CPU. The remaining dependent and unknown
+expressions inside instantiations come from templated base classes, member templates and the
+same std-library holes as everywhere else. Two simplifications to remove later: expression types
+are stored on the shared AST node, so the last instantiation checked wins (a per-instantiation
+side table is the proper home), and the member-body check does not yet record diagnostics per
+instantiation.
 
 ## Lessons
 

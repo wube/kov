@@ -1,6 +1,7 @@
 #include "resolver.hpp"
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -48,6 +49,9 @@ void ResolveStats::add(const ResolveStats& o)
   unknownAuto += o.unknownAuto;
   callsResolved += o.callsResolved;
   callsAmbiguousArity += o.callsAmbiguousArity;
+  instExprsTyped += o.instExprsTyped;
+  instExprsDependent += o.instExprsDependent;
+  instExprsUnknown += o.instExprsUnknown;
 }
 
 // --- Scope tree ---------------------------------------------------------------------------
@@ -88,6 +92,7 @@ struct Scope
   std::vector<Scope*> usingEnumScopes;
   std::atomic<int> usingEnumState{0};
   Span<Decl*> templateParams; // Of the owning class template.
+  std::vector<FunctionDecl*> outOfLineMembers; // `void Foo<T>::f() {}` definitions, attached by finishIndex.
 
   Scope(ScopeKind kind, Scope* parent, Decl* owner, uint32_t shardCount)
     : kind(kind), parent(parent), owner(owner), shards(new Shard[shardCount]), shardCount(shardCount)
@@ -208,7 +213,79 @@ struct GlobalScope::Impl
   Scope root{ScopeKind::Namespace, nullptr, nullptr, 256};
   std::mutex deferredMutex;
   std::vector<std::pair<Decl*, Scope*>> deferredQualified; // Out-of-line class/enum definitions.
+  std::vector<std::pair<FunctionDecl*, Scope*>> deferredFunctions; // Out-of-line member function definitions.
   std::atomic<size_t> scopes{1};
+
+  // ---- template instantiations: each (template, arguments) pair is checked exactly once ----
+  struct Instantiation
+  {
+    std::atomic<int> state{0}; // 0 claimed-not-started is never visible: created in state 1 by the producer.
+    std::thread::id owner;
+    const Ty* deducedReturn = nullptr; // For function templates with `auto` return.
+  };
+  struct InstShard
+  {
+    std::mutex mutex;
+    std::unordered_map<const Ty*, std::unique_ptr<Instantiation>> classes;
+    std::unordered_map<std::string, std::unique_ptr<Instantiation>> functions; // key: decl + arg pointers
+  };
+  static constexpr uint32_t instShardCount = 64;
+  InstShard instShards[instShardCount];
+  std::atomic<size_t> instClasses{0}, instFunctions{0}, instBodies{0}, instRequests{0}, instWaits{0};
+  std::atomic<uint64_t> instNanos{0};
+
+  // Returns the record and whether the caller just became its producer.
+  Instantiation* claimClass(const Ty* classTy, bool& producer)
+  {
+    ++instRequests;
+    InstShard& shard = instShards[(reinterpret_cast<uintptr_t>(classTy) >> 4) % instShardCount];
+    std::lock_guard lock(shard.mutex);
+    auto it = shard.classes.find(classTy);
+    if (it != shard.classes.end())
+    {
+      producer = false;
+      return it->second.get();
+    }
+    auto inst = std::make_unique<Instantiation>();
+    inst->state.store(1);
+    inst->owner = std::this_thread::get_id();
+    Instantiation* result = inst.get();
+    shard.classes.emplace(classTy, std::move(inst));
+    producer = true;
+    ++instClasses;
+    return result;
+  }
+
+  Instantiation* claimFunction(FunctionDecl* f, const Subst& subst, bool& producer)
+  {
+    ++instRequests;
+    std::string key(reinterpret_cast<const char*>(&f), sizeof(f));
+    for (const Subst::Pair& pair : subst.pairs)
+    {
+      key.append(reinterpret_cast<const char*>(&pair.param), sizeof(pair.param));
+      key.append(reinterpret_cast<const char*>(&pair.type), sizeof(pair.type));
+    }
+    uint64_t h = 1469598103934665603ull;
+    for (unsigned char c : key)
+      h = (h ^ c) * 1099511628211ull;
+    InstShard& shard = instShards[h % instShardCount];
+    std::lock_guard lock(shard.mutex);
+    auto it = shard.functions.find(key);
+    if (it != shard.functions.end())
+    {
+      producer = false;
+      return it->second.get();
+    }
+    auto inst = std::make_unique<Instantiation>();
+    inst->state.store(1);
+    inst->owner = std::this_thread::get_id();
+    Instantiation* result = inst.get();
+    shard.functions.emplace(std::move(key), std::move(inst));
+    producer = true;
+    ++instFunctions;
+    return result;
+  }
+
   std::atomic<size_t> entries{0};
   uint32_t symStd;
   uint32_t opSymbols[size_t(P::Count)]; // "operator+" etc., so operators can be looked up by name.
@@ -392,6 +469,11 @@ struct GlobalScope::Impl
             scope->add(symbol, f, nullptr);
             ++entries;
           }
+        }
+        else if (f->name.parts.size() > 1 && f->body)
+        {
+          std::lock_guard lock(deferredMutex);
+          deferredFunctions.push_back({f, scope});
         }
         break;
       }
@@ -1205,6 +1287,8 @@ struct GlobalScope::Impl
     LocalStack locals;
     Scope* scope;            // Current lexical/semantic scope.
     const Ty* thisType = nullptr;
+    const Subst* activeSubst = nullptr; // Set while checking a template body for an instantiation.
+    int instantiationDepth = 0;
     // Return statements inside lambdas / auto functions record their type here.
     std::vector<const Ty*> returnFrames;
 
@@ -1276,7 +1360,148 @@ struct GlobalScope::Impl
       return t;
     }
 
-    TypeContext ctx() const { return TypeContext{scope, &locals, nullptr}; }
+    TypeContext ctx() const { return TypeContext{scope, &locals, activeSubst}; }
+
+    // --- template instantiation: check bodies once per (template, arguments) ---
+
+    static bool argsConcrete(TypeTable& types, const Ty* t)
+    {
+      if (!t || t->kind != TyKind::Class || t->args.empty())
+        return false;
+      for (const Ty* a : t->args)
+        if (!a->isKnown() || types.isDependent(a))
+          return false;
+      return true;
+    }
+
+    // Runs `body` as a sub-check with the given substitution, scope and this-type, in the
+    // context of the template's own file. Expression statistics are merged into ours.
+    template<typename F>
+    void subCheck(Decl* templ, const Subst& subst, Scope* bodyScope, const Ty* bodyThis, F&& body)
+    {
+      ParsedFile* file = templ->file;
+      if (!file || !file->tokens)
+        return;
+      ResolveStats local;
+      local.fileIndex = stats.fileIndex;
+      Walker sub(impl, local, *file->tokens, file->text);
+      sub.scope = bodyScope;
+      sub.thisType = bodyThis;
+      sub.activeSubst = &subst;
+      sub.instantiationDepth = instantiationDepth + 1;
+      for (Decl* p : templ->templateParams)
+        sub.locals.push(static_cast<TemplateParamDecl*>(p)->name, p);
+      body(sub);
+      local.instExprsTyped += local.exprsTyped;
+      local.instExprsDependent += local.exprsDependent;
+      local.instExprsUnknown += local.exprsUnknown;
+      stats.add(local);
+    }
+
+    void checkMemberBody(Walker& sub, FunctionDecl* f, const Subst& classSubst)
+    {
+      // Out-of-line members carry their own template parameter list; map it positionally.
+      Subst merged = classSubst;
+      Decl* cls = sub.scope->owner;
+      if (cls && f->templateParams.size() == cls->templateParams.size() && f->parent != cls)
+        for (size_t i = 0; i < f->templateParams.size(); ++i)
+          if (const Ty* t = classSubst.find(cls->templateParams[i]))
+            merged.pairs.push_back({f->templateParams[i], t});
+      sub.activeSubst = &merged;
+      size_t mark = sub.locals.mark();
+      if (f->parent != cls)
+        for (Decl* p : f->templateParams)
+          sub.locals.push(static_cast<TemplateParamDecl*>(p)->name, p);
+      sub.walkDecl(f);
+      sub.locals.pop(mark);
+      sub.activeSubst = &classSubst;
+      ++impl.instBodies;
+    }
+
+    // Checks every member function body of a class template for one instantiation, once.
+    void instantiateClass(const Ty* classTy)
+    {
+      if (instantiationDepth > 16 || !argsConcrete(types, classTy) || !classTy->decl || !classTy->decl->ownScope)
+        return;
+      if (!classTy->decl->isTemplate || classTy->decl->templateParams.empty())
+        return;
+      bool producer;
+      Impl::Instantiation* inst = impl.claimClass(classTy, producer);
+      if (!producer)
+        return; // Done or being done by someone else; nothing here needs its result.
+      auto start = std::chrono::steady_clock::now();
+      Subst subst = impl.substFor(classTy);
+      Scope* cls = classTy->decl->ownScope;
+      subCheck(classTy->decl, subst, cls, types.pointer(classTy), [&](Walker& sub)
+      {
+        auto* c = static_cast<ClassDecl*>(classTy->decl);
+        for (Decl* m : c->members)
+          if (m->kind == NodeKind::FunctionDecl && static_cast<FunctionDecl*>(m)->body && m->templateParams.empty())
+            checkMemberBody(sub, static_cast<FunctionDecl*>(m), subst);
+        for (FunctionDecl* f : cls->outOfLineMembers)
+          if (f->body)
+            checkMemberBody(sub, f, subst);
+      });
+      impl.instNanos += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
+      inst->state.store(2, std::memory_order_release);
+    }
+
+    // Checks a function template body for one set of deduced arguments, once. Returns the
+    // deduced return type when the function returns `auto` (waiting for another producer).
+    const Ty* instantiateFunction(FunctionDecl* f, const Subst& subst, bool needReturn, const Subst* classSubst = nullptr,
+                                  const Ty* objectType = nullptr)
+    {
+      for (Decl* p : f->templateParams)
+        if (!subst.find(p) || types.isDependent(subst.find(p)) || !subst.find(p)->isKnown())
+          return nullptr;
+      if (!f->body || instantiationDepth > 16)
+        return nullptr;
+      if (classSubst)
+        for (const Subst::Pair& pair : classSubst->pairs)
+          if (!pair.type->isKnown() || types.isDependent(pair.type))
+            return nullptr;
+      Subst full = subst;
+      if (classSubst)
+        for (const Subst::Pair& pair : classSubst->pairs)
+          if (!full.find(pair.param))
+            full.pairs.push_back(pair);
+      bool producer;
+      Impl::Instantiation* inst = impl.claimFunction(f, full, producer);
+      if (!producer)
+      {
+        if (!needReturn)
+          return nullptr;
+        if (inst->owner == std::this_thread::get_id())
+          return nullptr; // Recursive auto function.
+        if (inst->state.load(std::memory_order_acquire) != 2)
+        {
+          ++impl.instWaits;
+          while (inst->state.load(std::memory_order_acquire) != 2)
+            std::this_thread::yield();
+        }
+        return inst->deducedReturn;
+      }
+      auto start = std::chrono::steady_clock::now();
+      Scope* bodyScope = f->name.parts.size() > 1 ? semanticScopeFor(f->name) : impl.lexicalScopeOf(f);
+      const Ty* bodyThis = nullptr;
+      if (objectType)
+        bodyThis = types.pointer(types.unqualified(types.stripRef(objectType)));
+      else if (Decl* cls = enclosingClassDecl(bodyScope))
+        bodyThis = types.pointer(impl.substitute(impl.selfType(cls), full));
+      const Ty* deduced = nullptr;
+      subCheck(f, full, bodyScope, bodyThis, [&](Walker& sub)
+      {
+        sub.returnFrames.push_back(nullptr);
+        sub.walkDecl(f);
+        deduced = sub.returnFrames.back();
+        sub.returnFrames.pop_back();
+        ++impl.instBodies;
+      });
+      inst->deducedReturn = deduced ? types.decay(deduced) : nullptr;
+      impl.instNanos += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
+      inst->state.store(2, std::memory_order_release);
+      return inst->deducedReturn;
+    }
 
     // --- names ---
 
@@ -1318,7 +1543,7 @@ struct GlobalScope::Impl
       {
         case NodeKind::VariableDecl:
         {
-          const Ty* t = impl.declaredTypeOf(d, nullptr, 0);
+          const Ty* t = impl.declaredTypeOf(d, activeSubst, 0);
           if (impl.containsAuto(t))
           {
             // A local whose initializer was typed already has its deduced type cached by the
@@ -1332,13 +1557,13 @@ struct GlobalScope::Impl
         }
         case NodeKind::ParamDecl:
         {
-          const Ty* t = impl.declaredTypeOf(d, nullptr, 0);
+          const Ty* t = impl.declaredTypeOf(d, activeSubst, 0);
           return impl.containsAuto(t) ? unknown(Why::Auto) : t;
         }
         case NodeKind::EnumeratorDecl:
           return impl.declaredTypeOf(d, nullptr, 0);
         case NodeKind::FunctionDecl:
-          return impl.declaredTypeOf(d, nullptr, 0);
+          return impl.declaredTypeOf(d, activeSubst, 0);
         case NodeKind::ClassDecl:
         case NodeKind::EnumDecl:
         case NodeKind::UsingAliasDecl:
@@ -1348,7 +1573,7 @@ struct GlobalScope::Impl
           return impl.typeOfTypeDecl(d, l, lastPart, c, 0);
         }
         case NodeKind::TemplateParamDecl:
-          return impl.declaredTypeOf(d, nullptr, 0);
+          return impl.declaredTypeOf(d, activeSubst, 0);
         case NodeKind::NamespaceDecl:
           return unknown(Why::Unsupported);
         default:
@@ -1381,7 +1606,7 @@ struct GlobalScope::Impl
         case Found::Dependent: ++stats.namesDependent; break;
       }
       if (l.found == Found::Dependent)
-        return l.decl ? impl.declaredTypeOf(l.decl, nullptr, 0) : types.unknown();
+        return l.decl ? impl.declaredTypeOf(l.decl, activeSubst, 0) : types.unknown();
       // Members of the current class template keep their dependent types; members reached
       // through a qualified name on an instantiation get substituted.
       if (e->name.parts.size() > 1 && l.found == Found::Member && l.foundIn && l.foundIn->owner &&
@@ -1508,6 +1733,8 @@ struct GlobalScope::Impl
       r.decl = l.decl;
       r.overloads = l.overloads;
       r.subst = impl.substFor(t);
+      if (!r.subst.empty())
+        instantiateClass(types.unqualified(t));
       if (l.found == Found::Dependent)
       {
         r.type = types.param(l.decl);
@@ -1644,13 +1871,31 @@ struct GlobalScope::Impl
         autoReturn = true;
       if (autoReturn)
       {
+        if (!f->templateParams.empty())
+        {
+          Subst s = classSubst ? *classSubst : Subst{};
+          const Ty* fnTy = impl.declaredTypeOf(f, classSubst, 0);
+          if (namePart)
+            for (size_t i = 0; i < namePart->templateArgs.size() && i < f->templateParams.size(); ++i)
+            {
+              Node* arg = namePart->templateArgs[i];
+              if (uint8_t(arg->kind) <= uint8_t(NodeKind::PackType))
+                s.pairs.push_back({f->templateParams[i], typeOf(static_cast<Type*>(arg))});
+            }
+          for (size_t i = 0; i < fnTy->args.size() && i < args.size(); ++i)
+            if (args[i]->ty)
+              impl.deduce(fnTy->args[i], args[i]->ty, s);
+          if (const Ty* r = instantiateFunction(f, s, true, classSubst))
+            return r;
+          return unknown(Why::AutoReturn);
+        }
         if (const Ty* cached = f->cachedType.load(std::memory_order_acquire))
           if (cached->kind == TyKind::Function && cached->inner->kind != TyKind::Auto)
             return classSubst ? impl.substitute(cached->inner, *classSubst) : cached->inner;
         return unknown(Why::AutoReturn);
       }
       Subst subst = classSubst ? *classSubst : Subst{};
-      const Ty* fnTy = impl.declaredTypeOf(f, classSubst, 0);
+      const Ty* fnTy = impl.declaredTypeOf(f, classSubst ? classSubst : activeSubst, 0);
       if (!f->templateParams.empty())
       {
         // Explicit template arguments first, then deduction from the arguments.
@@ -1667,6 +1912,8 @@ struct GlobalScope::Impl
         const Ty* result = impl.substitute(fnTy->inner, subst);
         if (impl.dependsOn(result, f->templateParams))
           return unknown(Why::Deduction);
+        if (!types.isDependent(result))
+          instantiateFunction(f, subst, false, classSubst);
         return result;
       }
       return fnTy->inner;
@@ -2262,7 +2509,8 @@ struct GlobalScope::Impl
             scope = c->ownScope;
           else if (c->name.parts.size() > 1)
             scope = semanticScopeFor(c->name);
-          thisType = computeThisType();
+          if (!activeSubst || c->ownScope != scope)
+            thisType = computeThisType();
           walkDecls(c->members);
           scope = saved;
           thisType = savedThis;
@@ -2291,7 +2539,8 @@ struct GlobalScope::Impl
           if (f->name.parts.size() > 1)
           {
             scope = semanticScopeFor(f->name);
-            thisType = computeThisType();
+            if (!activeSubst)
+              thisType = computeThisType();
           }
           for (const NamePart& part : f->name.parts)
           {
@@ -2351,12 +2600,14 @@ struct GlobalScope::Impl
           walkExpr(v->init);
           scope = saved;
           // Deduce `auto` now that the initializer is typed, and cache it on the declaration.
-          const Ty* declared = impl.declaredTypeOf(v, nullptr, 0);
+          const Ty* declared = impl.declaredTypeOf(v, activeSubst, 0);
           if (impl.containsAuto(declared))
           {
             const Ty* deduced = v->init && v->init->ty ? impl.deduceAuto(declared, v->init->ty) : types.unknown();
-            if (deduced->isKnown())
+            if (deduced->isKnown() && !activeSubst)
               v->cachedType.store(deduced, std::memory_order_release);
+            else if (deduced->isKnown())
+              locals.push(UINT32_MAX, nullptr); // Keep stack shape; deduced types inside instantiations are not cached.
             else
               ++stats.unknownAuto;
           }
@@ -2504,7 +2755,7 @@ struct GlobalScope::Impl
           const Ty* range = walkExpr(f->range);
           auto* v = static_cast<VariableDecl*>(f->var);
           walkType(v->type);
-          const Ty* declared = impl.declaredTypeOf(v, nullptr, 0);
+          const Ty* declared = impl.declaredTypeOf(v, activeSubst, 0);
           if (impl.containsAuto(declared))
           {
             const Ty* element = elementTypeOf(range);
@@ -2681,7 +2932,7 @@ struct GlobalScope::Impl
           for (Decl* p : l->params)
           {
             walkParam(static_cast<ParamDecl*>(p));
-            params.push_back(impl.declaredTypeOf(p, nullptr, 0));
+            params.push_back(impl.declaredTypeOf(p, activeSubst, 0));
           }
           walkType(l->returnType);
           const Ty* result = nullptr;
@@ -2768,6 +3019,19 @@ void GlobalScope::finishIndex()
       impl->indexDecl(d, l.scope);
     }
   }
+  // Attach out-of-line member function definitions to their class scope.
+  for (auto& [f, context] : impl->deferredFunctions)
+  {
+    QualifiedName qualifier = f->name;
+    qualifier.parts.count -= 1;
+    LocalStack params;
+    for (Decl* p : f->templateParams)
+      params.push(static_cast<TemplateParamDecl*>(p)->name, p);
+    Lookup l = impl->lookupQualified(qualifier, context, &params, 0);
+    if (l.scope && l.scope->kind == ScopeKind::Class)
+      l.scope->outOfLineMembers.push_back(f);
+  }
+  impl->deferredFunctions.clear();
 }
 
 void GlobalScope::resolveFile(ParsedFile& file, const std::vector<Token>& tokens, std::string_view text, ResolveStats& stats)
@@ -2779,3 +3043,9 @@ void GlobalScope::resolveFile(ParsedFile& file, const std::vector<Token>& tokens
 size_t GlobalScope::scopeCount() const { return impl->scopes.load(); }
 size_t GlobalScope::entryCount() const { return impl->entries.load(); }
 size_t GlobalScope::typeCount() const { return impl->types.size(); }
+
+GlobalScope::InstantiationStats GlobalScope::instantiationStats() const
+{
+  return {impl->instClasses.load(), impl->instFunctions.load(), impl->instBodies.load(), impl->instRequests.load(),
+          impl->instWaits.load(), impl->instNanos.load() / 1e9};
+}

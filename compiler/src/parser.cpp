@@ -267,6 +267,7 @@ namespace
       T* d = node<T>(token);
       d->parent = currentParent;
       d->access = currentAccess;
+      d->file = &out;
       ++out.declCount;
       return d;
     }
@@ -3552,6 +3553,8 @@ namespace
 void parseFile(std::vector<Token>& tokens, std::string_view text, SymbolTable& symbols, ParsedFile& out)
 {
   filterDirectives(tokens, text);
+  out.tokens = &tokens;
+  out.text = text;
   out.arena.reserve(tokens.size() * 40 + 4096); // Measured: about 30 bytes of AST per token.
   Parser parser(tokens, text, symbols, out);
   parser.parseTranslationUnit();
