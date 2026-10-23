@@ -304,7 +304,10 @@ qualified Kov names with parameter types, quoted, so there is no mangling scheme
    need them: `assert`/`release_assert`, caller location, `conditional` functions, `config`
    constants with `if constexpr` at every scope, `_` locals, attributes; then the ones that need
    design work: reflection, `for constexpr`, typed unions, real enums, tests.
-5. Backend at Factorio scale: measure clang on whole-program IR for a large program, then
-   in-process LLVM, parallel per-function codegen, per-function caching, debug-build speed.
+5. Backend at Factorio scale (first measurement 2026-10-24, see prototype-results.md "Backend at
+   scale": for 73 k functions LLVM needs 5 s at -O0 and 109 s at -O2 on one thread, kovc 0.84 s
+   for everything before it). Next: codegen parallel per file, one module per file compiled in
+   parallel; then per-function caching for incremental release builds; cross-module inlining;
+   in-process LLVM instead of clang.exe when the textual round trip shows up in the numbers.
 6. Persistent compiler + IDE integration: the one-line-change rebuild (16 s in Factorio today).
 7. Converter from Factorio-style C++ to Kov (needs 4).

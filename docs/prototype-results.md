@@ -378,6 +378,41 @@ reference to the enum and gives `values` the array type `E[count]`, codegen fold
 `values` as a constant array and `str()` as a switch, and passes the enum value by address as
 `this`. Factorio unchanged (0.075 s parse, 99.27% clean, 0.081 s resolve).
 
+## Backend at scale: first measurement (2026-10-24)
+
+`compiler/bench/synth_program.py N` generates N modules of 10 classes each (fields, a
+constructor, five arithmetic methods, two virtual overrides of a shared base, a method using
+`Vector<int>` and calling a class of the next module, one `runModule` function per module, a
+`main` that touches everything), about 300 lines per module, inside the v0 subset. kovc compiles
+it into one IR module; clang is then timed on that module alone, single-threaded, with the
+32-thread machine otherwise idle:
+
+| classes | lines | functions | IR | kovc, all phases | clang -O0 | clang -O1 | clang -O2 |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 100 | 7.7 k | 965 | 1.5 MB | 0.016 s | | | 1.40 s |
+| 500 | 38 k | 4,605 | 7.3 MB | 0.053 s | 0.37 s | 5.4 s | 6.7 s |
+| 2,000 | 154 k | 18,255 | 29 MB | 0.21 s | 1.22 s | 22.1 s | 26.8 s |
+| 8,000 | 615 k | 72,855 | 117 MB | 0.84 s | 4.98 s | | 108.8 s |
+
+(kovc's 0.84 s at 8,000 classes is parse 0.037 + index 0.011 + resolve 0.064 + codegen 0.728,
+the last single-threaded. At -O0, 4.72 s of the 4.98 are compilation and 0.25 s the lld link.
+Peak working set: kovc 596 MB, clang -O0 1,349 MB. Everything scales linearly with size.)
+
+The 8,000-class program has as many function bodies as Factorio (73 k against 71 k), so per
+function LLVM costs about 65 microseconds at -O0 and 1.5 ms at -O2, and the whole front end
+plus IR writing about 12 microseconds. What follows for the design:
+
+- The code generator must be parallel per file, each file its own module text, which is also
+  what lets the LLVM side run in parallel. On 32 cores a Factorio-sized debug build would then
+  be about 0.3 s of front end, a few hundredths of codegen and 0.2 s of LLVM -O0 plus the link,
+  against 62 s today; a release build about 4 s of -O2 plus the link, against minutes.
+- Debug builds can stay on LLVM -O0 for now; an own fast backend only pays once everything
+  else is below a second.
+- Release builds are LLVM -O2 and nothing else: per-function caching keyed by the IR text (the
+  incremental case) and cross-module inlining (a ThinLTO-like pass over the per-file modules)
+  are the two things worth doing there, in that order.
+- Memory is not a concern at this size.
+
 ## Lessons
 
 - **Windows memory allocation serialises parallel work.** The first parser version allocated and
