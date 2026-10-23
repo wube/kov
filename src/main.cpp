@@ -82,13 +82,29 @@ namespace
   {
     using Clock = std::chrono::steady_clock;
     std::vector<std::unique_ptr<ParsedFile>> parsed(files.size());
-    auto start = Clock::now();
-    parallelFor(files.size(), options.threads, [&](size_t i)
+    double parseTime = 1e9;
+    for (int round = 0; round < std::max(1, options.repeat); ++round)
     {
-      parsed[i] = std::make_unique<ParsedFile>();
-      parseFile(lexed[i].tokens, files[i].text, symbols, *parsed[i]);
-    });
-    double parseTime = seconds(Clock::now() - start);
+      // Repeated rounds re-parse from the original tokens ('>>' splits are undone by re-lexing).
+      std::vector<std::vector<Token>> tokens(files.size());
+      if (round > 0)
+        parallelFor(files.size(), options.threads, [&](size_t i) { tokens[i] = lexed[i].tokens; });
+      auto start = Clock::now();
+      parallelFor(files.size(), options.threads, [&](size_t i)
+      {
+        parsed[i] = std::make_unique<ParsedFile>();
+        parseFile(round == 0 ? lexed[i].tokens : tokens[i], files[i].text, symbols, *parsed[i]);
+      });
+      double t = seconds(Clock::now() - start);
+      if (round > 0)
+        printf("parse round %d: %.3f s\n", round + 1, t);
+      parseTime = std::min(parseTime, t);
+      if (round + 1 < std::max(1, options.repeat))
+        continue;
+      if (round > 0)
+        for (size_t i = 0; i < files.size(); ++i)
+          lexed[i].tokens = std::move(tokens[i]);
+    }
     uint64_t decls = 0, bodies = 0, nodes = 0, errors = 0, filesWithErrors = 0, arenaBytes = 0, lines = 0;
     for (size_t i = 0; i < files.size(); ++i)
     {

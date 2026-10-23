@@ -10,13 +10,25 @@
 class Arena
 {
 public:
+  // Sizes the first chunk so that a typical file needs exactly one allocation. Many small
+  // allocations of a fixed large chunk size serialise on the OS page allocator.
+  void reserve(size_t bytes)
+  {
+    if (capacity == 0 && bytes > 0)
+    {
+      chunks.emplace_back(new char[bytes]);
+      base = chunks.back().get();
+      capacity = bytes;
+      pos = 0;
+    }
+  }
   void* allocate(size_t size, size_t align)
   {
     size_t aligned = (pos + align - 1) & ~(align - 1);
     if (aligned + size > capacity)
     {
-      size_t chunk = std::max<size_t>(size + align, 1 << 20);
-      chunks.push_back(std::make_unique<char[]>(chunk));
+      size_t chunk = std::max<size_t>(size + align, std::max<size_t>(capacity, 64 << 10));
+      chunks.emplace_back(new char[chunk]); // Not value-initialised: no 1 MB memset per chunk.
       base = chunks.back().get();
       capacity = chunk;
       pos = 0;
