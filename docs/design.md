@@ -92,6 +92,22 @@ one-line change in a widely used header.
 1. **Speed-test prototype** (done, see [prototype-results.md](prototype-results.md)): parallel
    lexer + parser + order-independent name resolution, benchmarked on Factorio. Whole front end
    in 0.32 s for 1.33 M lines on 32 threads. No code generation.
-2. Compiler that runs real Kov programs via LLVM.
+2. **Type checker on top of the resolver** (current, started 2026-10-23). Staged so that each
+   stage is measurable on Factorio:
+   1. Canonical types: interned, hash-consed in one thread-safe table, so that two threads that
+      build the same type get the same pointer (the type-level form of "generate each
+      instantiation once").
+   2. Declared types: AST types of variables, parameters, members and functions converted to
+      canonical types, with template parameters substituted from the enclosing instantiation
+      (`Vector<int>::operator[]` returns `int&` without copying the template's AST).
+   3. Expression typing in all function bodies: literals, names, `this`, calls with overload
+      selection by arity, operators (built-in rules and overloaded operators by lookup), casts,
+      `new`, `auto` deduction, range-for element types, lambdas (return type from the body).
+   4. Member accesses through the object's type: this binds the accesses the resolver had to
+      defer and is the first real use of class template instantiation.
+   5. Later: checking template bodies per instantiation (exactly once, with the wait/produce
+      protocol from the proposal), full overload resolution with conversions, constexpr
+      evaluation.
+3. Compiler that runs real Kov programs via LLVM.
 3. Standard library, C import, converter from Factorio-style C++ to Kov.
 4. Persistent compiler + IDE integration.
