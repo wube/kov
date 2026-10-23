@@ -215,10 +215,26 @@ the switch they cost nothing. Fixtures are ordinary classes constructed in the t
 
 ## Benchmark target
 
-Factorio: ~1.3M lines of own C++ in ~8,000 files (~1.6M with tests). Today's full rebuild
-including tests is about 2-4 minutes with unity builds (100 files/unit), PCH and FASTBuild.
-A 10x win means ~12-24 s for a full build. The key metric is also the rebuild time after a
-one-line change in a widely used header.
+Factorio: ~1.3M lines of own C++ in ~8,000 files (~1.6M with tests). The real build, measured
+2026-10-23 on this machine (Ryzen 9 9950X, 16 cores, MSVC 14.44, FASTBuild with unity builds of
+about 100 files and a precompiled header; details and the commands in
+[factorio-build-baseline.md](factorio-build-baseline.md)), Debug x64 with the game and the test
+executable together:
+
+| scenario | wall time |
+|---|---:|
+| clean rebuild | 62 s (919 objects, 19 min 20 s of CPU) |
+| one-line edit in an ordinary header | 16 s (5 objects; about 10 s of it is linking) |
+| one-line edit in a header included by the PCH | 55 s (143 objects, nearly a full rebuild) |
+| no-op rebuild | 0.1 s |
+| unit tests, `factorio-test.exe --fork` | 59 s (9,012 tests) |
+
+(The first estimate here was 2 to 4 minutes; the measurement replaced it.) A 10x win therefore
+means a clean debug build in about 6 s and a one-line change, in any header, in under 2 s.
+Where Kov stands (see [prototype-results.md](prototype-results.md)): the whole front end over
+Factorio's own code runs in 0.32 s on 32 threads, and for a generated program with Factorio's
+number of function bodies a debug build is 1.7 s from source to executable and 1.25 s after a
+one-line change, release 3.8 s of LLVM; the converter will show what the real code costs.
 
 ## Kov v0: the first runnable subset (proposed 2026-10-23, not yet reviewed by kovarex)
 
