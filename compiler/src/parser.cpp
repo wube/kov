@@ -1486,6 +1486,8 @@ namespace
       f->returnType = returnType;
       f->name = d.name;
       f->params = d.params;
+      for (Decl* p : d.params)
+        p->parent = f; // Parameters belong to the function (its template parameters are in scope for them).
       f->flags |= flags | d.flags;
       f->trailingReturn = d.trailingReturn;
       f->requiresClause = d.requiresClause ? d.requiresClause : templ.requiresClause;

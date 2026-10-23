@@ -1,6 +1,7 @@
 #include "codegen.hpp"
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <optional>
 #include <unordered_map>
@@ -13,6 +14,10 @@
 //   caller.
 // - Locals (and temporaries) of class types that need destruction are destroyed at the end of
 //   their scope, in reverse order; `return`, `break` and `continue` destroy the scopes they leave.
+// - Templates: a struct layout exists per instantiation type; an instantiated function is
+//   emitted on first use from a worklist, after the type checker re-typed its body for the
+//   concrete arguments. All declaration types are read through declType(), which applies the
+//   arguments of the instantiation being emitted (or of the class whose metadata is inspected).
 namespace
 {
   struct StructInfo
@@ -46,6 +51,18 @@ namespace
     std::string sretAddr; // Hidden return slot when returning a class.
     ParsedFile* currentFile = nullptr;
 
+    // Template arguments in effect: of the instantiation being emitted, or temporarily of a class
+    // whose constructors/fields are being inspected.
+    const TemplateArgs* currentArgs = nullptr;
+    const Ty* currentClassTy = nullptr; // Instantiated class of the method being emitted.
+    struct ArgsScope
+    {
+      Emitter& e;
+      const TemplateArgs* saved;
+      ArgsScope(Emitter& e, const TemplateArgs* args) : e(e), saved(e.currentArgs) { e.currentArgs = args; }
+      ~ArgsScope() { e.currentArgs = saved; }
+    };
+
     struct Local
     {
       std::string addr; // Address of the variable (or of the pointer slot for references).
@@ -59,12 +76,19 @@ namespace
       bool isTemporary = false; // Class temporary owned by the current full-expression
     };
     std::unordered_map<Decl*, Local> locals;
-    std::unordered_map<Decl*, StructInfo> structs;
+    std::unordered_map<const Ty*, StructInfo> structs;
     std::unordered_map<Decl*, std::string> globals;
-    std::unordered_map<Decl*, std::string> functionNames;
-    std::unordered_map<Decl*, bool> declared;
     std::unordered_map<std::string, bool> declaredNames; // IR names with a declare/define line
     std::unordered_map<Decl*, int64_t> enumeratorValues;
+
+    struct Instantiation
+    {
+      FunctionDecl* f;
+      TemplateArgs args;
+      const Ty* classTy;
+    };
+    std::deque<Instantiation> worklist;
+    std::unordered_map<std::string, bool> requested; // instantiated names queued or emitted
 
     struct Object
     {
@@ -121,6 +145,10 @@ namespace
 
     static bool isClass(const Ty* t) { return t && t->kind == TyKind::Class; }
 
+    const Ty* declType(Decl* d) { return currentArgs ? global.typeOfDeclIn(d, *currentArgs) : global.typeOfDecl(d); }
+
+    const Ty* classKey(const Ty* t) { return types.unqualified(types.stripRef(t)); }
+
     std::string llType(const Ty* t, Node* at = nullptr)
     {
       if (!t)
@@ -136,10 +164,10 @@ namespace
           return "ptr";
         case TyKind::Array:
           return "[" + std::to_string(t->count) + " x " + llType(t->inner, at) + "]";
-        case TyKind::Class: return structFor(t->decl, at).name;
+        case TyKind::Class: return structFor(t, at).name;
         case TyKind::Enum: return llType(enumUnderlying(t->decl), at);
         default:
-          unsupported(at, "the type " + types.toString(t, &symbols));
+          unsupported(at, "the type " + types.toString(t, &symbols) + (at ? std::string(" of ") + nodeKindName(at->kind) : std::string()));
       }
     }
 
@@ -167,7 +195,7 @@ namespace
         case TyKind::Enum: return sizeOf(enumUnderlying(t->decl), at);
         case TyKind::Class:
         {
-          StructInfo& info = structFor(t->decl, at);
+          StructInfo& info = structFor(t, at);
           uint64_t size = 0, align = 1;
           for (const Ty* f : info.fieldTypes)
           {
@@ -191,7 +219,7 @@ namespace
         case TyKind::Class:
         {
           uint64_t align = 1;
-          for (const Ty* f : structFor(t->decl, at).fieldTypes)
+          for (const Ty* f : structFor(t, at).fieldTypes)
             align = std::max(align, alignOf(f, at));
           return align;
         }
@@ -207,32 +235,44 @@ namespace
       return static_cast<ClassDecl*>(def);
     }
 
-    StructInfo& structFor(Decl* decl, Node* at)
+    // The instantiation type with the definition as its decl (forward declarations map here).
+    const Ty* canonicalClass(const Ty* t, Node* at)
     {
-      ClassDecl* c = classDef(decl, at);
-      auto it = structs.find(c);
+      t = classKey(t);
+      ClassDecl* def = classDef(t->decl, at);
+      return def == t->decl ? t : types.classType(def, t->args);
+    }
+
+    StructInfo& structFor(const Ty* classTy, Node* at)
+    {
+      const Ty* key = canonicalClass(classTy, at);
+      auto it = structs.find(key);
       if (it != structs.end())
         return it->second;
-      StructInfo& info = structs[c];
-      info.name = "%struct." + std::to_string(structs.size());
+      ClassDecl* c = static_cast<ClassDecl*>(key->decl);
       if (c->keyword == Kw::union_)
         unsupported(c, "unions");
+      TemplateArgs args = global.classArgsOf(key);
+      if (!c->templateParams.empty() && args.pairs.size() != c->templateParams.size())
+        unsupported(at, "the class template " + global.qualifiedName(c) + " used without all its arguments");
+      StructInfo& info = structs[key];
+      info.name = "%struct." + std::to_string(structs.size());
       for (const ClassDecl::Base& b : c->bases)
       {
-        const Ty* bt = global.typeOfAst(b.type, c);
-        if (!bt || bt->kind != TyKind::Class)
+        const Ty* bt = global.typeOfAstIn(b.type, c, args);
+        if (!bt || bt->kind != TyKind::Class || types.isDependent(bt))
           unsupported(c, "a base class that is not a known class");
-        ClassDecl* baseDef = classDef(bt->decl, c);
-        structFor(baseDef, c);
-        info.bases.push_back({baseDef, uint32_t(info.fieldTypes.size())});
-        info.fieldTypes.push_back(types.classType(baseDef, bt->args));
+        const Ty* baseKey = canonicalClass(bt, c);
+        structFor(baseKey, c);
+        info.bases.push_back({baseKey->decl, uint32_t(info.fieldTypes.size())});
+        info.fieldTypes.push_back(baseKey);
       }
       for (Decl* m : c->members)
       {
         if (m->kind != NodeKind::VariableDecl || (m->flags & (DF_Static | DF_Typedef)))
           continue;
-        const Ty* ft = global.typeOfDecl(m);
-        if (!ft || !ft->isKnown())
+        const Ty* ft = global.typeOfDeclIn(m, args);
+        if (!ft || !ft->isKnown() || types.isDependent(ft))
           unsupported(m, "a member of unknown type (" + sym(static_cast<VariableDecl*>(m)->name.last().symbol) + ")");
         info.fieldIndex[m] = uint32_t(info.fieldTypes.size());
         info.fieldDecls.push_back(m);
@@ -244,7 +284,7 @@ namespace
       line += " }\n";
       decls += line;
       ++result.structs;
-      return info;
+      return structs[key];
     }
 
     std::string gep(const std::string& structName, const std::string& addr, uint32_t index)
@@ -254,9 +294,9 @@ namespace
       return r;
     }
 
-    bool fieldAddress(Decl* def, Decl* member, const std::string& objectAddr, std::string& out, Node* at)
+    bool fieldAddress(const Ty* classTy, Decl* member, const std::string& objectAddr, std::string& out, Node* at)
     {
-      StructInfo& info = structFor(def, at);
+      StructInfo& info = structFor(classTy, at);
       auto it = info.fieldIndex.find(member);
       if (it != info.fieldIndex.end())
       {
@@ -266,7 +306,7 @@ namespace
       for (auto& [baseDef, index] : info.bases)
       {
         std::string baseAddr = gep(info.name, objectAddr, index);
-        if (fieldAddress(baseDef, member, baseAddr, out, at))
+        if (fieldAddress(info.fieldTypes[index], member, baseAddr, out, at))
           return true;
       }
       return false;
@@ -274,8 +314,11 @@ namespace
 
     // --- class metadata: constructors, destructors ---
 
-    FunctionDecl* findConstructor(ClassDecl* c, size_t argCount, const Ty* firstArg)
+    FunctionDecl* findConstructor(const Ty* classTy, size_t argCount, const Ty* firstArg, Node* at)
     {
+      ClassDecl* c = classDef(classTy->decl, at);
+      TemplateArgs args = global.classArgsOf(canonicalClass(classTy, at));
+      ArgsScope scope(*this, &args);
       FunctionDecl* best = nullptr;
       for (Decl* m : c->members)
       {
@@ -290,14 +333,13 @@ namespace
           continue;
         if (argCount == 1 && firstArg)
         {
-          // Prefer the constructor whose parameter matches the argument's class (copy ctor).
-          const Ty* pt = types.stripRef(global.typeOfDecl(f->params[0]));
-          const Ty* at = types.stripRef(firstArg);
-          if (pt && at && types.unqualified(pt) == types.unqualified(at))
+          const Ty* pt = types.stripRef(declType(f->params[0]));
+          const Ty* a = types.stripRef(firstArg);
+          if (pt && a && types.unqualified(pt) == types.unqualified(a))
             return f;
-          if (pt && at && isClass(pt) && isClass(at) && pt->decl != at->decl)
+          if (pt && a && isClass(pt) != isClass(a))
             continue;
-          if (pt && at && isClass(pt) != isClass(at))
+          if (pt && a && isClass(pt) && isClass(a) && types.unqualified(pt) != types.unqualified(a))
             continue;
         }
         if (!best || f->params.size() == argCount)
@@ -329,17 +371,15 @@ namespace
         return needsDestruction(t->inner, at);
       if (!isClass(t))
         return false;
-      StructInfo& info = structFor(t->decl, at);
+      StructInfo& info = structFor(t, at);
       if (info.needsDestruction)
         return *info.needsDestruction;
       info.needsDestruction = false; // Guard against recursion.
       ClassDecl* c = classDef(t->decl, at);
       bool result = findDestructor(c) != nullptr;
-      for (auto& [baseDef, index] : info.bases)
-        result = result || needsDestruction(types.classType(baseDef, {}), at);
-      for (Decl* d : info.fieldDecls)
-        result = result || needsDestruction(global.typeOfDecl(d), at);
-      info.needsDestruction = result;
+      for (const Ty* ft : std::vector<const Ty*>(info.fieldTypes))
+        result = result || needsDestruction(ft, at);
+      structFor(t, at).needsDestruction = result;
       return result;
     }
 
@@ -365,8 +405,8 @@ namespace
       ClassDecl* c = classDef(t->decl, at);
       if (FunctionDecl* dtor = findDestructor(c))
       {
-        ensureDeclared(dtor);
-        fn += "  call void " + functionName(dtor) + "(ptr " + addr + ")\n";
+        TemplateArgs args = global.classArgsOf(canonicalClass(t, at));
+        fn += "  call void " + useFunction(dtor, args, canonicalClass(t, at)) + "(ptr " + addr + ")\n";
         return;
       }
       destroyMembers(addr, t, at);
@@ -374,18 +414,23 @@ namespace
 
     void destroyMembers(const std::string& addr, const Ty* t, Node* at)
     {
-      StructInfo& info = structFor(t->decl, at);
-      for (size_t i = info.fieldDecls.size(); i-- > 0;)
+      StructInfo& info = structFor(t, at);
+      std::string name = info.name;
+      std::vector<Decl*> fieldDecls = info.fieldDecls;
+      std::vector<const Ty*> fieldTypes = info.fieldTypes;
+      std::unordered_map<Decl*, uint32_t> fieldIndex = info.fieldIndex;
+      std::vector<std::pair<Decl*, uint32_t>> bases = info.bases;
+      for (size_t i = fieldDecls.size(); i-- > 0;)
       {
-        const Ty* ft = global.typeOfDecl(info.fieldDecls[i]);
+        const Ty* ft = fieldTypes[fieldIndex[fieldDecls[i]]];
         if (needsDestruction(ft, at))
-          destroy(gep(info.name, addr, info.fieldIndex[info.fieldDecls[i]]), ft, at);
+          destroy(gep(name, addr, fieldIndex[fieldDecls[i]]), ft, at);
       }
-      for (size_t i = info.bases.size(); i-- > 0;)
+      for (size_t i = bases.size(); i-- > 0;)
       {
-        const Ty* bt = info.fieldTypes[info.bases[i].second];
+        const Ty* bt = fieldTypes[bases[i].second];
         if (needsDestruction(bt, at))
-          destroy(gep(info.name, addr, info.bases[i].second), bt, at);
+          destroy(gep(name, addr, bases[i].second), bt, at);
       }
     }
 
@@ -396,11 +441,11 @@ namespace
       ClassDecl* c = classDef(t->decl, at);
       if (hasUserConstructors(c))
       {
-        FunctionDecl* ctor = findConstructor(c, 0, nullptr);
+        FunctionDecl* ctor = findConstructor(t, 0, nullptr, at);
         if (!ctor)
           unsupported(at, "default construction of " + global.qualifiedName(c) + ", which has no default constructor");
-        ensureDeclared(ctor);
-        fn += "  call void " + functionName(ctor) + "(ptr " + addr + ")\n";
+        TemplateArgs args = global.classArgsOf(canonicalClass(t, at));
+        fn += "  call void " + useFunction(ctor, args, canonicalClass(t, at)) + "(ptr " + addr + ")\n";
         return;
       }
       fn += "  store " + llType(t, at) + " zeroinitializer, ptr " + addr + "\n";
@@ -411,7 +456,7 @@ namespace
     // default member initializers / default construction when absent).
     void initializeMembers(const std::string& addr, const Ty* t, Span<FunctionDecl::CtorInit> inits, Node* at)
     {
-      StructInfo& info = structFor(t->decl, at);
+      StructInfo info = structFor(t, at); // copy: nested calls may add structs
       auto initFor = [&](uint32_t symbol) -> const FunctionDecl::CtorInit*
       {
         for (const FunctionDecl::CtorInit& init : inits)
@@ -480,14 +525,13 @@ namespace
         return;
       }
       const Ty* firstTy = args.size() == 1 ? args[0]->ty : nullptr;
-      FunctionDecl* ctor = findConstructor(c, args.size(), firstTy);
+      FunctionDecl* ctor = findConstructor(t, args.size(), firstTy, at);
       if (ctor)
       {
-        callFunction(ctor, addr, "", args, at);
+        callFunction(ctor, global.classArgsOf(canonicalClass(t, at)), canonicalClass(t, at), addr, "", args, at);
         return;
       }
-      if (args.size() == 1 && firstTy && isClass(types.stripRef(firstTy)) &&
-          types.unqualified(types.stripRef(firstTy))->decl == c)
+      if (args.size() == 1 && firstTy && isClass(types.stripRef(firstTy)) && classKey(firstTy) == classKey(t))
       {
         Value src = rvalue(args[0]);
         if (src.isTemporary)
@@ -498,8 +542,7 @@ namespace
       }
       if (!hasUserConstructors(c))
       {
-        // Aggregate initialisation in field order.
-        StructInfo& info = structFor(c, at);
+        StructInfo info = structFor(t, at);
         fn += "  store " + llType(t, at) + " zeroinitializer, ptr " + addr + "\n";
         size_t i = 0;
         for (Decl* d : info.fieldDecls)
@@ -518,22 +561,25 @@ namespace
     void copyConstruct(const std::string& dst, const std::string& src, const Ty* t, Node* at)
     {
       ClassDecl* c = classDef(t->decl, at);
+      TemplateArgs args = global.classArgsOf(canonicalClass(t, at));
       FunctionDecl* copy = nullptr;
-      for (Decl* m : c->members)
       {
-        if (m->kind != NodeKind::FunctionDecl || !(m->flags & DF_Constructor))
-          continue;
-        auto* f = static_cast<FunctionDecl*>(m);
-        if (f->params.size() != 1)
-          continue;
-        const Ty* pt = global.typeOfDecl(f->params[0]);
-        if (pt && pt->isReference() && isClass(pt->inner) && pt->inner->decl == c)
-          copy = f;
+        ArgsScope scope(*this, &args);
+        for (Decl* m : c->members)
+        {
+          if (m->kind != NodeKind::FunctionDecl || !(m->flags & DF_Constructor))
+            continue;
+          auto* f = static_cast<FunctionDecl*>(m);
+          if (f->params.size() != 1)
+            continue;
+          const Ty* pt = declType(f->params[0]);
+          if (pt && pt->isReference() && isClass(pt->inner) && classKey(pt->inner) == classKey(t))
+            copy = f;
+        }
       }
       if (copy)
       {
-        ensureDeclared(copy);
-        fn += "  call void " + functionName(copy) + "(ptr " + dst + ", ptr " + src + ")\n";
+        fn += "  call void " + useFunction(copy, args, canonicalClass(t, at)) + "(ptr " + dst + ", ptr " + src + ")\n";
         return;
       }
       if (needsDestruction(t, at))
@@ -617,39 +663,58 @@ namespace
 
     // --- functions ---
 
-    std::string functionName(FunctionDecl* f)
+    // IR name of a function (for an instantiation: with the class and template arguments).
+    std::string functionName(FunctionDecl* f, const TemplateArgs& args, const Ty* classTy)
     {
-      auto it = functionNames.find(f);
-      if (it != functionNames.end())
-        return it->second;
-      std::string name;
       if (global.isExternC(f))
-        name = "@" + sym(f->name.last().symbol);
-      else if (f->name.parts.size() == 1 && sym(f->name.parts[0].symbol) == "main" && !global.owningClass(f))
-        name = "@main";
-      else
+        return "@" + sym(f->name.last().symbol);
+      if (f->name.parts.size() == 1 && sym(f->name.parts[0].symbol) == "main" && !global.owningClass(f))
+        return "@main";
+      ArgsScope scope(*this, &args);
+      std::string q;
+      if (classTy && !classTy->args.empty())
       {
-        const Ty* ft = global.typeOfDecl(f);
-        std::string params;
-        for (size_t i = 0; ft && i < ft->args.size(); ++i)
-          params += (i ? ", " : "") + types.toString(ft->args[i], &symbols);
-        name = "@\"" + global.qualifiedName(f) + "(" + params + ")\"";
+        // Class path with the instantiation's arguments, then the member's own name.
+        std::string full = global.qualifiedName(f);
+        std::string cls = global.qualifiedName(classTy->decl);
+        q = types.toString(classTy, &symbols);
+        size_t pos = full.rfind("::");
+        q += pos == std::string::npos ? "::" + full : full.substr(pos);
       }
-      functionNames[f] = name;
-      return name;
+      else
+        q = global.qualifiedName(f);
+      if (!f->templateParams.empty())
+      {
+        q += "<";
+        for (size_t i = 0; i < f->templateParams.size(); ++i)
+        {
+          const Ty* t = nullptr;
+          for (auto& [d, ty] : args.pairs)
+            if (d == f->templateParams[i])
+              t = ty;
+          q += (i ? ", " : "") + (t ? types.toString(t, &symbols) : std::string("?"));
+        }
+        q += ">";
+      }
+      const Ty* ft = declType(f);
+      std::string params;
+      for (size_t i = 0; ft && i < ft->args.size(); ++i)
+        params += (i ? ", " : "") + types.toString(ft->args[i], &symbols);
+      return "@\"" + q + "(" + params + ")\"";
     }
 
     struct Signature
     {
-      std::string returnType; // IR return type
+      std::string returnType;
       std::vector<std::string> paramTypes;
       std::vector<const Ty*> paramTys; // null for this/sret
       bool hasThis = false, hasSret = false, variadic = false;
     };
 
+    // Signature under the arguments currently in effect.
     Signature signatureOf(FunctionDecl* f)
     {
-      const Ty* ft = global.typeOfDecl(f);
+      const Ty* ft = declType(f);
       if (!ft || ft->kind != TyKind::Function)
         unsupported(f, "a function whose type is unknown");
       Signature s;
@@ -675,7 +740,7 @@ namespace
       }
       for (const Ty* pt : ft->args)
       {
-        if (!pt->isKnown())
+        if (!pt->isKnown() || types.isDependent(pt))
           unsupported(f, "a parameter of unknown type");
         s.paramTypes.push_back(isClass(pt) || pt->isReference() ? "ptr" : llType(pt, f));
         s.paramTys.push_back(pt);
@@ -695,19 +760,29 @@ namespace
       return t;
     }
 
-    void ensureDeclared(FunctionDecl* f)
+    // Makes a function usable from the current function: declares external ones, queues
+    // instantiations. Returns its IR name.
+    std::string useFunction(FunctionDecl* f, const TemplateArgs& args, const Ty* classTy)
     {
+      std::string name = functionName(f, args, classTy);
       Decl* defDecl = global.definitionOf(f);
       FunctionDecl* def = defDecl && defDecl->kind == NodeKind::FunctionDecl ? static_cast<FunctionDecl*>(defDecl) : f;
-      if (def->body && !global.isTemplateContext(def))
-        return; // Defined in this program.
-      if (declared[f])
-        return;
-      declared[f] = true;
-      std::string name = functionName(f);
+      bool templated = !args.empty();
+      if (def->body && templated)
+      {
+        if (!requested[name])
+        {
+          requested[name] = true;
+          worklist.push_back({def, args, classTy});
+        }
+        return name;
+      }
+      if (def->body)
+        return name; // Defined by the main pass.
       if (declaredNames[name])
-        return; // Two declarations of the same C function.
+        return name;
       declaredNames[name] = true;
+      ArgsScope scope(*this, &args);
       Signature s = signatureOf(f);
       std::string params;
       for (size_t i = 0; i < s.paramTypes.size(); ++i)
@@ -715,13 +790,37 @@ namespace
       if (s.variadic)
         params += params.empty() ? "..." : ", ...";
       decls += "declare " + s.returnType + " " + name + "(" + params + ")\n";
+      return name;
+    }
+
+    // Template arguments for calling f on an object of classTy, with the call's deduced arguments.
+    TemplateArgs calleeArgs(FunctionDecl* f, const Ty* classTy, CallExpr* call, Node* at)
+    {
+      TemplateArgs args;
+      if (classTy)
+        args = global.classArgsOf(canonicalClass(classTy, at));
+      if (!f->templateParams.empty())
+      {
+        if (!call || call->templateArgCount != f->templateParams.size())
+          unsupported(at, "a call to " + global.qualifiedName(f) + " whose template arguments could not be deduced");
+        for (size_t i = 0; i < f->templateParams.size(); ++i)
+          args.pairs.push_back({f->templateParams[i], call->templateArgs[i]});
+      }
+      return args;
     }
 
     // Emits a call. thisArg/sret may be empty. For class returns the result is the sret address.
-    Value callFunction(FunctionDecl* f, const std::string& thisArg, const std::string& sret, Span<Expr*> args, Node* at)
+    Value callFunction(FunctionDecl* f, const TemplateArgs& args, const Ty* classTy, const std::string& thisArg,
+                       const std::string& sret, Span<Expr*> callArgs, Node* at)
     {
-      ensureDeclared(f);
-      Signature s = signatureOf(f);
+      std::string name = useFunction(f, args, classTy);
+      Signature s;
+      const Ty* ret;
+      {
+        ArgsScope scope(*this, &args);
+        s = signatureOf(f);
+        ret = declType(f)->inner;
+      }
       std::string argText;
       size_t slot = 0;
       if (s.hasThis)
@@ -731,7 +830,6 @@ namespace
         argText += "ptr " + thisArg;
         ++slot;
       }
-      const Ty* ret = global.typeOfDecl(f)->inner;
       std::string resultAddr = sret;
       if (s.hasSret)
       {
@@ -743,7 +841,7 @@ namespace
         argText += std::string(argText.empty() ? "" : ", ") + "ptr " + resultAddr;
         ++slot;
       }
-      for (size_t i = 0; i < args.size(); ++i)
+      for (size_t i = 0; i < callArgs.size(); ++i)
       {
         const Ty* pt = slot + i < s.paramTys.size() ? s.paramTys[slot + i] : nullptr;
         std::string text;
@@ -751,21 +849,21 @@ namespace
         {
           if (isClass(types.stripRef(pt)))
           {
-            Value o = rvalue(args[i]);
+            Value o = rvalue(callArgs[i]);
             if (!isClass(o.ty))
               unsupported(at, "binding a non-class to a class reference");
             std::string addr = o.text;
-            if (types.unqualified(o.ty)->decl != types.unqualified(types.stripRef(pt))->decl)
+            if (classKey(o.ty) != classKey(pt))
               if (!baseAddress(o.ty, types.stripRef(pt), o.text, addr, at))
                 unsupported(at, "binding an unrelated class to a reference");
             text = "ptr " + addr;
           }
           else
-            text = "ptr " + lvalue(args[i]);
+            text = "ptr " + lvalue(callArgs[i]);
         }
         else if (pt && isClass(pt))
         {
-          Value v = rvalue(args[i]);
+          Value v = rvalue(callArgs[i]);
           if (!isClass(v.ty))
             unsupported(at, "passing a non-class to a class parameter");
           std::string copy = newObjectSlot(pt, at);
@@ -777,7 +875,7 @@ namespace
         }
         else
         {
-          Value a = rvalue(args[i]);
+          Value a = rvalue(callArgs[i]);
           if (isClass(a.ty))
             unsupported(at, "passing a class where a scalar is expected");
           if (pt)
@@ -795,13 +893,13 @@ namespace
       std::string sig = s.variadic ? signatureText(s) + " " : s.returnType + " ";
       if (s.returnType == "void")
       {
-        fn += "  call " + sig + functionName(f) + "(" + argText + ")\n";
+        fn += "  call " + sig + name + "(" + argText + ")\n";
         if (s.hasSret)
           return {resultAddr, ret, sret.empty()};
         return {"", types.voidType(), false};
       }
       std::string r = newTemp();
-      fn += "  " + r + " = call " + sig + functionName(f) + "(" + argText + ")\n";
+      fn += "  " + r + " = call " + sig + name + "(" + argText + ")\n";
       return {r, ret, false};
     }
 
@@ -904,7 +1002,7 @@ namespace
           if (d->kind == NodeKind::VariableDecl)
           {
             auto* v = static_cast<VariableDecl*>(d);
-            const Ty* t = global.typeOfDecl(v);
+            const Ty* t = declType(v);
             if (t && t->isConst && v->init && !locals.count(d))
             {
               ParsedFile* saved = currentFile;
@@ -930,10 +1028,12 @@ namespace
           if (s->type && s->type->kind == NodeKind::NamedType && static_cast<NamedType*>(s->type)->resolved &&
               (static_cast<NamedType*>(s->type)->resolved->kind == NodeKind::VariableDecl ||
                static_cast<NamedType*>(s->type)->resolved->kind == NodeKind::ParamDecl))
-            t = global.typeOfDecl(static_cast<NamedType*>(s->type)->resolved);
+            t = declType(static_cast<NamedType*>(s->type)->resolved);
+          else if (s->type)
+            t = currentArgs ? global.typeOfAstIn(s->type, currentFunction, *currentArgs) : global.typeOfAst(s->type, currentFunction);
           else
-            t = s->type ? global.typeOfAst(s->type, currentFunction) : (s->operand ? s->operand->ty : nullptr);
-          if (!t || !t->isKnown())
+            t = s->operand ? s->operand->ty : nullptr;
+          if (!t || !t->isKnown() || types.isDependent(t))
             return std::nullopt;
           return int64_t(sizeOf(types.stripRef(t), e));
         }
@@ -1078,13 +1178,11 @@ namespace
       auto unsignedOf = [&](const Ty* t) { return t->kind == TyKind::Enum ? enumUnderlying(t->decl)->isUnsigned : t->isUnsigned; };
       if (fk == TyKind::Class || tk == TyKind::Class)
       {
-        if (fk == TyKind::Class && tk == TyKind::Class && types.unqualified(from)->decl == types.unqualified(to)->decl)
-          return {v.text, to, v.isTemporary};
         if (fk == TyKind::Class && tk == TyKind::Class)
         {
           std::string addr;
           if (baseAddress(from, to, v.text, addr, at))
-            return {addr, to, false};
+            return {addr, to, v.isTemporary && addr == v.text};
         }
         unsupported(at, "a conversion from " + types.toString(from, &symbols) + " to " + types.toString(to, &symbols));
       }
@@ -1136,7 +1234,7 @@ namespace
       }
       if (tk == TyKind::Pointer && (fk == TyKind::Pointer || fk == TyKind::Nullptr || fk == TyKind::Function || fk == TyKind::Array))
       {
-        if (fk == TyKind::Pointer && isClass(from->inner) && isClass(to->inner) && from->inner->decl != to->inner->decl)
+        if (fk == TyKind::Pointer && isClass(from->inner) && isClass(to->inner) && classKey(from->inner) != classKey(to->inner))
         {
           std::string addr;
           if (baseAddress(from->inner, to->inner, v.text, addr, at))
@@ -1160,18 +1258,19 @@ namespace
     // Address of the `base` subobject inside the `derived` object at addr (false if not a base).
     bool baseAddress(const Ty* derived, const Ty* base, const std::string& addr, std::string& out, Node* at)
     {
-      ClassDecl* d = classDef(derived->decl, at);
-      ClassDecl* b = classDef(base->decl, at);
-      if (d == b)
+      if (canonicalClass(derived, at) == canonicalClass(base, at))
       {
         out = addr;
         return true;
       }
-      StructInfo& info = structFor(d, at);
-      for (auto& [baseDef, index] : info.bases)
+      StructInfo& info = structFor(derived, at);
+      std::string name = info.name;
+      std::vector<std::pair<Decl*, uint32_t>> bases = info.bases;
+      std::vector<const Ty*> fieldTypes = info.fieldTypes;
+      for (auto& [baseDef, index] : bases)
       {
-        std::string sub = gep(info.name, addr, index);
-        if (baseAddress(info.fieldTypes[index], base, sub, out, at))
+        std::string sub = gep(name, addr, index);
+        if (baseAddress(fieldTypes[index], base, sub, out, at))
           return true;
       }
       return false;
@@ -1234,7 +1333,10 @@ namespace
       return r;
     }
 
-    std::string operatorName(P op) { return "operator" + std::string(punctuatorSpelling(op)); }
+    std::string operatorName(P op)
+    {
+      return op == P::LBracket ? "operator[]" : op == P::LParen ? "operator()" : "operator" + std::string(punctuatorSpelling(op));
+    }
 
     std::string lvalue(Expr* e)
     {
@@ -1261,8 +1363,10 @@ namespace
           {
             if (Decl* cls = global.owningClass(d); cls && !(d->flags & DF_Static))
             {
+              if (!currentClassTy)
+                unsupported(e, "a member used outside a method");
               std::string addr;
-              if (!fieldAddress(cls, d, thisPointer(e), addr, e))
+              if (!fieldAddress(currentClassTy, d, thisPointer(e), addr, e))
                 unsupported(e, "a member that is not a field");
               return addr;
             }
@@ -1300,7 +1404,7 @@ namespace
           if (d->flags & DF_Static)
             return globalFor(static_cast<VariableDecl*>(d), e);
           std::string addr;
-          if (!fieldAddress(baseTy->decl, d, object, addr, e))
+          if (!fieldAddress(baseTy, d, object, addr, e))
             unsupported(e, "a member that is not a field of the object's class");
           return addr;
         }
@@ -1452,13 +1556,15 @@ namespace
       }
     }
 
-    // Finds an operator member (searching bases) by its qualified-name suffix.
-    FunctionDecl* findOperator(const Ty* classTy, const std::string& name, size_t argCount, Node* at)
+    // Finds an operator member (searching bases) by its qualified-name suffix. Returns the
+    // class type it was found in through foundIn.
+    FunctionDecl* findOperator(const Ty* classTy, const std::string& name, size_t argCount, Node* at, const Ty** foundIn)
     {
       FunctionDecl* found = nullptr;
-      std::function<void(ClassDecl*)> search = [&](ClassDecl* cls)
+      std::function<void(const Ty*)> search = [&](const Ty* cls)
       {
-        for (Decl* m : cls->members)
+        ClassDecl* c = classDef(cls->decl, at);
+        for (Decl* m : c->members)
         {
           if (found || m->kind != NodeKind::FunctionDecl)
             continue;
@@ -1466,14 +1572,23 @@ namespace
           if (f->params.size() != argCount || !f->templateParams.empty())
             continue;
           if (global.qualifiedName(f).ends_with("::" + name))
+          {
             found = f;
+            if (foundIn)
+              *foundIn = cls;
+          }
         }
         if (found)
           return;
-        for (auto& [baseDef, index] : structFor(cls, at).bases)
-          search(static_cast<ClassDecl*>(baseDef));
+        StructInfo& info = structFor(cls, at);
+        std::vector<const Ty*> baseTypes;
+        for (auto& [baseDef, index] : info.bases)
+          baseTypes.push_back(info.fieldTypes[index]);
+        for (const Ty* b : baseTypes)
+          if (!found)
+            search(b);
       };
-      search(classDef(classTy->decl, at));
+      search(canonicalClass(classTy, at));
       return found;
     }
 
@@ -1481,7 +1596,8 @@ namespace
     // the referenced address (ty keeps the reference).
     Value operatorCall(Value object, const std::string& name, Span<Expr*> args, Node* at, bool required)
     {
-      FunctionDecl* f = findOperator(object.ty, name, args.size(), at);
+      const Ty* foundIn = nullptr;
+      FunctionDecl* f = findOperator(object.ty, name, args.size(), at, &foundIn);
       if (!f)
       {
         if (required)
@@ -1489,14 +1605,13 @@ namespace
         return {"", nullptr};
       }
       std::string thisArg = object.text;
-      Decl* owner = global.owningClass(f);
-      if (owner && types.unqualified(object.ty)->decl != owner)
+      if (canonicalClass(object.ty, at) != foundIn)
       {
         std::string addr;
-        if (baseAddress(object.ty, types.classType(owner, {}), object.text, addr, at))
+        if (baseAddress(object.ty, foundIn, object.text, addr, at))
           thisArg = addr;
       }
-      return callFunction(f, thisArg, "", args, at);
+      return callFunction(f, global.classArgsOf(foundIn), foundIn, thisArg, "", args, at);
     }
 
     Value arithmetic(P op, Value l, Value r, Node* at)
@@ -1610,19 +1725,26 @@ namespace
         {
           auto* f = static_cast<FunctionDecl*>(d);
           std::string thisArg;
-          if (global.owningClass(f) && !(f->flags & DF_Static))
+          const Ty* classTy = nullptr;
+          if (Decl* owner = global.owningClass(f); owner && !(f->flags & DF_Static))
           {
+            if (!currentClassTy)
+              unsupported(c, "a method call outside a method");
             thisArg = thisPointer(c);
-            Decl* owner = global.owningClass(f);
-            Decl* current = global.owningClass(currentFunction);
-            if (owner != current && current)
+            classTy = currentClassTy;
+            if (classDef(owner, c) != classDef(currentClassTy->decl, c))
             {
+              // Inherited method: find the base subobject of the right class.
+              const Ty* base = baseInstantiation(currentClassTy, owner, c);
               std::string addr;
-              if (baseAddress(types.classType(current, {}), types.classType(owner, {}), thisArg, addr, c))
+              if (base && baseAddress(currentClassTy, base, thisArg, addr, c))
+              {
                 thisArg = addr;
+                classTy = base;
+              }
             }
           }
-          return callFunction(f, thisArg, sret, c->args, c);
+          return callFunction(f, calleeArgs(f, classTy, c, c), classTy, thisArg, sret, c->args, c);
         }
         if (!d || d->kind == NodeKind::ClassDecl || d->kind == NodeKind::EnumDecl || d->kind == NodeKind::UsingAliasDecl)
         {
@@ -1670,15 +1792,28 @@ namespace
               thisArg = o.text;
               objectTy = o.ty;
             }
+            objectTy = canonicalClass(objectTy, c);
             Decl* owner = global.owningClass(f);
-            if (owner && objectTy && isClass(objectTy) && types.unqualified(objectTy)->decl != owner)
+            if (owner && classDef(owner, c) != static_cast<ClassDecl*>(objectTy->decl))
             {
+              const Ty* base = baseInstantiation(objectTy, owner, c);
               std::string addr;
-              if (baseAddress(types.unqualified(objectTy), types.classType(owner, {}), thisArg, addr, c))
+              if (base && baseAddress(objectTy, base, thisArg, addr, c))
+              {
                 thisArg = addr;
+                objectTy = base;
+              }
             }
           }
-          return callFunction(f, thisArg, sret, c->args, c);
+          else if (m->base)
+          {
+            const Ty* bt = types.stripRef(m->base->ty);
+            if (bt && bt->kind == TyKind::Pointer)
+              bt = bt->inner;
+            if (isClass(bt))
+              objectTy = canonicalClass(bt, c);
+          }
+          return callFunction(f, calleeArgs(f, objectTy, c, c), objectTy, thisArg, sret, c->args, c);
         }
       }
       // Call through a function pointer.
@@ -1706,6 +1841,24 @@ namespace
       std::string r = newTemp();
       fn += "  " + r + " = call " + sig + " " + fnValue.text + "(" + args + ")\n";
       return {r, types.stripRef(ft->inner)};
+    }
+
+    // The instantiated base type of `derived` whose definition is `baseDecl`, or null.
+    const Ty* baseInstantiation(const Ty* derived, Decl* baseDecl, Node* at)
+    {
+      ClassDecl* target = classDef(baseDecl, at);
+      StructInfo& info = structFor(derived, at);
+      std::vector<const Ty*> candidates;
+      for (auto& [baseDef, index] : info.bases)
+        candidates.push_back(info.fieldTypes[index]);
+      for (const Ty* b : candidates)
+      {
+        if (static_cast<ClassDecl*>(canonicalClass(b, at)->decl) == target)
+          return canonicalClass(b, at);
+        if (const Ty* deeper = baseInstantiation(b, baseDecl, at))
+          return deeper;
+      }
+      return nullptr;
     }
 
     // Value of a call result for use as an rvalue (reference results are loaded).
@@ -1764,18 +1917,20 @@ namespace
             return {std::to_string(enumeratorValue(static_cast<EnumeratorDecl*>(d))), e->ty};
           if (d && d->kind == NodeKind::FunctionDecl)
           {
-            ensureDeclared(static_cast<FunctionDecl*>(d));
-            return {functionName(static_cast<FunctionDecl*>(d)), types.pointer(global.typeOfDecl(d))};
+            auto* f = static_cast<FunctionDecl*>(d);
+            if (!f->templateParams.empty() || global.isTemplateContext(f))
+              unsupported(e, "taking the address of a function template");
+            return {useFunction(f, {}, nullptr), types.pointer(declType(d))};
           }
           if (d && d->kind == NodeKind::VariableDecl && !locals.count(d))
           {
-            const Ty* t = types.stripRef(global.typeOfDecl(d));
+            const Ty* t = types.stripRef(declType(d));
             if (t && t->isConst && (t->kind == TyKind::Int || t->kind == TyKind::Enum || t->kind == TyKind::Char || t->kind == TyKind::Bool))
               if (auto c = evalConst(e))
                 return {t->kind == TyKind::Bool ? (*c ? "true" : "false") : std::to_string(*c), types.unqualified(t)};
           }
           std::string addr = lvalue(e);
-          return load(addr, e->ty ? e->ty : (d ? global.typeOfDecl(d) : nullptr), e);
+          return load(addr, e->ty ? e->ty : (d ? declType(d) : nullptr), e);
         }
         case NodeKind::ThisExpr: return {thisPointer(e), e->ty};
         case NodeKind::ParenExpr: return rvalue(static_cast<ParenExpr*>(e)->inner);
@@ -2011,7 +2166,8 @@ namespace
         std::string name = operatorName(op);
         Expr* rhsExpr = b->rhs;
         Span<Expr*> one{&rhsExpr, 1};
-        if (findOperator(l.ty, name, 1, b))
+        const Ty* foundIn = nullptr;
+        if (findOperator(l.ty, name, 1, b, &foundIn))
           return callRvalue(operatorCall(l, name, one, b, true), b);
         if (op == P::Assign)
         {
@@ -2101,8 +2257,8 @@ namespace
 
     void declareLocal(VariableDecl* v)
     {
-      const Ty* t = global.typeOfDecl(v);
-      if (!t || !t->isKnown())
+      const Ty* t = declType(v);
+      if (!t || !t->isKnown() || types.isDependent(t))
         unsupported(v, "a local of unknown type (" + sym(v->name.last().symbol) + ")");
       bool isRef = t->isReference();
       std::string slot = "%v" + std::to_string(temp++);
@@ -2414,12 +2570,21 @@ namespace
 
     // --- function definitions ---
 
-    void emitFunction(FunctionDecl* f)
+    void emitFunction(FunctionDecl* f, const TemplateArgs& args, const Ty* classTy)
     {
-      const Ty* ft = global.typeOfDecl(f);
+      currentFile = f->file;
+      if (!args.empty())
+        global.retypeFor(f, args, classTy);
+      currentArgs = args.empty() ? nullptr : &args;
+      currentClassTy = classTy;
+      if (!currentClassTy)
+        if (Decl* cls = global.owningClass(f))
+          currentClassTy = canonicalClass(types.classType(cls, {}), f);
+      const Ty* ft = declType(f);
       if (!ft || ft->kind != TyKind::Function)
       {
         error(f, "function type unknown, skipped");
+        currentArgs = nullptr;
         return;
       }
       fn.clear();
@@ -2435,62 +2600,64 @@ namespace
       currentFunction = f;
       currentReturn = ft->inner;
       sretAddr.clear();
-      Signature s = signatureOf(f);
-      std::string params;
-      std::vector<std::string> paramNames;
-      for (size_t i = 0; i < s.paramTypes.size(); ++i)
-      {
-        std::string pn = "%p" + std::to_string(i);
-        paramNames.push_back(pn);
-        params += (i ? ", " : "") + s.paramTypes[i] + " " + pn;
-      }
-      if (s.variadic)
-        params += params.empty() ? "..." : ", ...";
-      std::string header = "define " + s.returnType + " " + functionName(f) + "(" + params + ") {\nentry:\n";
-      pushScope();
-      size_t slot = 0;
-      if (s.hasThis)
-      {
-        std::string thisSlot = "%v" + std::to_string(temp++);
-        allocas += "  " + thisSlot + " = alloca ptr\n";
-        fn += "  store ptr " + paramNames[slot] + ", ptr " + thisSlot + "\n";
-        locals[nullptr] = {thisSlot, nullptr, false};
-        ++slot;
-      }
-      if (s.hasSret)
-        sretAddr = paramNames[slot++];
-      for (size_t i = 0; i < f->params.size(); ++i, ++slot)
-      {
-        const Ty* pt = s.paramTys[slot];
-        if (isClass(pt))
-        {
-          locals[f->params[i]] = {paramNames[slot], pt, false};
-          if (needsDestruction(pt, f))
-            scopes.back().push_back({paramNames[slot], pt});
-          continue;
-        }
-        bool isRef = pt->isReference();
-        std::string ps = "%v" + std::to_string(temp++);
-        allocas += "  " + ps + " = alloca " + (isRef ? std::string("ptr") : llType(pt, f)) + "\n";
-        fn += "  store " + (isRef ? std::string("ptr") : llType(pt, f)) + " " + paramNames[slot] + ", ptr " + ps + "\n";
-        locals[f->params[i]] = {ps, pt, isRef};
-      }
       try
       {
+        Signature s = signatureOf(f);
+        std::string params;
+        std::vector<std::string> paramNames;
+        for (size_t i = 0; i < s.paramTypes.size(); ++i)
+        {
+          std::string pn = "%p" + std::to_string(i);
+          paramNames.push_back(pn);
+          params += (i ? ", " : "") + s.paramTypes[i] + " " + pn;
+        }
+        if (s.variadic)
+          params += params.empty() ? "..." : ", ...";
+        std::string name = functionName(f, args, classTy);
+        declaredNames[name] = true;
+        std::string header = "define " + s.returnType + " " + name + "(" + params + ") {\nentry:\n";
+        pushScope();
+        size_t slot = 0;
+        if (s.hasThis)
+        {
+          std::string thisSlot = "%v" + std::to_string(temp++);
+          allocas += "  " + thisSlot + " = alloca ptr\n";
+          fn += "  store ptr " + paramNames[slot] + ", ptr " + thisSlot + "\n";
+          locals[nullptr] = {thisSlot, nullptr, false};
+          ++slot;
+        }
+        if (s.hasSret)
+          sretAddr = paramNames[slot++];
+        for (size_t i = 0; i < f->params.size(); ++i, ++slot)
+        {
+          const Ty* pt = s.paramTys[slot];
+          if (isClass(pt))
+          {
+            locals[f->params[i]] = {paramNames[slot], pt, false};
+            if (needsDestruction(pt, f))
+              scopes.back().push_back({paramNames[slot], pt});
+            continue;
+          }
+          bool isRef = pt->isReference();
+          std::string ps = "%v" + std::to_string(temp++);
+          allocas += "  " + ps + " = alloca " + (isRef ? std::string("ptr") : llType(pt, f)) + "\n";
+          fn += "  store " + (isRef ? std::string("ptr") : llType(pt, f)) + " " + paramNames[slot] + ", ptr " + ps + "\n";
+          locals[f->params[i]] = {ps, pt, isRef};
+        }
         if (f->flags & DF_Constructor)
         {
-          initializeMembers(thisPointer(f), types.classType(classDef(global.owningClass(f), f), {}), f->ctorInits, f);
+          initializeMembers(thisPointer(f), currentClassTy, f->ctorInits, f);
           destroyTemps();
         }
         statement(f->body);
         if (!blockTerminated)
         {
           if (f->flags & DF_Destructor)
-            destroyMembers(thisPointer(f), types.classType(classDef(global.owningClass(f), f), {}), f);
+            destroyMembers(thisPointer(f), currentClassTy, f);
           popScope();
           if (currentReturn->kind == TyKind::Void || isClass(currentReturn))
             fn += "  ret void\n";
-          else if (functionName(f) == "@main")
+          else if (name == "@main")
             fn += "  ret i32 0\n";
           else
             fn += "  unreachable\n";
@@ -2498,15 +2665,17 @@ namespace
         else if (f->flags & DF_Destructor)
         {
           error(f, "codegen does not support return statements in destructors yet");
+          currentArgs = nullptr;
           return;
         }
+        body += header + allocas + fn + "}\n\n";
+        ++result.functions;
       }
       catch (Unsupported&)
       {
-        return;
       }
-      body += header + allocas + fn + "}\n\n";
-      ++result.functions;
+      currentArgs = nullptr;
+      currentClassTy = nullptr;
     }
 
     void collectFunctions(Span<Decl*> decls, std::vector<FunctionDecl*>& out)
@@ -2542,15 +2711,13 @@ CodegenResult generateLLVM(std::vector<std::unique_ptr<ParsedFile>>& files, Glob
   for (auto& file : files)
     e.collectFunctions(file->decls, functions);
   for (FunctionDecl* f : functions)
+    e.emitFunction(f, {}, nullptr);
+  // Instantiations requested while emitting, including ones requested by other instantiations.
+  while (!e.worklist.empty())
   {
-    e.currentFile = f->file;
-    try
-    {
-      e.emitFunction(f);
-    }
-    catch (Emitter::Unsupported&)
-    {
-    }
+    Emitter::Instantiation inst = e.worklist.front();
+    e.worklist.pop_front();
+    e.emitFunction(inst.f, inst.args, inst.classTy);
   }
   result.ir = "; Kov v0: generated by kovc\n"
               "target datalayout = \"e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\n"

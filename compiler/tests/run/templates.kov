@@ -1,0 +1,90 @@
+// Class and function templates in generated code: Vector<T> with a destructor, instantiated
+// for two element types, a function template with deduction, and a member template.
+extern "C" int printf(const char* format, ...);
+extern "C" void* malloc(unsigned long long size);
+extern "C" void free(void* p);
+extern "C" void* memcpy(void* dst, const void* src, unsigned long long size);
+
+static int allocations = 0;
+
+template<typename T>
+struct Vector
+{
+  T* data = nullptr;
+  int size = 0;
+  int capacity = 0;
+
+  ~Vector()
+  {
+    if (this->data)
+    {
+      free(this->data);
+      --allocations;
+    }
+  }
+  void push_back(const T& value)
+  {
+    if (this->size == this->capacity)
+      this->grow();
+    this->data[this->size] = value;
+    ++this->size;
+  }
+  T& operator[](int index) { return this->data[index]; }
+  const T& operator[](int index) const { return this->data[index]; }
+  int count() const { return this->size; }
+  void grow()
+  {
+    int newCapacity = this->capacity == 0 ? 4 : this->capacity * 2;
+    T* bigger = (T*)malloc(newCapacity * sizeof(T));
+    if (this->data)
+    {
+      memcpy(bigger, this->data, this->size * sizeof(T));
+      free(this->data);
+    }
+    else
+      ++allocations;
+    this->data = bigger;
+    this->capacity = newCapacity;
+  }
+  template<typename F>
+  F sumAs() const
+  {
+    F total = 0;
+    for (int i = 0; i < this->size; ++i)
+      total += (F)this->data[i];
+    return total;
+  }
+};
+
+template<typename T>
+T maxOf(T a, T b)
+{
+  return a > b ? a : b;
+}
+
+template<typename T>
+T total(const Vector<T>& v)
+{
+  T sum = 0;
+  for (int i = 0; i < v.count(); ++i)
+    sum += v[i];
+  return sum;
+}
+
+int main()
+{
+  {
+    Vector<int> ints;
+    for (int i = 1; i <= 10; ++i)
+      ints.push_back(i * i);
+    Vector<double> doubles;
+    doubles.push_back(0.5);
+    doubles.push_back(0.25);
+    ints[0] = 100;
+    printf("%d %d %d %.3f\n", ints.count(), ints[0] + ints[9], total(ints), total(doubles));
+    printf("%d %.1f %lld\n", maxOf(3, 7), maxOf(2.5, -1.0), ints.sumAs<long long>());
+    printf("allocations=%d\n", allocations);
+  }
+  printf("allocations=%d\n", allocations);
+  return 0;
+}

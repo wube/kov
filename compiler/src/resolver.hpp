@@ -12,6 +12,13 @@
 
 struct Scope;
 
+// Template parameter -> argument type, for queries about one instantiation.
+struct TemplateArgs
+{
+  std::vector<std::pair<Decl*, const Ty*>> pairs;
+  bool empty() const { return pairs.empty(); }
+};
+
 struct ResolveStats
 {
   // Type names (in declarations, casts, template arguments...).
@@ -75,6 +82,13 @@ public:
   std::string qualifiedName(Decl* d);            // `ns::Class::name`
   bool isExternC(FunctionDecl* f);
   bool isTemplateContext(Decl* d);               // Inside a template (any enclosing declaration has parameters).
+  // Instantiation queries, single-threaded (code generation):
+  const Ty* typeOfDeclIn(Decl* d, const TemplateArgs& args);
+  const Ty* typeOfAstIn(Type* t, Decl* context, const TemplateArgs& args);
+  // Re-types the body of f for one instantiation (expression types and resolved callees are
+  // rewritten in place). objectType: the instantiated class for members, or null.
+  void retypeFor(FunctionDecl* f, const TemplateArgs& args, const Ty* objectType);
+  TemplateArgs classArgsOf(const Ty* classType); // Parameters of the class template -> arguments of the type.
 
 
 private:

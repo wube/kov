@@ -1929,7 +1929,8 @@ struct GlobalScope::Impl
     }
 
     // Return type of calling `f` with the given arguments, deducing its template parameters.
-    const Ty* returnTypeOfCall(FunctionDecl* f, const Subst* classSubst, const Span<Expr*>& args, const NamePart* namePart)
+    const Ty* returnTypeOfCall(FunctionDecl* f, const Subst* classSubst, const Span<Expr*>& args, const NamePart* namePart,
+                               CallExpr* call = nullptr)
     {
       if (f->body == nullptr && f->returnType == nullptr && !(f->flags & (DF_Constructor | DF_Destructor | DF_Conversion)))
         return unknown(Why::Unsupported);
@@ -1976,6 +1977,17 @@ struct GlobalScope::Impl
         for (size_t i = 0; i < fnTy->args.size() && i < args.size(); ++i)
           if (args[i]->ty)
             impl.deduce(fnTy->args[i], args[i]->ty, subst);
+        if (call)
+        {
+          call->templateArgCount = 0;
+          for (Decl* p : f->templateParams)
+          {
+            const Ty* t = subst.find(p);
+            if (!t || call->templateArgCount >= 4)
+              break;
+            call->templateArgs[call->templateArgCount++] = t;
+          }
+        }
         const Ty* result = impl.substitute(fnTy->inner, subst);
         if (impl.dependsOn(result, f->templateParams))
           return unknown(Why::Deduction);
@@ -2038,7 +2050,7 @@ struct GlobalScope::Impl
           n->resolved = f;
           const Ty* fnTy = impl.declaredTypeOf(f, nullptr, 0);
           record(n, fnTy);
-          return returnTypeOfCall(f, nullptr, c->args, &n->name.last());
+          return returnTypeOfCall(f, nullptr, c->args, &n->name.last(), c);
         }
         // Constructor call, functional cast, callable variable...
         const Ty* t = typeOfResolvedName(l, n->name.last(), n);
@@ -2112,7 +2124,7 @@ struct GlobalScope::Impl
             ++stats.membersDependent;
           else
             ++stats.membersBound;
-          return returnTypeOfCall(f, &r.subst, c->args, &last);
+          return returnTypeOfCall(f, &r.subst, c->args, &last, c);
         }
         if (r.type && types.isDependent(r.type))
           ++stats.membersDependent;
@@ -3208,7 +3220,10 @@ std::string GlobalScope::qualifiedName(Decl* d)
         if (p.special == 1)
           return "~" + std::string(impl->symbols.name(p.symbol));
         if (p.special == 2 && p.opToken < uint32_t(P::Count))
-          return "operator" + std::string(punctuatorSpelling(P(p.opToken)));
+        {
+          P op = P(p.opToken);
+          return op == P::LBracket ? "operator[]" : op == P::LParen ? "operator()" : "operator" + std::string(punctuatorSpelling(op));
+        }
         if (p.special != 0 || p.symbol == UINT32_MAX)
           return "operator?";
         return std::string(impl->symbols.name(p.symbol));
@@ -3249,6 +3264,70 @@ bool GlobalScope::isTemplateContext(Decl* d)
     if (!p->templateParams.empty())
       return true;
   return false;
+}
+
+namespace
+{
+  Subst toSubst(const TemplateArgs& args)
+  {
+    Subst s;
+    for (auto& [d, t] : args.pairs)
+      s.pairs.push_back({d, t});
+    return s;
+  }
+}
+
+const Ty* GlobalScope::typeOfDeclIn(Decl* d, const TemplateArgs& args)
+{
+  if (args.empty())
+    return typeOfDecl(d);
+  Subst s = toSubst(args);
+  const Ty* t = impl->declaredTypeOf(d, &s, 0);
+  if (impl->containsAuto(t) && d->kind == NodeKind::VariableDecl)
+  {
+    auto* v = static_cast<VariableDecl*>(d);
+    if (v->init && v->init->ty)
+      return impl->deduceAuto(t, v->init->ty);
+  }
+  return t;
+}
+
+const Ty* GlobalScope::typeOfAstIn(Type* t, Decl* context, const TemplateArgs& args)
+{
+  Impl::DeclContext dc;
+  impl->declContextFor(context, dc);
+  Subst s = toSubst(args);
+  ParsedFile* file = context ? context->file : nullptr;
+  return impl->convertType(t, Impl::TypeContext{dc.scope, &dc.params, args.empty() ? nullptr : &s, file ? file->tokens : nullptr,
+                                                file ? file->text : std::string_view()}, 0);
+}
+
+TemplateArgs GlobalScope::classArgsOf(const Ty* classType)
+{
+  TemplateArgs out;
+  Subst s = impl->substFor(classType);
+  for (const Subst::Pair& p : s.pairs)
+    out.pairs.push_back({p.param, p.type});
+  return out;
+}
+
+void GlobalScope::retypeFor(FunctionDecl* f, const TemplateArgs& args, const Ty* objectType)
+{
+  if (!f->file || !f->file->tokens)
+    return;
+  Subst subst = toSubst(args);
+  ResolveStats scratch;
+  Impl::Walker w(*impl, scratch, *f->file->tokens, f->file->text);
+  for (Decl* p = f; p; p = p->parent)
+    for (Decl* tp : p->templateParams)
+      w.locals.push(static_cast<TemplateParamDecl*>(tp)->name, tp);
+  w.scope = f->name.parts.size() > 1 ? w.semanticScopeFor(f->name) : impl->lexicalScopeOf(f);
+  w.activeSubst = &subst;
+  if (objectType)
+    w.thisType = impl->types.pointer(impl->types.unqualified(impl->types.stripRef(objectType)));
+  else if (Decl* cls = Impl::enclosingClassDecl(w.scope))
+    w.thisType = impl->types.pointer(impl->substitute(impl->selfType(cls), subst));
+  w.walkDecl(f);
 }
 
 size_t GlobalScope::scopeCount() const { return impl->scopes.load(); }

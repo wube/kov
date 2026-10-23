@@ -270,7 +270,15 @@ struct Expr : Node { const Ty* ty = nullptr; }; // ty: filled by the type checke
 struct NameExpr : Expr { QualifiedName name; Decl* resolved = nullptr; };
 struct LiteralExpr : Expr { TokenKind literalKind; Kw keyword; }; // keyword for true/false/nullptr
 struct ThisExpr : Expr {};
-struct CallExpr : Expr { Expr* callee; Span<Expr*> args; };
+struct CallExpr : Expr
+{
+  Expr* callee;
+  Span<Expr*> args;
+  // Deduced template arguments of the called function template, in parameter order (filled by
+  // the type checker; at most 4, which is all code generation supports).
+  const Ty* templateArgs[4] = {};
+  uint8_t templateArgCount = 0;
+};
 struct IndexExpr : Expr { Expr* base; Span<Expr*> args; };
 struct MemberExpr : Expr { Expr* base; QualifiedName member; P op; Decl* resolved = nullptr; };
 struct UnaryExpr : Expr { Expr* operand; uint32_t op; bool isKeyword; bool postfix; };

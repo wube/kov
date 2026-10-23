@@ -189,7 +189,8 @@ methods and single inheritance, enums, the arithmetic types, pointers, reference
 globals, `new`/`delete`, all control flow including `switch`, `extern "C"` functions.
 
 Tests: `compiler\tests\run_tests.cmd` compiles every `tests/run/*.kov`, runs it and compares the
-output with the `.expected` file. Five programs so far (hello, control, types, structs, objects).
+output with the `.expected` file. Six programs so far (hello, control, types, structs, objects,
+templates).
 
 Object model (added the same day): constructors with member initializers and default member
 initializers, destructors, destruction at scope exit in reverse order including the scopes left
@@ -204,9 +205,16 @@ counter.
 | kovc: lex, parse, resolve, check, IR | about 1 ms |
 | clang: optimise, codegen, link | 0.07 s |
 
-Not in v0 and reported as "codegen does not support X yet": templates in generated code,
-lambdas, unions, exceptions, virtual functions, arrays of objects with constructors, globals
-with constructors. IR names are the
+Templates in generated code (same day): a struct layout per instantiation type, instantiated
+functions emitted on first use from a worklist after the checker re-types the body for the
+concrete arguments, class and function templates with deduced or explicit arguments, member
+templates of class templates, destructors of instantiations. IR names carry the arguments:
+`@"Vector<int32>::push_back(const int32&)"`, `@"Vector<int32>::sumAs<int64>()"`.
+`templates.kov` exercises a `Vector<T>` for two element types and function templates.
+
+Not in v0 and reported as "codegen does not support X yet": lambdas, unions, exceptions,
+virtual functions, arrays of objects with constructors, globals with constructors, more than
+four template parameters per function. IR names are the
 qualified Kov names with parameter types in quotes (`@"Point::move(int32, int32)"`), so there is
 no mangling scheme.
 
