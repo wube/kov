@@ -2,7 +2,7 @@
 # on a random sample of Factorio .cpp files, with the include paths and defines from
 # C:\Factorio\fastbuild\fbuild.bff (Windows, FastDebug configuration), without the PCH.
 # Usage (needs the VS environment for the MSVC STL and Windows SDK include paths):
-#   bench\clang_syntax_only.cmd [-Sample 40] [-Seed 1] [-Parallel 32]
+#   compiler\bench\clang_syntax_only.cmd [-Sample 40] [-Seed 1] [-Parallel 32]
 param([int]$Sample = 40, [int]$Seed = 1, [int]$Parallel = 32)
 if (-not $env:INCLUDE) { Write-Error "Run through clang_syntax_only.cmd so that VsDevCmd sets INCLUDE/LIB."; exit 1 }
 

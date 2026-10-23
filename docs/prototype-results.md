@@ -11,7 +11,7 @@ in a fraction of a second? This is the core bet of Kov (see [design.md](design.m
 
 ## What was built
 
-`kovc` (about 5,500 lines of C++20 in `src/`):
+`kovc` (about 5,500 lines of C++20 in `compiler/src/`):
 
 1. **Lexer** (`lexer.cpp`): one pass, no preprocessor; a `#` line becomes one token. Identifiers
    are interned into a shared, sharded symbol table.
@@ -40,7 +40,7 @@ The standard library, the C libraries (SDL, Lua, zlib...) and the other third-pa
 
 ## Numbers
 
-Command: `build\kovc.exe C:\Factorio\src C:\Factorio\tests C:\Factorio\libraries\CommonUtil C:\Factorio\libraries\Agui`
+Command: `compiler\build\kovc.exe C:\Factorio\src C:\Factorio\tests C:\Factorio\libraries\CommonUtil C:\Factorio\libraries\Agui`
 
 | Phase | 1 thread | 32 threads | Notes |
 |---|---|---|---|
@@ -74,10 +74,10 @@ not holes. I found no systematic resolver gap in the top 30; the list is printed
 
 ### Comparison with clang
 
-`bench/clang_syntax_only.cmd` runs `clang-cl /Zs` (parse + full semantic analysis, no code
+`compiler/bench/clang_syntax_only.cmd` runs `clang-cl /Zs` (parse + full semantic analysis, no code
 generation) on a random sample of 40 Factorio `.cpp` files with the include paths and defines
 from `fastbuild/fbuild.bff` (FastDebug configuration), without the precompiled header. All 40
-compile cleanly. Results (`bench/clang_syntax_only.result.txt`):
+compile cleanly. Results (`compiler/bench/clang_syntax_only.result.txt`):
 
 | | clang-cl /Zs, per translation unit | kovc, whole code base |
 |---|---|---|
@@ -120,8 +120,8 @@ pending). The front end measured here is 0.3 s.
 ## How to reproduce
 
 ```
-build.cmd
-build\kovc.exe C:\Factorio\src C:\Factorio\tests C:\Factorio\libraries\CommonUtil C:\Factorio\libraries\Agui
-build\kovc.exe -j 1 ...          (single-threaded)
-bench\clang_syntax_only.cmd      (clang-cl /Zs on a 40-file sample, VS environment)
+compiler\build.cmd
+compiler\build\kovc.exe C:\Factorio\src C:\Factorio\tests C:\Factorio\libraries\CommonUtil C:\Factorio\libraries\Agui
+compiler\build\kovc.exe -j 1 ...          (single-threaded)
+compiler\bench\clang_syntax_only.cmd      (clang-cl /Zs on a 40-file sample, VS environment)
 ```
