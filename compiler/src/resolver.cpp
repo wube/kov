@@ -5,6 +5,8 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <thread>
 
@@ -819,7 +821,67 @@ struct GlobalScope::Impl
     Scope* scope;
     const LocalStack* locals;
     const Subst* subst;
+    const std::vector<Token>* tokens = nullptr; // For evaluating array bounds written as literals.
+    std::string_view text;
   };
+
+  // Minimal constant evaluation for array bounds: literals and arithmetic on them.
+  std::optional<int64_t> constEval(Expr* e, const TypeContext& ctx, int depth = 0)
+  {
+    if (!e || depth > 16)
+      return std::nullopt;
+    switch (e->kind)
+    {
+      case NodeKind::LiteralExpr:
+      {
+        auto* l = static_cast<LiteralExpr*>(e);
+        if (l->literalKind != TokenKind::Number || !ctx.tokens)
+          return std::nullopt;
+        const Token& t = (*ctx.tokens)[std::min<size_t>(l->token, ctx.tokens->size() - 1)];
+        std::string digits;
+        for (char c : ctx.text.substr(t.offset, t.length))
+          if (c != '\'')
+            digits += c;
+        try
+        {
+          return std::stoll(digits, nullptr, 0);
+        }
+        catch (...)
+        {
+          return std::nullopt;
+        }
+      }
+      case NodeKind::ParenExpr: return constEval(static_cast<ParenExpr*>(e)->inner, ctx, depth + 1);
+      case NodeKind::UnaryExpr:
+      {
+        auto* u = static_cast<UnaryExpr*>(e);
+        auto v = constEval(u->operand, ctx, depth + 1);
+        if (!v || u->isKeyword)
+          return std::nullopt;
+        return P(u->op) == P::Minus ? -*v : P(u->op) == P::Plus ? *v : std::optional<int64_t>();
+      }
+      case NodeKind::BinaryExpr:
+      {
+        auto* b = static_cast<BinaryExpr*>(e);
+        auto l = constEval(b->lhs, ctx, depth + 1), r = constEval(b->rhs, ctx, depth + 1);
+        if (!l || !r || b->isKeyword)
+          return std::nullopt;
+        switch (P(b->op))
+        {
+          case P::Plus: return *l + *r;
+          case P::Minus: return *l - *r;
+          case P::Star: return *l * *r;
+          case P::Slash: return *r ? *l / *r : std::optional<int64_t>();
+          case P::Percent: return *r ? *l % *r : std::optional<int64_t>();
+          case P::Shl: return *l << *r;
+          case P::Shr: return *l >> *r;
+          default: return std::nullopt;
+        }
+      }
+      default:
+        return std::nullopt;
+    }
+  }
 
   static Decl* enclosingClassDecl(Scope* s)
   {
@@ -998,7 +1060,12 @@ struct GlobalScope::Impl
         auto* c = static_cast<ConstType*>(t);
         return types.qualified(convertType(c->inner, ctx, depth + 1), true, c->isVolatile);
       }
-      case NodeKind::ArrayType: return types.array(convertType(static_cast<ArrayType*>(t)->element, ctx, depth + 1), 0);
+      case NodeKind::ArrayType:
+      {
+        auto* a = static_cast<ArrayType*>(t);
+        auto n = constEval(a->size, ctx);
+        return types.array(convertType(a->element, ctx, depth + 1), n && *n > 0 ? uint32_t(*n) : 0);
+      }
       case NodeKind::FunctionType:
       {
         auto* f = static_cast<FunctionType*>(t);
@@ -1062,7 +1129,7 @@ struct GlobalScope::Impl
   {
     DeclContext dc;
     declContextFor(d, dc);
-    TypeContext ctx{dc.scope, &dc.params, subst};
+    TypeContext ctx{dc.scope, &dc.params, subst, d->file ? d->file->tokens : nullptr, d->file ? d->file->text : std::string_view()};
     switch (d->kind)
     {
       case NodeKind::VariableDecl:
@@ -1360,7 +1427,7 @@ struct GlobalScope::Impl
       return t;
     }
 
-    TypeContext ctx() const { return TypeContext{scope, &locals, activeSubst}; }
+    TypeContext ctx() const { return TypeContext{scope, &locals, activeSubst, &tokens, text}; }
 
     // --- template instantiation: check bodies once per (template, arguments) ---
 
@@ -3038,6 +3105,150 @@ void GlobalScope::resolveFile(ParsedFile& file, const std::vector<Token>& tokens
 {
   Impl::Walker walker(*impl, stats, tokens, text);
   walker.walkDecls(file.decls);
+}
+
+TypeTable& GlobalScope::types() { return impl->types; }
+
+const Ty* GlobalScope::typeOfDecl(Decl* d) { return impl->declaredTypeOf(d, nullptr, 0); }
+
+const Ty* GlobalScope::typeOfAst(Type* t, Decl* context)
+{
+  Impl::DeclContext dc;
+  impl->declContextFor(context, dc);
+  ParsedFile* file = context ? context->file : nullptr;
+  return impl->convertType(t, Impl::TypeContext{dc.scope, &dc.params, nullptr, file ? file->tokens : nullptr, file ? file->text : std::string_view()}, 0);
+}
+
+Decl* GlobalScope::owningClass(Decl* d)
+{
+  if (!d)
+    return nullptr;
+  if (d->parent && d->parent->kind == NodeKind::ClassDecl)
+    return d->parent;
+  if (d->kind == NodeKind::FunctionDecl)
+  {
+    auto* f = static_cast<FunctionDecl*>(d);
+    if (f->name.parts.size() > 1)
+    {
+      QualifiedName qualifier = f->name;
+      qualifier.parts.count -= 1;
+      LocalStack params;
+      for (Decl* p : f->templateParams)
+        params.push(static_cast<TemplateParamDecl*>(p)->name, p);
+      Lookup l = impl->lookupQualified(qualifier, impl->lexicalScopeOf(f), &params, 0);
+      if (l.scope && l.scope->kind == ScopeKind::Class)
+        return l.scope->owner;
+    }
+  }
+  return nullptr;
+}
+
+Decl* GlobalScope::definitionOf(Decl* d)
+{
+  if (!d)
+    return nullptr;
+  if (d->kind == NodeKind::ClassDecl || d->kind == NodeKind::EnumDecl)
+  {
+    if (d->ownScope)
+      return d;
+    Entry e{d, nullptr};
+    Scope* s = impl->scopeOfEntry(e, 0);
+    return s ? s->owner : nullptr;
+  }
+  if (d->kind == NodeKind::FunctionDecl)
+  {
+    auto* f = static_cast<FunctionDecl*>(d);
+    if (f->body)
+      return f;
+    Decl* cls = owningClass(f);
+    if (cls && cls->ownScope)
+    {
+      uint32_t symbol = impl->functionSymbol(f->name);
+      const Ty* ft = impl->declaredTypeOf(f, nullptr, 0);
+      for (FunctionDecl* candidate : cls->ownScope->outOfLineMembers)
+        if (impl->functionSymbol(candidate->name) == symbol && impl->declaredTypeOf(candidate, nullptr, 0) == ft)
+          return candidate;
+    }
+    else if (!cls && f->name.parts.size() == 1)
+    {
+      // A free function declared and defined separately: find the entry with a body.
+      Scope* s = impl->lexicalScopeOf(f);
+      uint32_t symbol = impl->functionSymbol(f->name);
+      const Ty* ft = impl->declaredTypeOf(f, nullptr, 0);
+      if (const std::vector<Entry>* entries = s->find(symbol))
+        for (const Entry& e : *entries)
+          if (e.decl->kind == NodeKind::FunctionDecl && static_cast<FunctionDecl*>(e.decl)->body &&
+              impl->declaredTypeOf(e.decl, nullptr, 0) == ft)
+            return e.decl;
+    }
+    return f;
+  }
+  return d;
+}
+
+std::string GlobalScope::qualifiedName(Decl* d)
+{
+  auto own = [&](Decl* x) -> std::string
+  {
+    switch (x->kind)
+    {
+      case NodeKind::NamespaceDecl:
+      {
+        uint32_t n = static_cast<NamespaceDecl*>(x)->name;
+        return n == UINT32_MAX ? std::string() : std::string(impl->symbols.name(n));
+      }
+      case NodeKind::ClassDecl: case NodeKind::EnumDecl:
+      {
+        const QualifiedName& q = x->kind == NodeKind::ClassDecl ? static_cast<ClassDecl*>(x)->name : static_cast<EnumDecl*>(x)->name;
+        return q.empty() || q.last().symbol == UINT32_MAX ? std::string("(anonymous)") : std::string(impl->symbols.name(q.last().symbol));
+      }
+      case NodeKind::FunctionDecl:
+      {
+        const NamePart& p = static_cast<FunctionDecl*>(x)->name.last();
+        if (p.special == 1)
+          return "~" + std::string(impl->symbols.name(p.symbol));
+        if (p.special == 2 && p.opToken < uint32_t(P::Count))
+          return "operator" + std::string(punctuatorSpelling(P(p.opToken)));
+        if (p.special != 0 || p.symbol == UINT32_MAX)
+          return "operator?";
+        return std::string(impl->symbols.name(p.symbol));
+      }
+      case NodeKind::VariableDecl:
+      {
+        const QualifiedName& q = static_cast<VariableDecl*>(x)->name;
+        return q.empty() ? std::string("(unnamed)") : std::string(impl->symbols.name(q.last().symbol));
+      }
+      case NodeKind::EnumeratorDecl: return std::string(impl->symbols.name(static_cast<EnumeratorDecl*>(x)->name));
+      default: return "?";
+    }
+  };
+  std::vector<std::string> parts;
+  Decl* start = owningClass(d);
+  if (!start || (d->parent == start))
+    start = d->parent;
+  for (Decl* p = start; p; p = p->parent)
+  {
+    if (p->kind == NodeKind::NamespaceDecl || p->kind == NodeKind::ClassDecl || p->kind == NodeKind::EnumDecl)
+    {
+      std::string n = own(p);
+      if (!n.empty())
+        parts.push_back(n);
+    }
+  }
+  std::string result;
+  for (size_t i = parts.size(); i-- > 0;)
+    result += parts[i] + "::";
+  return result + own(d);
+}
+
+bool GlobalScope::isExternC(FunctionDecl* f) { return (f->flags & DF_ExternC) != 0; }
+
+bool GlobalScope::isTemplateContext(Decl* d)
+{
+  for (Decl* p = d; p; p = p->parent)
+    if (!p->templateParams.empty())
+      return true;
+  return false;
 }
 
 size_t GlobalScope::scopeCount() const { return impl->scopes.load(); }

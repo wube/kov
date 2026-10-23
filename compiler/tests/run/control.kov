@@ -1,0 +1,51 @@
+// Control flow: while, do, for with break/continue, switch with fallthrough, enums, logic.
+extern "C" int printf(const char* format, ...);
+
+enum class Color { Red, Green = 5, Blue };
+
+int classify(int n)
+{
+  switch (n)
+  {
+    case 0: return 100;
+    case 1:
+    case 2: return 200;
+    default: return 300;
+  }
+}
+
+const char* name(Color c)
+{
+  switch (c)
+  {
+    case Color::Red: return "red";
+    case Color::Green: return "green";
+    case Color::Blue: return "blue";
+  }
+  return "?";
+}
+
+int main()
+{
+  int i = 0;
+  while (i < 3)
+    ++i;
+  do
+  {
+    i *= 2;
+  } while (i < 20);
+  printf("%d %d %d %d\n", i, classify(0), classify(2), classify(9));
+  printf("%s %s %s\n", name(Color::Red), name(Color::Green), name(Color::Blue));
+  int total = 0;
+  for (int k = 0; k < 10; ++k)
+  {
+    if (k == 3)
+      continue;
+    if (k == 8)
+      break;
+    total += k;
+  }
+  bool flag = total > 10 && i != 0 || false;
+  printf("%d %d %d\n", total, flag ? 1 : 0, (int)Color::Blue);
+  return 0;
+}

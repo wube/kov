@@ -179,6 +179,28 @@ are stored on the shared AST node, so the last instantiation checked wins (a per
 side table is the proper home), and the member-body check does not yet record diagnostics per
 instantiation.
 
+## Stage 4: a Kov program runs (2026-10-23)
+
+`compiler/src/codegen.cpp` turns the checked program into textual LLVM IR for the whole program
+and `kovc --exe out.exe program.kov` hands it to the bundled clang (`clang -O2 out.exe.ll`),
+which does the optimisation, machine code and linking. No LLVM libraries are needed on the
+machine. The subset covered is the one in design.md, "Kov v0": functions, structs with
+methods and single inheritance, enums, the arithmetic types, pointers, references, arrays,
+globals, `new`/`delete`, all control flow including `switch`, `extern "C"` functions.
+
+Tests: `compiler\tests\run_tests.cmd` compiles every `tests/run/*.kov`, runs it and compares the
+output with the `.expected` file. Four programs so far (hello, control, types, structs).
+
+| step for `hello.kov` | time |
+|---|---|
+| kovc: lex, parse, resolve, check, IR | about 1 ms |
+| clang: optimise, codegen, link | 0.07 s |
+
+Not in v0 and reported as "codegen does not support X yet": constructors and destructors,
+class values constructed in expressions, templates, lambdas, unions, exceptions. IR names are the
+qualified Kov names with parameter types in quotes (`@"Point::move(int32, int32)"`), so there is
+no mangling scheme.
+
 ## Lessons
 
 - **Windows memory allocation serialises parallel work.** The first parser version allocated and

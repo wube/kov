@@ -1,10 +1,13 @@
 // kovc: the Kov compiler. Currently the speed-test prototype: parallel lexing of a file tree.
 #include "lexer.hpp"
+#include "codegen.hpp"
 #include "parser.hpp"
 #include "resolver.hpp"
 #include "source.hpp"
 #include <algorithm>
 #include <atomic>
+#include <cstdarg>
+#include <cstdlib>
 #include <chrono>
 #include <cstdio>
 #include <string>
@@ -13,6 +16,18 @@
 
 namespace
 {
+  bool quietOutput = false;
+  int report(const char* format, ...)
+  {
+    if (quietOutput)
+      return 0;
+    va_list args;
+    va_start(args, format);
+    int n = vprintf(format, args);
+    va_end(args);
+    return n;
+  }
+
   struct Options
   {
     std::vector<std::filesystem::path> roots;
@@ -22,6 +37,9 @@ namespace
     bool parse = true;
     int showErrors = 20;
     int showUnresolved = 25;
+    bool quiet = false;
+    std::string emitLLVM; // --emit-llvm <path>
+    std::string exe;      // --exe <path>
     int repeat = 1;
   };
 
@@ -32,7 +50,13 @@ namespace
             "  -j N          worker threads (default: hardware threads)\n"
             "  --ext .x,.y   file extensions to pick up (default .cpp,.hpp,.h,.kov)\n"
             "  --repeat N    lex the corpus N times, report the best time\n"
-            "  --dump        print tokens\n");
+            "  --dump        print tokens\n"
+            "  --lex-only    skip parsing\n"
+            "  --errors N    show the first N parse errors (default 20)\n"
+            "  --unresolved N show the N most common unresolved names (default 25)\n"
+            "  --quiet       no statistics\n"
+            "  --emit-llvm F write LLVM IR for the program to F\n"
+            "  --exe F       compile the program to the executable F (needs clang)\n");
   }
 
   struct FileStats
@@ -66,6 +90,43 @@ namespace
   }
 
   double seconds(std::chrono::steady_clock::duration d);
+  int codegenExit = 0;
+
+  void runCodegen(std::vector<std::unique_ptr<ParsedFile>>& parsed, GlobalScope& global, SymbolTable& symbols, const Options& options)
+  {
+    using Clock = std::chrono::steady_clock;
+    auto start = Clock::now();
+    CodegenResult cg = generateLLVM(parsed, global, symbols);
+    double t = seconds(Clock::now() - start);
+    report("codegen: %.3f s, %zu functions, %zu structs, %zu bytes of IR\n", t, cg.functions, cg.structs, cg.ir.size());
+    for (const std::string& e : cg.errors)
+      fprintf(stderr, "%s\n", e.c_str());
+    if (!cg.errors.empty())
+      codegenExit = 1;
+    std::string llPath = options.emitLLVM;
+    if (llPath.empty())
+      llPath = options.exe + ".ll";
+    FILE* out = fopen(llPath.c_str(), "wb");
+    if (!out)
+    {
+      fprintf(stderr, "cannot write %s\n", llPath.c_str());
+      codegenExit = 1;
+      return;
+    }
+    fwrite(cg.ir.data(), 1, cg.ir.size(), out);
+    fclose(out);
+    if (options.exe.empty() || codegenExit)
+      return;
+    const char* clangEnv = getenv("KOV_CLANG");
+    std::string clang = clangEnv ? clangEnv : "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\Llvm\\x64\\bin\\clang.exe";
+    std::string command = "\"\"" + clang + "\" -O2 -w \"" + llPath + "\" -o \"" + options.exe + "\"\"";
+    start = Clock::now();
+    int rc = system(command.c_str());
+    report("clang:   %.3f s (exit %d)\n", seconds(Clock::now() - start), rc);
+    if (rc != 0)
+      codegenExit = 1;
+  }
+
   void runResolve(std::vector<std::unique_ptr<ParsedFile>>& parsed, SymbolTable& symbols, const Options& options,
                   std::vector<SourceFile>& files, std::vector<LexResult>& lexed);
 
@@ -93,11 +154,12 @@ namespace
       parallelFor(files.size(), options.threads, [&](size_t i)
       {
         parsed[i] = std::make_unique<ParsedFile>();
+        parsed[i]->path = files[i].path.string();
         parseFile(round == 0 ? lexed[i].tokens : tokens[i], files[i].text, symbols, *parsed[i]);
       });
       double t = seconds(Clock::now() - start);
       if (round > 0)
-        printf("parse round %d: %.3f s\n", round + 1, t);
+        report("parse round %d: %.3f s\n", round + 1, t);
       parseTime = std::min(parseTime, t);
       if (round + 1 < std::max(1, options.repeat))
         continue;
@@ -119,10 +181,10 @@ namespace
       arenaBytes += parsed[i]->arena.bytesAllocated();
       lines += lexed[i].lineCount;
     }
-    printf("parse:   %.3f s  (%.1f M lines/s)\n", parseTime, lines / 1e6 / parseTime);
-    printf("  decls: %llu, function bodies: %llu, nodes: %llu, AST memory: %.1f MB\n", (unsigned long long)decls,
+    report("parse:   %.3f s  (%.1f M lines/s)\n", parseTime, lines / 1e6 / parseTime);
+    report("  decls: %llu, function bodies: %llu, nodes: %llu, AST memory: %.1f MB\n", (unsigned long long)decls,
            (unsigned long long)bodies, (unsigned long long)nodes, arenaBytes / 1e6);
-    printf("  parse errors: %llu in %llu files (%.2f%% of files clean)\n", (unsigned long long)errors,
+    report("  parse errors: %llu in %llu files (%.2f%% of files clean)\n", (unsigned long long)errors,
            (unsigned long long)filesWithErrors, 100.0 * (files.size() - filesWithErrors) / std::max<size_t>(1, files.size()));
     int shown = 0;
     for (size_t i = 0; i < files.size() && shown < options.showErrors; ++i)
@@ -131,7 +193,7 @@ namespace
         if (shown++ >= options.showErrors)
           break;
         const Token& t = lexed[i].tokens[std::min<size_t>(d.token, lexed[i].tokens.size() - 1)];
-        printf("  %s:%u: %s (at '%.*s')\n", files[i].path.string().c_str(), lineOf(files[i].text, t.offset), d.message,
+        report("  %s:%u: %s (at '%.*s')\n", files[i].path.string().c_str(), lineOf(files[i].text, t.offset), d.message,
                int(std::min<uint32_t>(t.length, 30)), files[i].text.data() + t.offset);
       }
     runResolve(parsed, symbols, options, files, lexed);
@@ -148,7 +210,7 @@ namespace
     start = Clock::now();
     global.finishIndex();
     double finishTime = seconds(Clock::now() - start);
-    printf("index:   %.3f s  (+%.3f s for out-of-line class definitions): %zu scopes, %zu entries\n", indexTime, finishTime,
+    report("index:   %.3f s  (+%.3f s for out-of-line class definitions): %zu scopes, %zu entries\n", indexTime, finishTime,
            global.scopeCount(), global.entryCount());
 
     std::vector<ResolveStats> stats(parsed.size());
@@ -165,67 +227,69 @@ namespace
     uint64_t types = total.typesResolved + total.typesDependent + total.typesUnresolved;
     uint64_t names = total.namesLocal + total.namesMember + total.namesGlobal + total.namesDependent + total.namesUnresolved;
     uint64_t project = total.typesUnresolved + total.namesUnresolved - total.qualifiedUnresolvedStd - total.unresolvedMacroLike;
-    printf("resolve: %.3f s\n", resolveTime);
-    printf("  type names:  %llu  (%.1f%% resolved, %.1f%% dependent on template parameters, %.1f%% unresolved)\n",
+    report("resolve: %.3f s\n", resolveTime);
+    report("  type names:  %llu  (%.1f%% resolved, %.1f%% dependent on template parameters, %.1f%% unresolved)\n",
            (unsigned long long)types, 100.0 * total.typesResolved / std::max<uint64_t>(1, types),
            100.0 * total.typesDependent / std::max<uint64_t>(1, types), 100.0 * total.typesUnresolved / std::max<uint64_t>(1, types));
-    printf("  identifiers: %llu  (%.1f%% local, %.1f%% member, %.1f%% namespace/global, %.1f%% dependent, %.1f%% unresolved)\n",
+    report("  identifiers: %llu  (%.1f%% local, %.1f%% member, %.1f%% namespace/global, %.1f%% dependent, %.1f%% unresolved)\n",
            (unsigned long long)names, 100.0 * total.namesLocal / std::max<uint64_t>(1, names),
            100.0 * total.namesMember / std::max<uint64_t>(1, names), 100.0 * total.namesGlobal / std::max<uint64_t>(1, names),
            100.0 * total.namesDependent / std::max<uint64_t>(1, names), 100.0 * total.namesUnresolved / std::max<uint64_t>(1, names));
-    printf("  unresolved: %llu std::, %llu macro-like, %llu other; %llu fixed-width integer names typed as builtins\n",
+    report("  unresolved: %llu std::, %llu macro-like, %llu other; %llu fixed-width integer names typed as builtins\n",
            (unsigned long long)total.qualifiedUnresolvedStd, (unsigned long long)total.unresolvedMacroLike,
            (unsigned long long)project, (unsigned long long)total.typesBuiltinByName);
     uint64_t members = total.membersBound + total.membersDependent + total.membersUnknownBase + total.membersNotFound;
     uint64_t exprs = total.exprsTyped + total.exprsDependent + total.exprsUnknown;
-    printf("check:   %zu distinct types\n", global.typeCount());
-    printf("  member accesses: %llu  (%.1f%% bound to a declaration, %.1f%% dependent, %.1f%% object type unknown, %.1f%% no such member)\n",
+    report("check:   %zu distinct types\n", global.typeCount());
+    report("  member accesses: %llu  (%.1f%% bound to a declaration, %.1f%% dependent, %.1f%% object type unknown, %.1f%% no such member)\n",
            (unsigned long long)members, 100.0 * total.membersBound / std::max<uint64_t>(1, members),
            100.0 * total.membersDependent / std::max<uint64_t>(1, members), 100.0 * total.membersUnknownBase / std::max<uint64_t>(1, members),
            100.0 * total.membersNotFound / std::max<uint64_t>(1, members));
-    printf("  expressions: %llu  (%.1f%% typed, %.1f%% dependent on template parameters, %.1f%% unknown)\n",
+    report("  expressions: %llu  (%.1f%% typed, %.1f%% dependent on template parameters, %.1f%% unknown)\n",
            (unsigned long long)exprs, 100.0 * total.exprsTyped / std::max<uint64_t>(1, exprs),
            100.0 * total.exprsDependent / std::max<uint64_t>(1, exprs), 100.0 * total.exprsUnknown / std::max<uint64_t>(1, exprs));
-    printf("  unknown because: name %llu, object type %llu, member %llu, overload %llu, deduction %llu, auto return %llu, "
+    report("  unknown because: name %llu, object type %llu, member %llu, overload %llu, deduction %llu, auto return %llu, "
            "auto %llu, operator %llu, unsupported construct %llu\n",
            (unsigned long long)total.unknownName, (unsigned long long)total.unknownBase, (unsigned long long)total.unknownMember,
            (unsigned long long)total.unknownOverload, (unsigned long long)total.unknownDeduction, (unsigned long long)total.unknownAutoReturn,
            (unsigned long long)total.unknownAuto, (unsigned long long)total.unknownOperator, (unsigned long long)total.unknownUnsupported);
-    printf("  calls resolved to a function: %llu (%llu with several arity matches)\n", (unsigned long long)total.callsResolved,
+    report("  calls resolved to a function: %llu (%llu with several arity matches)\n", (unsigned long long)total.callsResolved,
            (unsigned long long)total.callsAmbiguousArity);
     GlobalScope::InstantiationStats inst = global.instantiationStats();
     uint64_t instExprs = total.instExprsTyped + total.instExprsDependent + total.instExprsUnknown;
-    printf("instantiate: %zu class and %zu function template instantiations checked once each (%zu requests, %zu waits), %.3f s of CPU\n",
+    report("instantiate: %zu class and %zu function template instantiations checked once each (%zu requests, %zu waits), %.3f s of CPU\n",
            inst.classes, inst.functions, inst.requests, inst.waits, inst.seconds);
-    printf("  %zu member bodies checked inside instantiations; %llu expressions there (%.1f%% typed, %.1f%% dependent, %.1f%% unknown)\n",
+    report("  %zu member bodies checked inside instantiations; %llu expressions there (%.1f%% typed, %.1f%% dependent, %.1f%% unknown)\n",
            inst.bodies, (unsigned long long)instExprs, 100.0 * total.instExprsTyped / std::max<uint64_t>(1, instExprs),
            100.0 * total.instExprsDependent / std::max<uint64_t>(1, instExprs), 100.0 * total.instExprsUnknown / std::max<uint64_t>(1, instExprs));
     std::vector<std::pair<uint32_t, uint32_t>> missing(total.missingMembers.begin(), total.missingMembers.end());
     std::sort(missing.begin(), missing.end(), [](auto& a, auto& b) { return a.second > b.second; });
     if (!missing.empty() && options.showUnresolved > 0)
-      printf("  most common members not found in a known class:\n");
+      report("  most common members not found in a known class:\n");
     for (size_t i = 0; i < missing.size() && int(i) < options.showUnresolved / 2; ++i)
     {
       ResolveStats::Where w = total.missingMembersFirst[missing[i].first];
       const Token& t = lexed[w.file].tokens[std::min<size_t>(w.token, lexed[w.file].tokens.size() - 1)];
-      printf("    %6u  %-28.*s first at %s:%u\n", missing[i].second, int(symbols.name(missing[i].first).size()),
+      report("    %6u  %-28.*s first at %s:%u\n", missing[i].second, int(symbols.name(missing[i].first).size()),
              symbols.name(missing[i].first).data(), files[w.file].path.string().c_str(), lineOf(files[w.file].text, t.offset));
     }
     std::vector<std::pair<uint32_t, uint32_t>> unknownBase(total.unknownBaseMembers.begin(), total.unknownBaseMembers.end());
     std::sort(unknownBase.begin(), unknownBase.end(), [](auto& a, auto& b) { return a.second > b.second; });
     if (!unknownBase.empty() && options.showUnresolved > 0)
-      printf("  most common members accessed on an object of unknown type:\n");
+      report("  most common members accessed on an object of unknown type:\n");
     for (size_t i = 0; i < unknownBase.size() && int(i) < options.showUnresolved / 2; ++i)
-      printf("    %6u  %.*s\n", unknownBase[i].second, int(symbols.name(unknownBase[i].first).size()), symbols.name(unknownBase[i].first).data());
+      report("    %6u  %.*s\n", unknownBase[i].second, int(symbols.name(unknownBase[i].first).size()), symbols.name(unknownBase[i].first).data());
     if (options.showUnresolved > 0)
-      printf("  most common unresolved names:\n");
+      report("  most common unresolved names:\n");
     std::vector<std::pair<uint32_t, uint32_t>> top(total.unresolvedSymbols.begin(), total.unresolvedSymbols.end());
     std::sort(top.begin(), top.end(), [](auto& a, auto& b) { return a.second > b.second; });
+    if (!options.emitLLVM.empty() || !options.exe.empty())
+      runCodegen(parsed, global, symbols, options);
     for (size_t i = 0; i < top.size() && int(i) < options.showUnresolved; ++i)
     {
       ResolveStats::Where w = total.unresolvedFirst[top[i].first];
       const Token& t = lexed[w.file].tokens[std::min<size_t>(w.token, lexed[w.file].tokens.size() - 1)];
-      printf("    %6u  %-28.*s first at %s:%u\n", top[i].second, int(symbols.name(top[i].first).size()),
+      report("    %6u  %-28.*s first at %s:%u\n", top[i].second, int(symbols.name(top[i].first).size()),
              symbols.name(top[i].first).data(), files[w.file].path.string().c_str(), lineOf(files[w.file].text, t.offset));
     }
   }
@@ -268,6 +332,12 @@ int main(int argc, char** argv)
       options.showErrors = atoi(argv[++i]);
     else if (arg == "--unresolved" && i + 1 < argc)
       options.showUnresolved = atoi(argv[++i]);
+    else if (arg == "--quiet")
+      options.quiet = true;
+    else if (arg == "--emit-llvm" && i + 1 < argc)
+      options.emitLLVM = argv[++i];
+    else if (arg == "--exe" && i + 1 < argc)
+      options.exe = argv[++i];
     else if (arg[0] == '-')
     {
       usage();
@@ -283,6 +353,7 @@ int main(int argc, char** argv)
   }
   if (options.threads == 0)
     options.threads = 1;
+  quietOutput = options.quiet;
 
   using Clock = std::chrono::steady_clock;
 
@@ -336,15 +407,15 @@ int main(int argc, char** argv)
 
     if (round == options.repeat - 1)
     {
-      printf("files:   %zu\n", files.size());
-      printf("bytes:   %llu (%.1f MB)\n", (unsigned long long)total.bytes, total.bytes / 1e6);
-      printf("lines:   %llu\n", (unsigned long long)total.lines);
-      printf("tokens:  %llu\n", (unsigned long long)total.tokens);
-      printf("symbols: %zu distinct identifiers\n", symbols.size());
-      printf("errors:  %llu\n", (unsigned long long)total.errors);
-      printf("threads: %u\n", options.threads);
-      printf("read:    %.3f s\n", collectTime);
-      printf("lex:     %.3f s  (%.0f MB/s, %.1f M lines/s, %.1f M tokens/s)\n", bestLex,
+      report("files:   %zu\n", files.size());
+      report("bytes:   %llu (%.1f MB)\n", (unsigned long long)total.bytes, total.bytes / 1e6);
+      report("lines:   %llu\n", (unsigned long long)total.lines);
+      report("tokens:  %llu\n", (unsigned long long)total.tokens);
+      report("symbols: %zu distinct identifiers\n", symbols.size());
+      report("errors:  %llu\n", (unsigned long long)total.errors);
+      report("threads: %u\n", options.threads);
+      report("read:    %.3f s\n", collectTime);
+      report("lex:     %.3f s  (%.0f MB/s, %.1f M lines/s, %.1f M tokens/s)\n", bestLex,
              total.bytes / 1e6 / bestLex, total.lines / 1e6 / bestLex, total.tokens / 1e6 / bestLex);
       if (total.errors)
       {
@@ -352,7 +423,7 @@ int main(int argc, char** argv)
         for (size_t i = 0; i < files.size() && shown < 20; ++i)
           for (const Token& t : results[i].tokens)
             if (t.getKind() == TokenKind::Error && shown++ < 20)
-              printf("  error in %s at offset %u: '%.*s'\n", files[i].path.string().c_str(), t.offset,
+              report("  error in %s at offset %u: '%.*s'\n", files[i].path.string().c_str(), t.offset,
                      int(std::min<uint32_t>(t.length, 40)), files[i].text.data() + t.offset);
       }
       if (options.parse)
@@ -360,11 +431,11 @@ int main(int argc, char** argv)
       if (options.dumpTokens)
         for (size_t i = 0; i < files.size(); ++i)
         {
-          printf("== %s\n", files[i].path.string().c_str());
+          report("== %s\n", files[i].path.string().c_str());
           for (const Token& t : results[i].tokens)
-            printf("%-10s %.*s\n", tokenKindName(t.getKind()), int(t.length), files[i].text.data() + t.offset);
+            report("%-10s %.*s\n", tokenKindName(t.getKind()), int(t.length), files[i].text.data() + t.offset);
         }
     }
   }
-  return 0;
+  return codegenExit;
 }

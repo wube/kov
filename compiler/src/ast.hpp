@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstddef>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -163,6 +164,7 @@ enum DeclFlags : uint32_t
   DF_Volatile = 1 << 20, DF_Typedef = 1 << 21, DF_Export = 1 << 22, DF_BothConst = 1 << 23,
   DF_Accumulate = 1 << 24, DF_Register = 1 << 25, DF_Operator = 1 << 26, DF_Constructor = 1 << 27,
   DF_Destructor = 1 << 28, DF_Conversion = 1 << 29, DF_Specialization = 1 << 30,
+  DF_ExternC = 1u << 31, // Declared inside extern "C": C linkage, unmangled name.
 };
 
 enum class Access : uint8_t { Default, Public, Protected, Private };
@@ -301,6 +303,7 @@ struct ParsedFile
   Span<Decl*> decls;
   const std::vector<Token>* tokens = nullptr; // Set by parseFile; the driver keeps the vector alive.
   std::string_view text;
+  std::string path; // Set by the driver, for diagnostics.
   std::vector<Diagnostic> diagnostics;
   uint32_t declCount = 0; // All declaration nodes created.
   uint32_t functionBodies = 0;

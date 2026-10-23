@@ -1,0 +1,38 @@
+// Structs: base classes, methods calling inherited methods, nesting, copies, pointers to base.
+extern "C" int printf(const char* format, ...);
+
+struct Base
+{
+  int id;
+  int twice() const { return this->id * 2; }
+};
+
+struct Derived : Base
+{
+  int extra;
+  int sum() const { return this->twice() + this->extra; }
+};
+
+struct Pair
+{
+  Derived a;
+  Derived b;
+};
+
+void fill(Derived& d, int id, int extra)
+{
+  d.id = id;
+  d.extra = extra;
+}
+
+int main()
+{
+  Pair p;
+  fill(p.a, 1, 10);
+  fill(p.b, 2, 20);
+  Derived copy = p.b;
+  copy.extra = 5;
+  Base* base = &p.a;
+  printf("%d %d %d %d\n", p.a.sum(), p.b.sum(), copy.sum(), base->twice());
+  return 0;
+}

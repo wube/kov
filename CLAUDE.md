@@ -19,6 +19,9 @@ simple templates, own standard library, C-only interop.
   committing.
 
 ## Current phase
-The speed-test prototype is done (see docs/prototype-results.md). Next: type checking and simple
-template instantiation on top of the resolver. Measure, don't guess: every speed claim comes with
-the benchmark command and numbers.
+Front end (lexer, parser, resolver, type checker, template instantiation) is done and measured
+(docs/prototype-results.md). Code generation for the Kov v0 subset works through textual LLVM IR
+and the bundled clang: `compiler\build\kovc.exe --exe out.exe program.kov`. Run the end-to-end
+tests with `compiler\tests\run_tests.cmd` after every compiler change; the Factorio benchmark
+command in docs/prototype-results.md is the regression check for the front end. Measure, don't
+guess: every speed claim comes with the benchmark command and numbers.

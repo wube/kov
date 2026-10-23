@@ -65,6 +65,7 @@ namespace
     Access currentAccess = Access::Default;
     bool inRecovery = false;
     int depth = 0;
+    bool externC = false; // Inside extern "C".
     bool conditionMode = false; // Declarations inside `if (...)` end at ')' instead of ';'.
     bool inRequires = false;    // Inside a requires-clause names are always template-ids.
     std::vector<std::pair<uint32_t, Token>> splits; // '>>' tokens split in place, for undo on backtrack.
@@ -268,6 +269,8 @@ namespace
       d->parent = currentParent;
       d->access = currentAccess;
       d->file = &out;
+      if (externC)
+        d->flags |= DF_ExternC;
       ++out.declCount;
       return d;
     }
@@ -992,15 +995,19 @@ namespace
       {
         // extern "C" { ... } or extern "C" decl
         advance();
+        bool savedExternC = externC;
+        externC = spelling() == "\"C\"";
         advance();
         if (accept(P::LBrace))
         {
           while (!at(P::RBrace) && !at(TokenKind::End))
             parseDeclaration(scope);
           expect(P::RBrace, "expected '}'");
+          externC = savedExternC;
           return;
         }
         parseDeclarationInner(scope, templ);
+        externC = savedExternC;
         return;
       }
       if (at(Kw::public_) || at(Kw::private_) || at(Kw::protected_))
@@ -1143,7 +1150,7 @@ namespace
         VariableDecl* v = decl<VariableDecl>(start);
         v->type = d.type;
         v->name = d.name;
-        v->flags = flags | d.flags;
+        v->flags |= flags | d.flags;
         v->bitfield = d.bitfield;
         v->structuredBindings = d.structuredBindings;
         v->templateParams = templ.params;
@@ -1479,7 +1486,7 @@ namespace
       f->returnType = returnType;
       f->name = d.name;
       f->params = d.params;
-      f->flags = flags | d.flags;
+      f->flags |= flags | d.flags;
       f->trailingReturn = d.trailingReturn;
       f->requiresClause = d.requiresClause ? d.requiresClause : templ.requiresClause;
       f->templateParams = templ.params;
@@ -1854,7 +1861,7 @@ namespace
       skipMacroSpecifier();
       ClassDecl* c = decl<ClassDecl>(start);
       c->keyword = keyword;
-      c->flags = flags;
+      c->flags |= flags;
       c->templateParams = templ.params;
       c->isTemplate = templ.present;
       if (templ.present && templ.params.empty())
@@ -1953,7 +1960,7 @@ namespace
           VariableDecl* v = decl<VariableDecl>(start);
           v->type = d.type;
           v->name = d.name;
-          v->flags = flags | d.flags;
+          v->flags |= flags | d.flags;
           parseInitializer(v);
           pushDecl(v);
           if (!accept(P::Comma))
@@ -1970,7 +1977,7 @@ namespace
       uint32_t save = pos;
       advance();
       EnumDecl* e = decl<EnumDecl>(start);
-      e->flags = flags;
+      e->flags |= flags;
       e->templateParams = templ.params;
       if (accept(Kw::class_) || accept(Kw::struct_))
         e->isClass = true;
@@ -2064,7 +2071,7 @@ namespace
           VariableDecl* v = decl<VariableDecl>(start);
           v->type = d.type;
           v->name = d.name;
-          v->flags = flags | d.flags;
+          v->flags |= flags | d.flags;
           parseInitializer(v);
           pushDecl(v);
           if (!accept(P::Comma))
@@ -2516,7 +2523,7 @@ namespace
           v->type = d.type;
           v->name = d.name;
           v->structuredBindings = d.structuredBindings;
-          v->flags = flags;
+          v->flags |= flags;
           s->var = v;
           expect(P::Colon, "expected ':' in range for");
           s->range = at(P::LBrace) ? parseBraceInit() : parseExpression();

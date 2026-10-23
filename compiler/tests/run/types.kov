@@ -1,0 +1,44 @@
+// Arithmetic types, globals, arrays, pointers, references, new/delete, sizeof.
+extern "C" int printf(const char* format, ...);
+
+static int counter = 10;
+const int Limit = 3;
+
+double average(const int* values, int count)
+{
+  double sum = 0;
+  for (int i = 0; i < count; ++i)
+    sum += values[i];
+  return sum / count;
+}
+
+void bump(int& x)
+{
+  x += 5;
+}
+
+int* makeInt(int v)
+{
+  int* p = new int;
+  *p = v;
+  return p;
+}
+
+int main()
+{
+  int values[4];
+  for (int i = 0; i < 4; ++i)
+    values[i] = (i + 1) * 10;
+  double avg = average(values, 4);
+  bump(counter);
+  int* p = makeInt(7);
+  unsigned int u = 4000000000u;
+  char c = 'A' + 2;
+  float f = 1.5f;
+  printf("%.2f %d %d %u %c %.1f %d\n", avg, counter, *p, u, c, f * 2, Limit * 2);
+  printf("%d %d %d\n", (int)sizeof(int), (int)sizeof(values), (int)sizeof(double));
+  delete p;
+  long long big = 1LL << 40;
+  printf("%lld %d\n", big, (int)(big >> 38));
+  return 0;
+}
