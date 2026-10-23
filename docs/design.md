@@ -31,10 +31,9 @@ This file records decisions that have been made. When a decision changes, update
   producing it / produce it).
 - **Persistent compiler.** It stays running with the program model in memory, recompiles
   precisely what changed, and serves IDE queries.
-- Macros: global macros (command line / declared global, cannot be `#undef`ed) and
-  file-local macros. The Factorio survey ([macro-survey.md](macro-survey.md), 2026-10-23) found no
-  use for either once the features listed there exist; the proposal is typed `config` constants
-  instead of global macros and no preprocessor at all.
+- No macros and no preprocessor (decided 2026-10-23 after the Factorio survey in
+  [macro-survey.md](macro-survey.md)): build configuration is a set of typed `config` constants,
+  and every use of macros is covered by the features in section 7.
 
 Expected limit: once headers and duplicate instantiations are gone, LLVM optimization
 dominates release builds. The big wins are debug builds and incremental rebuilds; release
@@ -81,6 +80,31 @@ required `override`, explicit by default (`implicit` keyword), no implicit switc
 fallthrough, exhaustive enum switches (abort on invalid value), typed union, `?->`, `?:`,
 `both_const` / `class_const`, named parameters, test tools in the compiler, `accumulate`
 methods (the Factorio survey suggests generating save/load from the class may beat it).
+
+### 7. No preprocessor; what replaces macros (decided 2026-10-23)
+Based on [macro-survey.md](macro-survey.md): Factorio's 611 macros and 22,647 expansions fall
+into eleven cases and none of them needs textual substitution, so Kov has no preprocessor. The
+replacements, in the order of how much code they remove:
+1. Tests and `check` in the compiler: `test "name" { ... }` declarations the compiler collects
+   and the standard runner selects; `check(expr)` reports the text, the location and the operand
+   values and records the failure instead of aborting.
+2. `assert`/`release_assert` as statements of the language (text, location, operand values;
+   `assert` compiles to nothing when `config.debug` is false); an implicit caller location
+   parameter (`CallerLocation here = caller`, filled at the call site); `conditional(config.x)`
+   functions whose calls compile to nothing, arguments unevaluated, when the condition is false.
+3. Compile-time reflection: `for constexpr (m : members(T))` with `m.name`, `m.type` and
+   `object.[m]`; `enumerators(E)` and `count(E)`; `nameof(expr)`.
+4. `if constexpr` and `for constexpr` at every scope (function, class, namespace), over typed
+   `config` constants and type lists (`types<A, B, C>`, or `const` arrays of structs for lists
+   with data). A file may start with `requires config.platform == Platform::X;`.
+5. Typed unions (`union enum`, section 6).
+6. Real enums with `str()`, `fromStr()`, `count` and iteration (section 6).
+7. `_` as a name that may be declared any number of times in a scope, each an unnamed local that
+   lives to the end of the scope.
+8. Attributes for the real compiler modifiers: `[[noinline]]`, `[[forceinline]]`,
+   `[[vectorcall]]`, `[[optimize]]`, `[[no_sanitize]]`.
+The spellings above are the working proposal; each is settled and recorded here when the feature
+is implemented.
 
 ## Benchmark target
 
@@ -134,13 +158,6 @@ qualified Kov names with parameter types, quoted, so there is no mangling scheme
   most-vexing-parse, declaration statements recognisable from their first tokens). The prototype
   parser uses heuristics that work on 99.2% of Factorio files; the resolver can flag misparses
   later, but a real compiler should not have to guess.
-- **Macros.** Surveyed in [macro-survey.md](macro-survey.md) (2026-10-23): Factorio's 611 macros
-  and 22,647 expansions fall into eleven cases, none of which needs textual substitution. Proposed
-  (not yet reviewed by kovarex), by payoff: tests and `check` in the compiler; built-in `assert`,
-  an implicit caller location and `conditional(config.x)` functions that compile to nothing;
-  compile-time reflection over members and enumerators with `nameof`; `if constexpr` and
-  `for constexpr` at every scope over typed `config` constants and type lists; typed unions; real
-  enums; unnamed scoped locals `_`; attributes for the few real compiler modifiers.
 
 ## Roadmap
 1. **Speed-test prototype** (done, see [prototype-results.md](prototype-results.md)): parallel
@@ -173,5 +190,11 @@ qualified Kov names with parameter types, quoted, so there is no mangling scheme
    and variadic templates with a type-safe `format` followed the same day, then the C header
    importer: `extern "C" import` of the UCRT and `windows.h`, see "C header import" in
    prototype-results.md). Next inside this item: a first real program beyond tests.
-3. Standard library, C import, converter from Factorio-style C++ to Kov.
-4. Persistent compiler + IDE integration.
+4. Macro replacements (section 7), the small ones first because real programs and the converter
+   need them: `assert`/`release_assert`, caller location, `conditional` functions, `config`
+   constants with `if constexpr` at every scope, `_` locals, attributes; then the ones that need
+   design work: reflection, `for constexpr`, typed unions, real enums, tests.
+5. Backend at Factorio scale: measure clang on whole-program IR for a large program, then
+   in-process LLVM, parallel per-function codegen, per-function caching, debug-build speed.
+6. Persistent compiler + IDE integration: the one-line-change rebuild (16 s in Factorio today).
+7. Converter from Factorio-style C++ to Kov (needs 4).
