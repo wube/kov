@@ -1,5 +1,6 @@
 #include "codegen.hpp"
 #include <set>
+#include <unordered_set>
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -37,6 +38,7 @@ namespace
     std::vector<FunctionDecl*> vtable;        // implementation per slot (null for pure virtual)
     std::vector<const Ty*> vtableOwners;      // class type each implementation belongs to
     std::string vtableName;                   // @"vtable.Class"
+    std::string vtableText;                   // its definition, emitted into every module that stores it
     bool isUnion = false;                     // all members at offset 0, storage sized for the largest
     std::vector<std::pair<Decl*, uint32_t>> anonymous; // anonymous struct/union members -> field index
   };
@@ -49,7 +51,17 @@ namespace
     CodegenResult& result;
 
     std::string decls;   // struct types, globals, string constants, declares
-    std::string body;    // function definitions
+    std::string body;    // function definitions (single module), or unused when split
+    std::string shared;  // definitions every module carries (linkonce_odr): enum str(), the assert handler
+    unsigned moduleCount = 1;
+    unsigned currentModule = 0;                                  // where the function being emitted goes
+    std::vector<std::string> bodies;                             // per module
+    std::vector<std::string> moduleDecls;                        // per module: its string constants and vtables
+    std::vector<std::unordered_set<std::string>> vtablesIn;      // per module: the vtables it already has
+    bool emittingShared = false;                                 // string constants go to the shared decls
+    std::unordered_map<ParsedFile*, unsigned> fileModule;        // file -> module
+    std::unordered_map<std::string, unsigned> definedIn;         // function name -> module
+    std::unordered_map<std::string, std::string> declareLines;   // function name -> its declare line
     std::string fn;      // current function text (after the allocas)
     std::string allocas; // entry-block allocas of the current function
     uint32_t temp = 0;
@@ -100,6 +112,7 @@ namespace
       FunctionDecl* f;
       TemplateArgs args;
       const Ty* classTy;
+      unsigned module; // the module of the function that asked for it
     };
 
     // A lambda's closure: one struct per lambda, fields for the captures, one function.
@@ -434,7 +447,8 @@ namespace
             entry = "ptr " + useFunction(f, global.classArgsOf(owners2[i]), owners2[i]);
           entries += (i ? ", " : "") + entry;
         }
-        decls += vt + " = constant [" + std::to_string(impls2.size()) + " x ptr] [" + entries + "]\n";
+        structs[key].vtableText = "$" + vt.substr(1) + " = comdat any\n" + vt + " = linkonce_odr constant [" + std::to_string(impls2.size()) +
+                                  " x ptr] [" + entries + "], comdat\n";
       }
       return structs[key];
     }
@@ -682,7 +696,10 @@ namespace
           initializeMembers(baseAddr, bt, {}, at);
       }
       if (info.polymorphic)
+      {
+        useVtable(info);
         fn += "  store ptr " + info.vtableName + ", ptr " + addr + "\n";
+      }
       if (info.isUnion)
         return;
       for (Decl* d : info.fieldDecls)
@@ -806,7 +823,10 @@ namespace
       // Memberwise: bases and members in order, each with its own copy semantics.
       StructInfo info = structFor(t, at);
       if (info.polymorphic)
+      {
+        useVtable(info);
         fn += "  store ptr " + info.vtableName + ", ptr " + dst + "\n";
+      }
       for (auto& [baseDef, index] : info.bases)
         copyConstruct(gep(info.name, dst, index), gep(info.name, src, index), info.fieldTypes[index], at);
       for (Decl* d : info.fieldDecls)
@@ -1403,7 +1423,7 @@ namespace
           else
             fn += "  unreachable\n";
         }
-        body += header + allocas + fn + "}\n\n";
+        addDefinition(info.functionName, header + allocas + fn + "}\n\n");
         ++result.functions;
       }
       catch (Unsupported&)
@@ -1582,7 +1602,7 @@ namespace
         if (!requested[name])
         {
           requested[name] = true;
-          worklist.push_back({def, args, classTy});
+          worklist.push_back({def, args, classTy, currentModule});
         }
         return name;
       }
@@ -1618,6 +1638,7 @@ namespace
     // The generated `const char* str() const` of a Kov enum: a switch over the enumerators.
     void emitEnumStr(FunctionDecl* f, const std::string& name)
     {
+      emittingShared = true;
       auto* e = static_cast<EnumDecl*>(f->parent);
       std::string k = llType(enumUnderlying(e), f), cases, blocks;
       int i = 0;
@@ -1629,8 +1650,10 @@ namespace
           cases += "    " + k + " " + std::to_string(enumeratorValue(en)) + ", label %" + l + "\n";
           blocks += l + ":\n  ret ptr " + cStringConstant(sym(en->name)) + "\n";
         }
-      body += "define ptr " + name + "(ptr %this) {\nentry:\n  %v = load " + k + ", ptr %this\n  switch " + k + " %v, label %other [\n" + cases +
-              "  ]\n" + blocks + "other:\n  ret ptr " + cStringConstant("?") + "\n}\n";
+      shared += "$" + name.substr(1) + " = comdat any\n"
+                "define linkonce_odr ptr " + name + "(ptr %this) comdat {\nentry:\n  %v = load " + k + ", ptr %this\n  switch " + k +
+                " %v, label %other [\n" + cases + "  ]\n" + blocks + "other:\n  ret ptr " + cStringConstant("?") + "\n}\n";
+      emittingShared = false;
     }
 
     // Template arguments for calling f on an object of classTy, with the call's deduced arguments.
@@ -2040,6 +2063,7 @@ namespace
     // A NUL-terminated string constant; returns its global name.
     std::string cStringConstant(std::string bytes)
     {
+      std::string& out = emittingShared ? decls : moduleDecls[currentModule];
       bytes += '\0';
       std::string name = "@.str" + std::to_string(stringCount++);
       std::string escaped;
@@ -2054,8 +2078,16 @@ namespace
           escaped += buf;
         }
       }
-      decls += name + " = private unnamed_addr constant [" + std::to_string(bytes.size()) + " x i8] c\"" + escaped + "\"\n";
+      out += name + " = private unnamed_addr constant [" + std::to_string(bytes.size()) + " x i8] c\"" + escaped + "\"\n";
       return name;
+    }
+
+    // The vtable of a class is defined in every module that stores it (linkonce_odr).
+    void useVtable(const StructInfo& info)
+    {
+      if (info.vtableText.empty() || !vtablesIn[currentModule].insert(info.vtableName).second)
+        return;
+      moduleDecls[currentModule] += info.vtableText;
     }
 
     // Line and column (1-based) of a token of the current file.
@@ -2129,11 +2161,78 @@ namespace
       return s;
     }
 
+    // A finished function definition: into the single body, or into the current module.
+    void addDefinition(const std::string& name, const std::string& text)
+    {
+      if (moduleCount <= 1)
+      {
+        body += text;
+        return;
+      }
+      bodies[currentModule] += text;
+      definedIn[name] = currentModule;
+      declareLines[name] = declareFromHeader(text);
+    }
+
+    // "declare RET NAME(TYPES)" from a "define RET NAME(TYPE %name, ...) attrs {" header.
+    static std::string declareFromHeader(const std::string& text)
+    {
+      size_t at = text.find(" @");
+      size_t nameEnd = text[at + 2] == '"' ? text.find('"', at + 3) + 1 : text.find('(', at);
+      size_t open = text.find('(', nameEnd);
+      size_t close = text.find(") ", open);
+      if (close == std::string::npos || text.find('{', open) < close)
+        close = text.find(")", open);
+      std::string params;
+      size_t p = open + 1;
+      while (p < close)
+      {
+        size_t comma = text.find(", ", p);
+        if (comma == std::string::npos || comma > close)
+          comma = close;
+        std::string one = text.substr(p, comma - p);
+        size_t pct = one.rfind(" %");
+        if (pct != std::string::npos)
+          one = one.substr(0, pct);
+        params += (params.empty() ? "" : ", ") + one;
+        p = comma + 2;
+      }
+      return "declare " + text.substr(7, nameEnd - 7) + "(" + params + ")";
+    }
+
+    // Module k: the shared declarations, then declares for what it uses from other modules, then its bodies.
+    std::string moduleText(unsigned k, const std::string& prefix)
+    {
+      std::string text = moduleDecls[k] + bodies[k];
+      std::string declares;
+      std::unordered_set<std::string> seen;
+      for (size_t i = text.find('@'); i != std::string::npos; i = text.find('@', i + 1))
+      {
+        size_t end;
+        if (i + 1 < text.size() && text[i + 1] == '"')
+          end = text.find('"', i + 2) + 1;
+        else
+        {
+          end = i + 1;
+          while (end < text.size() && (isalnum((unsigned char)text[end]) || strchr("-$._", text[end])))
+            ++end;
+        }
+        std::string name = text.substr(i, end - i);
+        if (!seen.insert(name).second)
+          continue;
+        auto it = definedIn.find(name);
+        if (it != definedIn.end() && it->second != k)
+          declares += declareLines[name] + "\n";
+      }
+      return prefix + decls + moduleDecls[k] + "\n" + shared + declares + "\n" + bodies[k];
+    }
+
     // The default assert handler, unless the program defines `extern "C" kov_assert_failed`.
     void finishAssertRuntime()
     {
       if (!usesAssert || declaredNames["@kov_assert_failed"])
         return;
+      emittingShared = true;
       std::string format = cStringConstant("%s:%u:%u: assertion failed: %s\n");
       if (!declaredNames["@fprintf"])
       {
@@ -2150,11 +2249,13 @@ namespace
         decls += "declare void @abort()\n";
         declaredNames["@abort"] = true;
       }
-      body += "define void @kov_assert_failed(ptr %file, i32 %line, i32 %column, ptr %expression) noinline {\nentry:\n"
+      shared += "$kov_assert_failed = comdat any\n"
+                "define linkonce_odr void @kov_assert_failed(ptr %file, i32 %line, i32 %column, ptr %expression) noinline comdat {\nentry:\n"
               "  %err = call ptr @__acrt_iob_func(i32 2)\n"
               "  %0 = call i32 (ptr, ptr, ...) @fprintf(ptr %err, ptr " + format + ", ptr %file, i32 %line, i32 %column, ptr %expression)\n"
               "  call void @abort()\n  unreachable\n}\n";
       declaredNames["@kov_assert_failed"] = true;
+      emittingShared = false;
     }
 
     // --- values ---
@@ -2486,6 +2587,13 @@ namespace
       auto it = globals.find(v);
       if (it != globals.end())
         return it->second;
+      struct SharedScope
+      {
+        bool& flag;
+        bool saved;
+        SharedScope(bool& f) : flag(f), saved(f) { flag = true; }
+        ~SharedScope() { flag = saved; }
+      } sharedScope(emittingShared); // a global's initializer belongs to every module
       const Ty* t = global.typeOfDecl(v);
       if (!t || !t->isKnown())
         unsupported(at, "a global of unknown type");
@@ -2528,7 +2636,9 @@ namespace
         unsupported(at, "a global object with a constructor");
       }
       currentFile = saved;
-      decls += name + " = " + (t->isConst ? "constant " : "global ") + llType(st, at) + " " + init + "\n";
+      // Defined in every module, merged by the linker (one instance per program).
+      decls += "$" + name.substr(1) + " = comdat any\n" + name + " = linkonce_odr " + (t->isConst ? "constant " : "global ") + llType(st, at) +
+               " " + init + ", comdat\n";
       return name;
     }
 
@@ -3997,7 +4107,7 @@ namespace
           currentArgs = nullptr;
           return;
         }
-        body += header + allocas + fn + "}\n\n";
+        addDefinition(name, header + allocas + fn + "}\n\n");
         ++result.functions;
       }
       catch (Unsupported&)
@@ -4033,27 +4143,45 @@ namespace
   };
 }
 
-CodegenResult generateLLVM(std::vector<std::unique_ptr<ParsedFile>>& files, GlobalScope& global, const SymbolTable& symbols, bool debug)
+CodegenResult generateLLVM(std::vector<std::unique_ptr<ParsedFile>>& files, GlobalScope& global, const SymbolTable& symbols, bool debug,
+                           unsigned moduleCount)
 {
   CodegenResult result;
   Emitter e(global, symbols, result);
   e.debug = debug;
+  e.moduleCount = std::max(1u, moduleCount);
+  e.bodies.resize(e.moduleCount);
+  e.moduleDecls.resize(e.moduleCount);
+  e.vtablesIn.resize(e.moduleCount);
+  for (size_t i = 0; i < files.size(); ++i)
+    e.fileModule[files[i].get()] = unsigned(i % e.moduleCount);
   std::vector<FunctionDecl*> functions;
   for (auto& file : files)
     e.collectFunctions(file->decls, functions);
   for (FunctionDecl* f : functions)
+  {
+    auto it = e.fileModule.find(f->file);
+    e.currentModule = it == e.fileModule.end() ? 0 : it->second;
     e.emitFunction(f, {}, nullptr);
+  }
   // Instantiations requested while emitting, including ones requested by other instantiations.
   while (!e.worklist.empty())
   {
     Emitter::Instantiation inst = e.worklist.front();
     e.worklist.pop_front();
+    e.currentModule = inst.module;
     e.emitFunction(inst.f, inst.args, inst.classTy);
   }
   e.finishAssertRuntime();
-  result.ir = "; Kov v0: generated by kovc\n"
-              "target datalayout = \"e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\n"
-              "target triple = \"x86_64-pc-windows-msvc\"\n\n" +
-              e.decls + "\n" + e.body;
+  std::string prefix = "; Kov v0: generated by kovc\n"
+                       "target datalayout = \"e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\n"
+                       "target triple = \"x86_64-pc-windows-msvc\"\n\n";
+  if (e.moduleCount <= 1)
+  {
+    result.ir = prefix + e.decls + e.moduleDecls[0] + "\n" + e.shared + e.body;
+    return result;
+  }
+  for (unsigned k = 0; k < e.moduleCount; ++k)
+    result.modules.push_back(e.moduleText(k, prefix));
   return result;
 }

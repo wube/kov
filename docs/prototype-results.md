@@ -413,6 +413,19 @@ plus IR writing about 12 microseconds. What follows for the design:
   are the two things worth doing there, in that order.
 - Memory is not a concern at this size.
 
+**Per-file modules (same day).** kovc now emits one IR module per group of files (two groups per
+thread by default, `--modules N` to choose; `--emit-llvm` still writes one module) and compiles
+them with clang in parallel, -O0 for debug and -O2 for release builds, then links through a
+response file. Functions go to the module of their file, instantiations to the module of the
+function that asked for them; globals, vtables and the generated functions are `linkonce_odr` in
+a comdat so that every module can carry what it uses, and each module declares the functions it
+calls from the others. On the 8,000-class program, 32 threads: codegen 0.95 s (still
+single-threaded; the IR grows to 148 MB because struct types are repeated in every module),
+clang -O0 0.49 s plus 0.12 s of link, so the whole debug build is 1.7 s from source to
+executable; release 3.67 s plus 0.13 s of link. Against the single module: 5.0 s to 0.6 s at
+-O0, 109 s to 3.8 s at -O2. The test suite compiles about twice as fast as before. Next on this
+track: write the IR in parallel per module too.
+
 ## Lessons
 
 - **Windows memory allocation serialises parallel work.** The first parser version allocated and

@@ -49,6 +49,7 @@ namespace
     bool showImportErrors = false; // --errors given: list parse errors in imported headers too
     ConfigValues configValues;     // --config name=value, --release; becomes the `config` namespace
     bool debug = true;             // config::debug
+    unsigned modules = 0;          // --modules N: IR modules compiled in parallel (0: 2 per thread, 1: one module)
     int repeat = 1;
   };
 
@@ -70,7 +71,8 @@ namespace
             "  --no-std      compile without the standard library\n"
             "  --cinclude D  directory searched by imported C headers (repeatable)\n"
             "  --config N=V  build configuration constant config::N (bool, integer, enumerator or string)\n"
-            "  --release     the same as --config debug=false\n");
+            "  --release     the same as --config debug=false\n"
+            "  --modules N   split the program into N IR modules compiled in parallel (default: two per thread)\n");
   }
 
   struct FileStats
@@ -308,34 +310,97 @@ namespace
   void runCodegen(std::vector<std::unique_ptr<ParsedFile>>& parsed, GlobalScope& global, SymbolTable& symbols, const Options& options)
   {
     using Clock = std::chrono::steady_clock;
+    // --emit-llvm wants the whole program in one file; an executable is built from several modules
+    // compiled in parallel (one per group of files), unless --modules 1.
+    unsigned modules = options.modules ? options.modules : unsigned(std::min<size_t>(parsed.size(), 2 * std::max(1u, options.threads)));
+    if (!options.emitLLVM.empty())
+      modules = 1;
     auto start = Clock::now();
-    CodegenResult cg = generateLLVM(parsed, global, symbols, options.debug);
+    CodegenResult cg = generateLLVM(parsed, global, symbols, options.debug, modules);
     double t = seconds(Clock::now() - start);
-    report("codegen: %.3f s, %zu functions, %zu structs, %zu bytes of IR\n", t, cg.functions, cg.structs, cg.ir.size());
+    size_t irBytes = cg.ir.size();
+    for (const std::string& m : cg.modules)
+      irBytes += m.size();
+    report("codegen: %.3f s, %zu functions, %zu structs, %zu bytes of IR in %zu module(s)\n", t, cg.functions, cg.structs, irBytes,
+           std::max<size_t>(1, cg.modules.size()));
     for (const std::string& e : cg.errors)
       fprintf(stderr, "%s\n", e.c_str());
     if (!cg.errors.empty())
       codegenExit = 1;
-    std::string llPath = options.emitLLVM;
-    if (llPath.empty())
-      llPath = options.exe + ".ll";
-    FILE* out = fopen(llPath.c_str(), "wb");
-    if (!out)
+    auto writeFile = [&](const std::string& path, const std::string& text)
     {
-      fprintf(stderr, "cannot write %s\n", llPath.c_str());
+      FILE* out = fopen(path.c_str(), "wb");
+      if (!out)
+      {
+        fprintf(stderr, "cannot write %s\n", path.c_str());
+        codegenExit = 1;
+        return false;
+      }
+      fwrite(text.data(), 1, text.size(), out);
+      fclose(out);
+      return true;
+    };
+    std::string clang = clangPath();
+    const char* level = options.debug ? "-O0" : "-O2";
+    if (cg.modules.empty())
+    {
+      std::string llPath = options.emitLLVM.empty() ? options.exe + ".ll" : options.emitLLVM;
+      if (!writeFile(llPath, cg.ir) || options.exe.empty() || codegenExit)
+        return;
+      // legacy_stdio_definitions: the printf/scanf family that the UCRT headers define inline.
+      std::string command = "\"\"" + clang + "\" " + level + " -w \"" + llPath + "\" -o \"" + options.exe + "\" -llegacy_stdio_definitions\"";
+      start = Clock::now();
+      int rc = system(command.c_str());
+      report("clang:   %.3f s (%s, exit %d)\n", seconds(Clock::now() - start), level, rc);
+      if (rc != 0)
+        codegenExit = 1;
+      return;
+    }
+    if (codegenExit)
+      return;
+    std::vector<std::string> objects(cg.modules.size());
+    std::atomic<int> failures{0};
+    start = Clock::now();
+    parallelFor(cg.modules.size(), options.threads, [&](size_t k)
+    {
+      std::string llPath = options.exe + "." + std::to_string(k) + ".ll";
+      objects[k] = options.exe + "." + std::to_string(k) + ".o";
+      if (!writeFile(llPath, cg.modules[k]))
+      {
+        ++failures;
+        return;
+      }
+      std::string command = "\"\"" + clang + "\" " + level + " -w -c \"" + llPath + "\" -o \"" + objects[k] + "\"\"";
+      if (system(command.c_str()) != 0)
+        ++failures;
+    });
+    double compileTime = seconds(Clock::now() - start);
+    if (failures)
+    {
+      report("clang:   %.3f s (%s, %zu modules, %d failed)\n", compileTime, level, cg.modules.size(), failures.load());
       codegenExit = 1;
       return;
     }
-    fwrite(cg.ir.data(), 1, cg.ir.size(), out);
-    fclose(out);
-    if (options.exe.empty() || codegenExit)
-      return;
-    std::string clang = clangPath();
-    // legacy_stdio_definitions: the printf/scanf family that the UCRT headers define inline.
-    std::string command = "\"\"" + clang + "\" -O2 -w \"" + llPath + "\" -o \"" + options.exe + "\" -llegacy_stdio_definitions\"";
     start = Clock::now();
-    int rc = system(command.c_str());
-    report("clang:   %.3f s (exit %d)\n", seconds(Clock::now() - start), rc);
+    // The objects go through a response file: 64 paths do not fit a command line.
+    std::string response;
+    auto slashes = [](std::string path) // clang reads a backslash in a response file as an escape
+    {
+      for (char& c : path)
+        if (c == '\\')
+          c = '/';
+      return path;
+    };
+    for (const std::string& o : objects)
+      response += "\"" + slashes(o) + "\"\n";
+    response += "-o \"" + slashes(options.exe) + "\"\n-llegacy_stdio_definitions\n";
+    std::string responsePath = options.exe + ".link.rsp";
+    if (!writeFile(responsePath, response))
+      return;
+    std::string link = "\"\"" + clang + "\" @\"" + responsePath + "\"\"";
+    int rc = system(link.c_str());
+    report("clang:   %.3f s (%s, %zu modules on %u threads) + link %.3f s (exit %d)\n", compileTime, level, cg.modules.size(), options.threads,
+           seconds(Clock::now() - start), rc);
     if (rc != 0)
       codegenExit = 1;
   }
@@ -585,6 +650,8 @@ int main(int argc, char** argv)
     }
     else if (arg == "--release")
       options.configValues["debug"] = parseConfigValue("false");
+    else if (arg == "--modules" && i + 1 < argc)
+      options.modules = unsigned(atoi(argv[++i]));
     else if (arg[0] == '-')
     {
       usage();
