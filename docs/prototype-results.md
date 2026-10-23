@@ -189,15 +189,24 @@ methods and single inheritance, enums, the arithmetic types, pointers, reference
 globals, `new`/`delete`, all control flow including `switch`, `extern "C"` functions.
 
 Tests: `compiler\tests\run_tests.cmd` compiles every `tests/run/*.kov`, runs it and compares the
-output with the `.expected` file. Four programs so far (hello, control, types, structs).
+output with the `.expected` file. Five programs so far (hello, control, types, structs, objects).
+
+Object model (added the same day): constructors with member initializers and default member
+initializers, destructors, destruction at scope exit in reverse order including the scopes left
+by `return`, `break` and `continue`, copy constructors (or memberwise copy), temporaries destroyed
+at the end of the full expression, `operator[]`, `operator=`, `operator+` and friends as members,
+class return values through a hidden result slot, class parameters as caller-made copies owned
+by the callee, `new`/`delete` of objects. `objects.kov` checks all of it with a live-object
+counter.
 
 | step for `hello.kov` | time |
 |---|---|
 | kovc: lex, parse, resolve, check, IR | about 1 ms |
 | clang: optimise, codegen, link | 0.07 s |
 
-Not in v0 and reported as "codegen does not support X yet": constructors and destructors,
-class values constructed in expressions, templates, lambdas, unions, exceptions. IR names are the
+Not in v0 and reported as "codegen does not support X yet": templates in generated code,
+lambdas, unions, exceptions, virtual functions, arrays of objects with constructors, globals
+with constructors. IR names are the
 qualified Kov names with parameter types in quotes (`@"Point::move(int32, int32)"`), so there is
 no mangling scheme.
 

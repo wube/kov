@@ -1,0 +1,108 @@
+// Constructors, destructors, scope exit, copies, by-value and by-reference parameters, class
+// return values, operator overloading.
+extern "C" int printf(const char* format, ...);
+extern "C" void* malloc(unsigned long long size);
+extern "C" void free(void* p);
+extern "C" void* memcpy(void* dst, const void* src, unsigned long long size);
+
+static int liveBuffers = 0;
+
+struct Buffer
+{
+  int* data;
+  int size;
+
+  Buffer(int size) : size(size)
+  {
+    this->data = (int*)malloc(size * 4);
+    for (int i = 0; i < size; ++i)
+      this->data[i] = i * i;
+    ++liveBuffers;
+  }
+  Buffer(const Buffer& other) : size(other.size)
+  {
+    this->data = (int*)malloc(other.size * 4);
+    memcpy(this->data, other.data, other.size * 4);
+    ++liveBuffers;
+  }
+  ~Buffer()
+  {
+    free(this->data);
+    --liveBuffers;
+  }
+  int sum() const
+  {
+    int total = 0;
+    for (int i = 0; i < this->size; ++i)
+      total += this->data[i];
+    return total;
+  }
+  int& operator[](int index) { return this->data[index]; }
+  Buffer& operator=(const Buffer& other)
+  {
+    free(this->data);
+    this->size = other.size;
+    this->data = (int*)malloc(other.size * 4);
+    memcpy(this->data, other.data, other.size * 4);
+    return *this;
+  }
+};
+
+struct Vec2
+{
+  int x = 1;
+  int y = 2;
+  Vec2 operator+(const Vec2& o) const
+  {
+    Vec2 r;
+    r.x = this->x + o.x;
+    r.y = this->y + o.y;
+    return r;
+  }
+};
+
+Buffer makeBuffer(int n)
+{
+  return Buffer(n);
+}
+
+int consume(Buffer b)
+{
+  b[0] = 100;
+  return b.sum();
+}
+
+int inspect(const Buffer& b)
+{
+  return b.sum();
+}
+
+int main()
+{
+  {
+    Buffer a(4);
+    Buffer b = makeBuffer(3);
+    Buffer c = a;
+    c[1] = 50;
+    printf("%d %d %d live=%d\n", a.sum(), b.sum(), c.sum(), liveBuffers);
+    printf("%d %d live=%d\n", consume(a), inspect(a), liveBuffers);
+    b = c;
+    printf("%d live=%d\n", b.sum(), liveBuffers);
+    for (int i = 0; i < 2; ++i)
+    {
+      Buffer loop(2);
+      if (i == 1)
+        break;
+    }
+    printf("live=%d\n", liveBuffers);
+  }
+  Vec2 v;
+  Vec2 w = v + v;
+  Vec2 sum = w + Vec2();
+  printf("%d %d %d %d live=%d\n", w.x, w.y, sum.x, sum.y, liveBuffers);
+  Buffer* heap = new Buffer(5);
+  int heapSum = heap->sum();
+  delete heap;
+  printf("%d live=%d\n", heapSum, liveBuffers);
+  return 0;
+}

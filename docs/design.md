@@ -145,8 +145,8 @@ qualified Kov names with parameter types, quoted, so there is no mangling scheme
    6. Later: full overload resolution with conversions, members through templated bases,
       constexpr evaluation, per-instantiation diagnostics and expression types.
 3. Compiler that runs real Kov programs via LLVM (started 2026-10-23: the v0 subset compiles
-   through textual IR and clang, see prototype-results.md "Stage 4"). Next inside this item:
-   constructors/destructors, class values in expressions, templates in codegen, then the
-   standard library seed.
+   through textual IR and clang, see prototype-results.md "Stage 4"; constructors, destructors,
+   copies and operators followed the same day). Next inside this item: templates in codegen,
+   then the standard library seed (String, Vector), then virtual functions.
 3. Standard library, C import, converter from Factorio-style C++ to Kov.
 4. Persistent compiler + IDE integration.
