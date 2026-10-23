@@ -189,8 +189,8 @@ methods and single inheritance, enums, the arithmetic types, pointers, reference
 globals, `new`/`delete`, all control flow including `switch`, `extern "C"` functions.
 
 Tests: `compiler\tests\run_tests.cmd` compiles every `tests/run/*.kov`, runs it and compares the
-output with the `.expected` file. Ten programs so far (hello, control, types, structs,
-objects, templates, strings, virtual, lambdas, containers).
+output with the `.expected` file. Eleven programs so far (hello, control, types, structs,
+objects, templates, strings, virtual, lambdas, containers, format).
 
 Object model (added the same day): constructors with member initializers and default member
 initializers, destructors, destruction at scope exit in reverse order including the scopes left
@@ -256,10 +256,17 @@ need them, zero-initialisation of scalar members left out of a constructor, and 
 a template parameter `T`. `containers.kov` exercises a `HashMap<String, int>`, a
 `HashMap<int, String>` with 100 entries and a copy, `Optional<String>` and the conversions.
 
+Variadic templates (same day): a parameter pack deduces to a `Pack` type whose elements become
+separate parameters; `args...` in a call and fold expressions expand by re-typing the pattern
+once per element (so `toString(args)` picks a different overload for each element), and
+`sizeof...` is a constant. With that the library has a type-safe `format("{} and {}", a, b)`
+plus `print`/`println` overloads taking a pattern; `format.kov` tests packs, folds over `+`
+and a join written with a comma fold.
+
 Not in v0 and reported as "codegen does not support X yet": unions, exceptions, multiple
 polymorphic bases, arrays of objects with constructors, globals with constructors, more than
-four template parameters per function, class-typed iterators in range-for, variadic
-templates (so no type-safe `format` yet). IR names are the
+four template parameters per function, class-typed iterators in range-for, packs in the middle
+of a parameter list. IR names are the
 qualified Kov names with parameter types in quotes (`@"Point::move(int32, int32)"`), so there is
 no mangling scheme.
 

@@ -1,0 +1,31 @@
+// Variadic templates: format/println with a parameter pack, sizeof..., folds over arithmetic.
+template<typename... Args>
+int countArgs(Args... args)
+{
+  return (int)sizeof...(args);
+}
+
+template<typename... Args>
+long long sumAll(Args... args)
+{
+  return (args + ...);
+}
+
+template<typename T, typename... Rest>
+String joinWith(const char* separator, T first, Rest... rest)
+{
+  String result = toString(first);
+  ((result.append(separator), result.append(toString(rest))), ...);
+  return result;
+}
+
+int main()
+{
+  println("{} + {} = {}", 2, 3, 2 + 3);
+  println("name={} pi={} ok={} ch={}", String("kov"), 3.25, true, 'x');
+  println("count={} sum={}", countArgs(1, 2.0, "three"), sumAll(1, 2, 3, 4));
+  println(joinWith(", ", 1, 2, 3));
+  println(format("{}{}", "no", " args") + String("!"));
+  println("plain string without arguments");
+  return 0;
+}

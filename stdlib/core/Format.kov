@@ -1,5 +1,5 @@
-// Kov standard library: text conversion and output. A type-safe format() will replace printf
-// once variadic templates exist; until then toString() overloads and print()/println().
+// Kov standard library: text conversion and output. format("{} and {}", a, b) replaces every {}
+// with the next argument through toString(); print/println take either a String or a pattern.
 extern "C" int printf(const char* format, ...);
 extern "C" int snprintf(char* buffer, size_t size, const char* format, ...);
 
@@ -40,6 +40,70 @@ String toString(double value)
 
 String toString(bool value) { return String(value ? "true" : "false"); }
 String toString(const String& text) { return text; }
+String toString(const char* text) { return String(text); }
+String toString(char c)
+{
+  String result;
+  result.append(c);
+  return result;
+}
 
 void print(const String& text) { printf("%s", text.c_str()); }
 void println(const String& text) { printf("%s\n", text.c_str()); }
+
+// Appends the pattern text up to each {} and the argument that replaces it.
+struct Formatter
+{
+  const char* pattern;
+  int position = 0;
+  String result;
+
+  Formatter(const char* pattern) : pattern(pattern) {}
+
+  template<typename T>
+  void next(const T& value)
+  {
+    while (this->pattern[this->position] != 0)
+    {
+      if (this->pattern[this->position] == '{' && this->pattern[this->position + 1] == '}')
+      {
+        this->position += 2;
+        this->result.append(toString(value));
+        return;
+      }
+      this->result.append(this->pattern[this->position]);
+      ++this->position;
+    }
+    this->result.append(toString(value));
+  }
+
+  void finish()
+  {
+    while (this->pattern[this->position] != 0)
+    {
+      this->result.append(this->pattern[this->position]);
+      ++this->position;
+    }
+  }
+};
+
+template<typename... Args>
+String format(const char* pattern, Args... args)
+{
+  Formatter formatter(pattern);
+  (formatter.next(args), ...);
+  formatter.finish();
+  return formatter.result;
+}
+
+template<typename... Args>
+void print(const char* pattern, Args... args)
+{
+  print(format(pattern, args...));
+}
+
+template<typename... Args>
+void println(const char* pattern, Args... args)
+{
+  println(format(pattern, args...));
+}

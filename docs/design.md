@@ -149,7 +149,7 @@ qualified Kov names with parameter types, quoted, so there is no mangling scheme
    through textual IR and clang, see prototype-results.md "Stage 4"; constructors, destructors,
    copies, operators, templates and the standard library seed `stdlib/core` with `String` and
    `Vector<T>`, virtual functions, lambdas, `HashMap`, `Optional` and `toString`/`println`
-   followed the same day). Next inside this item: variadic templates (for a type-safe
-   `format`), the C header importer, and a first real program beyond tests.
+   and variadic templates with a type-safe `format` followed the same day). Next inside this
+   item: the C header importer, and a first real program beyond tests.
 3. Standard library, C import, converter from Factorio-style C++ to Kov.
 4. Persistent compiler + IDE integration.

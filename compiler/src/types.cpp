@@ -129,15 +129,38 @@ const Ty* TypeTable::floatType(uint8_t bits)
   return intern(t);
 }
 
-const Ty* TypeTable::pointer(const Ty* pointee)
+const Ty* TypeTable::pack(Span<const Ty*> elements)
 {
+  Ty t{TyKind::Pack};
+  t.args = elements;
+  return intern(t);
+}
+
+// Type constructors distribute over packs: `const Args&...` with Args = (int, String) is the
+// pack (const int&, const String&).
+#define KOV_DISTRIBUTE(expr) \
+  if (inner && inner->kind == TyKind::Pack) \
+  { \
+    std::vector<const Ty*> mapped; \
+    for (const Ty* e : inner->args) \
+    { \
+      const Ty* inner = e; \
+      mapped.push_back(expr); \
+    } \
+    return pack(Span<const Ty*>{mapped.data(), uint32_t(mapped.size())}); \
+  }
+
+const Ty* TypeTable::pointer(const Ty* inner)
+{
+  KOV_DISTRIBUTE(pointer(inner))
   Ty t{TyKind::Pointer};
-  t.inner = pointee;
+  t.inner = inner;
   return intern(t);
 }
 
 const Ty* TypeTable::lref(const Ty* inner)
 {
+  KOV_DISTRIBUTE(lref(inner))
   if (inner->isReference())
     return inner->kind == TyKind::LRef ? inner : lref(inner->inner); // reference collapsing
   Ty t{TyKind::LRef};
@@ -147,6 +170,7 @@ const Ty* TypeTable::lref(const Ty* inner)
 
 const Ty* TypeTable::rref(const Ty* inner)
 {
+  KOV_DISTRIBUTE(rref(inner))
   if (inner->isReference())
     return inner;
   Ty t{TyKind::RRef};
@@ -214,6 +238,13 @@ const Ty* TypeTable::qualified(const Ty* t, bool isConst, bool isVolatile)
 {
   if (!t || (!isConst && !isVolatile) || t->isReference() || t->kind == TyKind::Function)
     return t;
+  if (t->kind == TyKind::Pack)
+  {
+    std::vector<const Ty*> mapped;
+    for (const Ty* e : t->args)
+      mapped.push_back(qualified(e, isConst, isVolatile));
+    return pack(Span<const Ty*>{mapped.data(), uint32_t(mapped.size())});
+  }
   if (t->kind == TyKind::Array)
     return array(qualified(t->inner, isConst, isVolatile), t->count);
   Ty copy = *t;
@@ -255,7 +286,7 @@ bool TypeTable::isDependent(const Ty* t) const
     case TyKind::Param: case TyKind::Auto: return true;
     case TyKind::Pointer: case TyKind::LRef: case TyKind::RRef: case TyKind::Array: case TyKind::MemberPointer:
       return isDependent(t->inner);
-    case TyKind::Function: case TyKind::Class: case TyKind::Lambda:
+    case TyKind::Function: case TyKind::Class: case TyKind::Lambda: case TyKind::Pack:
       if (isDependent(t->inner))
         return true;
       for (const Ty* a : t->args)
@@ -337,6 +368,10 @@ std::string TypeTable::toString(const Ty* t, const SymbolTable* symbols) const
     case TyKind::Param: s += declName(t->decl); break;
     case TyKind::MemberPointer: s += toString(t->inner, symbols) + " " + declName(t->decl) + "::*"; break;
     case TyKind::Auto: s += "auto"; break;
+    case TyKind::Pack:
+      for (size_t i = 0; i < t->args.size(); ++i)
+        s += (i ? ", " : "") + toString(t->args[i], symbols);
+      break;
     case TyKind::Unknown: s += "<unknown>"; break;
   }
   return s;

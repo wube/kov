@@ -26,6 +26,7 @@ enum class TyKind : uint8_t
   Lambda,  // inner = return type (null if unknown), args = parameters; decl = the LambdaExpr owner (unused)
   MemberPointer, // inner = member type, decl = owning class decl (may be null)
   Auto,    // Placeholder inside a declared type, replaced by deduction.
+  Pack,    // args = the types a parameter pack was deduced to.
   Unknown, // Could not be determined; reason is tracked in the statistics, not in the type.
 };
 
@@ -75,6 +76,7 @@ public:
   const Ty* param(Decl* decl);
   const Ty* lambda(const Ty* result, Span<const Ty*> params, Decl* closure = nullptr);
   const Ty* memberPointer(const Ty* member, Decl* cls);
+  const Ty* pack(Span<const Ty*> elements);
   // Same type with qualifiers added (references and functions ignore them).
   const Ty* qualified(const Ty* t, bool isConst, bool isVolatile);
   const Ty* unqualified(const Ty* t);

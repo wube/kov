@@ -84,6 +84,7 @@ namespace
       bool isTemporary = false; // Class temporary owned by the current full-expression
     };
     std::unordered_map<Decl*, Local> locals;
+    std::unordered_map<Decl*, std::vector<Local>> packLocals; // one local per element of a parameter pack
     std::unordered_map<const Ty*, StructInfo> structs;
     std::unordered_map<Decl*, std::string> globals;
     std::unordered_map<std::string, bool> declaredNames; // IR names with a declare/define line
@@ -901,6 +902,108 @@ namespace
       return slot;
     }
 
+    // --- parameter packs ---
+
+    // The pack parameter an expression refers to (the first one found), or null.
+    Decl* packIn(Node* n, int depth = 0)
+    {
+      if (!n || depth > 32)
+        return nullptr;
+      switch (n->kind)
+      {
+        case NodeKind::NameExpr:
+        {
+          Decl* d = static_cast<NameExpr*>(n)->resolved;
+          return d && packLocals.count(d) ? d : nullptr;
+        }
+        case NodeKind::ParenExpr: return packIn(static_cast<ParenExpr*>(n)->inner, depth + 1);
+        case NodeKind::UnaryExpr: return packIn(static_cast<UnaryExpr*>(n)->operand, depth + 1);
+        case NodeKind::CastExpr: return packIn(static_cast<CastExpr*>(n)->operand, depth + 1);
+        case NodeKind::NamedCastExpr: return packIn(static_cast<NamedCastExpr*>(n)->operand, depth + 1);
+        case NodeKind::MemberExpr: return packIn(static_cast<MemberExpr*>(n)->base, depth + 1);
+        case NodeKind::BinaryExpr:
+          if (Decl* d = packIn(static_cast<BinaryExpr*>(n)->lhs, depth + 1))
+            return d;
+          return packIn(static_cast<BinaryExpr*>(n)->rhs, depth + 1);
+        case NodeKind::CallExpr:
+        {
+          auto* c = static_cast<CallExpr*>(n);
+          if (Decl* d = packIn(c->callee, depth + 1))
+            return d;
+          for (Expr* a : c->args)
+            if (Decl* d = packIn(a, depth + 1))
+              return d;
+          return nullptr;
+        }
+        case NodeKind::IndexExpr:
+        {
+          auto* i = static_cast<IndexExpr*>(n);
+          if (Decl* d = packIn(i->base, depth + 1))
+            return d;
+          for (Expr* a : i->args)
+            if (Decl* d = packIn(a, depth + 1))
+              return d;
+          return nullptr;
+        }
+        case NodeKind::FunctionalCastExpr:
+          for (Expr* a : static_cast<FunctionalCastExpr*>(n)->args)
+            if (Decl* d = packIn(a, depth + 1))
+              return d;
+          return nullptr;
+        default:
+          return nullptr;
+      }
+    }
+
+    // The template parameter pack behind a pack parameter.
+    Decl* templatePackOf(Decl* param)
+    {
+      for (Decl* p = param->parent; p; p = p->parent)
+        for (Decl* tp : p->templateParams)
+          if (static_cast<TemplateParamDecl*>(tp)->isPack)
+            return tp;
+      return nullptr;
+    }
+
+    // Runs body(i) for each element of the pack that `pattern` expands over, with the pack
+    // parameter bound to that element and the function body re-typed for it.
+    template<typename F>
+    void forEachPackElement(Expr* pattern, Node* at, F&& body)
+    {
+      Decl* param = packIn(pattern);
+      if (!param)
+        unsupported(at, "a pack expansion that does not name a parameter pack");
+      Decl* tp = templatePackOf(param);
+      if (!tp || !currentArgs)
+        unsupported(at, "a pack expansion outside an instantiation");
+      std::vector<Local> elements = packLocals[param];
+      const Ty* packTy = nullptr;
+      for (auto& [d, t] : currentArgs->pairs)
+        if (d == tp)
+          packTy = t;
+      if (!packTy || packTy->kind != TyKind::Pack || packTy->args.size() != elements.size())
+        unsupported(at, "a pack whose elements are unknown");
+      TemplateArgs original = *currentArgs;
+      for (size_t i = 0; i < elements.size(); ++i)
+      {
+        TemplateArgs elementArgs = original;
+        for (auto& [d, t] : elementArgs.pairs)
+          if (d == tp)
+            t = packTy->args[i];
+        global.retypeFor(currentFunction, elementArgs, currentClassTy);
+        locals[param] = elements[i];
+        body(i);
+      }
+      locals.erase(param);
+      global.retypeFor(currentFunction, original, currentClassTy);
+    }
+
+    bool isPackExpansion(Expr* e)
+    {
+      return e && e->kind == NodeKind::UnaryExpr && !static_cast<UnaryExpr*>(e)->isKeyword &&
+             P(static_cast<UnaryExpr*>(e)->op) == P::Ellipsis && static_cast<UnaryExpr*>(e)->postfix;
+    }
+
     // --- lambdas ---
 
     // Collects the enclosing locals a lambda body refers to (for default captures) and whether
@@ -1269,13 +1372,29 @@ namespace
         argText += ", ptr " + resultAddr;
       }
       std::string sig = (hasSret ? "void" : ret->isReference() ? "ptr" : llType(ret, at)) + std::string(" (ptr") + (hasSret ? ", ptr" : "");
-      for (size_t i = 0; i < callArgs.size(); ++i)
+      size_t position = 0;
+      for (Expr* arg : callArgs)
       {
-        const Ty* pt = i < t->args.size() ? t->args[i] : nullptr;
+        if (isPackExpansion(arg))
+        {
+          Expr* pattern = static_cast<UnaryExpr*>(arg)->operand;
+          forEachPackElement(pattern, at, [&](size_t)
+          {
+            const Ty* pt = position < t->args.size() ? t->args[position] : nullptr;
+            if (!pt)
+              unsupported(at, "too many arguments to a lambda");
+            sig += ", " + std::string(isAggregate(pt) || pt->isReference() ? "ptr" : llType(pt, at));
+            argText += ", " + argumentText(pt, pattern, at);
+            ++position;
+          });
+          continue;
+        }
+        const Ty* pt = position < t->args.size() ? t->args[position] : nullptr;
         if (!pt)
           unsupported(at, "too many arguments to a lambda");
         sig += ", " + std::string(isAggregate(pt) || pt->isReference() ? "ptr" : llType(pt, at));
-        argText += ", " + argumentText(pt, callArgs[i], at);
+        argText += ", " + argumentText(pt, arg, at);
+        ++position;
       }
       sig += ")";
       if (hasSret || ret->kind == TyKind::Void)
@@ -1468,10 +1587,26 @@ namespace
         argText += std::string(argText.empty() ? "" : ", ") + "ptr " + resultAddr;
         ++slot;
       }
-      for (size_t i = 0; i < callArgs.size(); ++i)
+      size_t position = slot;
+      for (Expr* arg : callArgs)
       {
-        const Ty* pt = slot + i < s.paramTys.size() ? s.paramTys[slot + i] : nullptr;
-        argText += std::string(argText.empty() ? "" : ", ") + argumentText(pt, callArgs[i], at);
+        if (isPackExpansion(arg))
+        {
+          Expr* pattern = static_cast<UnaryExpr*>(arg)->operand;
+          std::vector<std::string> texts;
+          forEachPackElement(pattern, at, [&](size_t)
+          {
+            const Ty* pt = position < s.paramTys.size() ? s.paramTys[position] : nullptr;
+            texts.push_back(argumentText(pt, pattern, at));
+            ++position;
+          });
+          for (const std::string& t : texts)
+            argText += std::string(argText.empty() ? "" : ", ") + t;
+          continue;
+        }
+        const Ty* pt = position < s.paramTys.size() ? s.paramTys[position] : nullptr;
+        argText += std::string(argText.empty() ? "" : ", ") + argumentText(pt, arg, at);
+        ++position;
       }
       std::string sig = (s.variadic || !indirect.empty()) ? signatureText(s) + " " : s.returnType + " ";
       if (s.returnType == "void")
@@ -2662,10 +2797,53 @@ namespace
         }
         case NodeKind::SizeofExpr:
         {
+          auto* s = static_cast<SizeofExpr*>(e);
+          if (s->isPack)
+          {
+            Decl* param = nullptr;
+            if (s->type && s->type->kind == NodeKind::NamedType)
+              param = static_cast<NamedType*>(s->type)->resolved;
+            if (!param && s->operand)
+              param = packIn(s->operand);
+            if (!param || !packLocals.count(param))
+              unsupported(e, "sizeof... of something that is not a parameter pack");
+            return {std::to_string(packLocals[param].size()), types.sizeType()};
+          }
           auto v = evalConst(e);
           if (!v)
             unsupported(e, "this sizeof");
           return {std::to_string(*v), types.sizeType()};
+        }
+        case NodeKind::FoldExpr:
+        {
+          auto* f = static_cast<FoldExpr*>(e);
+          Expr* pattern = f->lhs ? f->lhs : f->rhs;
+          if (!pattern)
+            unsupported(e, "an empty fold");
+          P op = P(f->op);
+          if (op == P::Comma)
+          {
+            forEachPackElement(pattern, e, [&](size_t)
+            {
+              rvalue(pattern);
+              destroyTemps();
+            });
+            return {"", types.voidType()};
+          }
+          std::optional<Value> acc;
+          forEachPackElement(pattern, e, [&](size_t)
+          {
+            Value v = rvalue(pattern);
+            if (!acc)
+              acc = v;
+            else if (op == P::EqEq || op == P::NotEq || op == P::Less || op == P::LessEq || op == P::Greater || op == P::GreaterEq)
+              acc = compare(op, *acc, v, e);
+            else
+              acc = arithmetic(op, *acc, v, e);
+          });
+          if (!acc)
+            unsupported(e, "a fold over an empty pack");
+          return *acc;
         }
         case NodeKind::UnaryExpr: return unary(static_cast<UnaryExpr*>(e));
         case NodeKind::BinaryExpr: return binary(static_cast<BinaryExpr*>(e));
@@ -3421,21 +3599,42 @@ namespace
         }
         if (s.hasSret)
           sretAddr = paramNames[slot++];
-        for (size_t i = 0; i < f->params.size(); ++i, ++slot)
+        packLocals.clear();
+        for (size_t i = 0; i < f->params.size(); ++i)
         {
-          const Ty* pt = s.paramTys[slot];
-          if (isAggregate(pt))
+          auto* pd = static_cast<ParamDecl*>(f->params[i]);
+          size_t count = 1;
+          if (pd->isPack)
           {
-            locals[f->params[i]] = {paramNames[slot], pt, false};
-            if (needsDestruction(pt, f))
-              scopes.back().push_back({paramNames[slot], pt});
-            continue;
+            const Ty* packTy = declType(pd);
+            if (!packTy || packTy->kind != TyKind::Pack)
+              unsupported(f, "a parameter pack that was not deduced");
+            count = packTy->args.size();
+            packLocals[pd] = {};
           }
-          bool isRef = pt->isReference();
-          std::string ps = "%v" + std::to_string(temp++);
-          allocas += "  " + ps + " = alloca " + (isRef ? std::string("ptr") : llType(pt, f)) + "\n";
-          fn += "  store " + (isRef ? std::string("ptr") : llType(pt, f)) + " " + paramNames[slot] + ", ptr " + ps + "\n";
-          locals[f->params[i]] = {ps, pt, isRef};
+          for (size_t k = 0; k < count; ++k, ++slot)
+          {
+            const Ty* pt = s.paramTys[slot];
+            Local local;
+            if (isAggregate(pt))
+            {
+              local = {paramNames[slot], pt, false};
+              if (needsDestruction(pt, f))
+                scopes.back().push_back({paramNames[slot], pt});
+            }
+            else
+            {
+              bool isRef = pt->isReference();
+              std::string ps = "%v" + std::to_string(temp++);
+              allocas += "  " + ps + " = alloca " + (isRef ? std::string("ptr") : llType(pt, f)) + "\n";
+              fn += "  store " + (isRef ? std::string("ptr") : llType(pt, f)) + " " + paramNames[slot] + ", ptr " + ps + "\n";
+              local = {ps, pt, isRef};
+            }
+            if (pd->isPack)
+              packLocals[pd].push_back(local);
+            else
+              locals[pd] = local;
+          }
         }
         if (f->flags & DF_Constructor)
         {
