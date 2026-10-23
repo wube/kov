@@ -89,6 +89,10 @@ public:
   // rewritten in place). objectType: the instantiated class for members, or null.
   void retypeFor(FunctionDecl* f, const TemplateArgs& args, const Ty* objectType);
   TemplateArgs classArgsOf(const Ty* classType); // Parameters of the class template -> arguments of the type.
+  // Overload resolution by conversion ranking among candidates (members: objectType is the
+  // object they are called on, classArgs its instantiation). Null if none is viable.
+  FunctionDecl* chooseOverload(const std::vector<FunctionDecl*>& candidates, const std::vector<const Ty*>& argTypes,
+                               const TemplateArgs& classArgs, const Ty* objectType, bool* ambiguous = nullptr);
 
 
 private:

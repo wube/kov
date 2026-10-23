@@ -314,38 +314,23 @@ namespace
 
     // --- class metadata: constructors, destructors ---
 
-    FunctionDecl* findConstructor(const Ty* classTy, size_t argCount, const Ty* firstArg, Node* at)
+    FunctionDecl* findConstructor(const Ty* classTy, const std::vector<const Ty*>& argTypes, Node* at)
     {
       ClassDecl* c = classDef(classTy->decl, at);
       TemplateArgs args = global.classArgsOf(canonicalClass(classTy, at));
-      ArgsScope scope(*this, &args);
-      FunctionDecl* best = nullptr;
+      std::vector<FunctionDecl*> candidates;
       for (Decl* m : c->members)
-      {
-        if (m->kind != NodeKind::FunctionDecl || !(m->flags & DF_Constructor) || !m->templateParams.empty())
-          continue;
-        auto* f = static_cast<FunctionDecl*>(m);
-        size_t required = 0;
-        for (Decl* p : f->params)
-          if (!static_cast<ParamDecl*>(p)->defaultValue)
-            ++required;
-        if (argCount < required || argCount > f->params.size())
-          continue;
-        if (argCount == 1 && firstArg)
-        {
-          const Ty* pt = types.stripRef(declType(f->params[0]));
-          const Ty* a = types.stripRef(firstArg);
-          if (pt && a && types.unqualified(pt) == types.unqualified(a))
-            return f;
-          if (pt && a && isClass(pt) != isClass(a))
-            continue;
-          if (pt && a && isClass(pt) && isClass(a) && types.unqualified(pt) != types.unqualified(a))
-            continue;
-        }
-        if (!best || f->params.size() == argCount)
-          best = f;
-      }
-      return best;
+        if (m->kind == NodeKind::FunctionDecl && (m->flags & DF_Constructor) && m->templateParams.empty())
+          candidates.push_back(static_cast<FunctionDecl*>(m));
+      return global.chooseOverload(candidates, argTypes, args, nullptr);
+    }
+
+    static std::vector<const Ty*> argTypesOf(Span<Expr*> args)
+    {
+      std::vector<const Ty*> out;
+      for (Expr* a : args)
+        out.push_back(a ? a->ty : nullptr);
+      return out;
     }
 
     FunctionDecl* findDestructor(ClassDecl* c)
@@ -441,7 +426,7 @@ namespace
       ClassDecl* c = classDef(t->decl, at);
       if (hasUserConstructors(c))
       {
-        FunctionDecl* ctor = findConstructor(t, 0, nullptr, at);
+        FunctionDecl* ctor = findConstructor(t, {}, at);
         if (!ctor)
           unsupported(at, "default construction of " + global.qualifiedName(c) + ", which has no default constructor");
         TemplateArgs args = global.classArgsOf(canonicalClass(t, at));
@@ -525,7 +510,7 @@ namespace
         return;
       }
       const Ty* firstTy = args.size() == 1 ? args[0]->ty : nullptr;
-      FunctionDecl* ctor = findConstructor(t, args.size(), firstTy, at);
+      FunctionDecl* ctor = findConstructor(t, argTypesOf(args), at);
       if (ctor)
       {
         callFunction(ctor, global.classArgsOf(canonicalClass(t, at)), canonicalClass(t, at), addr, "", args, at);
@@ -1556,30 +1541,35 @@ namespace
       }
     }
 
-    // Finds an operator member (searching bases) by its qualified-name suffix. Returns the
-    // class type it was found in through foundIn.
-    FunctionDecl* findOperator(const Ty* classTy, const std::string& name, size_t argCount, Node* at, const Ty** foundIn)
+    // Finds the best member with the given name (searching bases, nearest class wins) for the
+    // argument types and the object's constness. Returns the class type it was found in.
+    FunctionDecl* findMemberFunction(const Ty* classTy, const std::string& name, const std::vector<const Ty*>& argTypes,
+                                     const Ty* objectTy, Node* at, const Ty** foundIn)
     {
       FunctionDecl* found = nullptr;
       std::function<void(const Ty*)> search = [&](const Ty* cls)
       {
         ClassDecl* c = classDef(cls->decl, at);
+        std::vector<FunctionDecl*> candidates;
         for (Decl* m : c->members)
         {
-          if (found || m->kind != NodeKind::FunctionDecl)
+          if (m->kind != NodeKind::FunctionDecl || !m->templateParams.empty())
             continue;
           auto* f = static_cast<FunctionDecl*>(m);
-          if (f->params.size() != argCount || !f->templateParams.empty())
-            continue;
           if (global.qualifiedName(f).ends_with("::" + name))
+            candidates.push_back(f);
+        }
+        if (!candidates.empty())
+        {
+          const Ty* obj = objectTy ? objectTy : cls;
+          found = global.chooseOverload(candidates, argTypes, global.classArgsOf(cls), obj);
+          if (found)
           {
-            found = f;
             if (foundIn)
               *foundIn = cls;
+            return;
           }
         }
-        if (found)
-          return;
         StructInfo& info = structFor(cls, at);
         std::vector<const Ty*> baseTypes;
         for (auto& [baseDef, index] : info.bases)
@@ -1592,12 +1582,18 @@ namespace
       return found;
     }
 
+    FunctionDecl* findOperator(const Ty* classTy, const std::string& name, size_t argCount, Node* at, const Ty** foundIn)
+    {
+      std::vector<const Ty*> neutral(argCount, nullptr);
+      return findMemberFunction(classTy, name, neutral, nullptr, at, foundIn);
+    }
+
     // Calls an operator member on an object. The result of a reference-returning operator is
     // the referenced address (ty keeps the reference).
     Value operatorCall(Value object, const std::string& name, Span<Expr*> args, Node* at, bool required)
     {
       const Ty* foundIn = nullptr;
-      FunctionDecl* f = findOperator(object.ty, name, args.size(), at, &foundIn);
+      FunctionDecl* f = findMemberFunction(object.ty, name, argTypesOf(args), object.ty, at, &foundIn);
       if (!f)
       {
         if (required)
@@ -2198,7 +2194,7 @@ namespace
         Expr* rhsExpr = b->rhs;
         Span<Expr*> one{&rhsExpr, 1};
         const Ty* foundIn = nullptr;
-        if (findOperator(l.ty, name, 1, b, &foundIn))
+        if (findMemberFunction(l.ty, name, argTypesOf(one), l.ty, b, &foundIn))
           return callRvalue(operatorCall(l, name, one, b, true), b);
         if (op == P::Assign)
         {

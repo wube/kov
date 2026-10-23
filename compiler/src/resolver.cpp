@@ -1341,6 +1341,269 @@ struct GlobalScope::Impl
     }
   }
 
+  // ---------------- overload resolution ----------------
+
+  // Is `base` a (transitive) base class scope of `derived`?
+  bool isBaseScope(Scope* base, Scope* derived, int depth = 0)
+  {
+    if (!base || !derived || depth > 16)
+      return false;
+    ensureBases(derived, depth);
+    for (Scope* b : derived->baseScopes)
+      if (b == base || isBaseScope(base, b, depth + 1))
+        return true;
+    return false;
+  }
+
+  Scope* classScopeOf(const Ty* t)
+  {
+    t = types.unqualified(types.stripRef(t));
+    if (!t || t->kind != TyKind::Class || !t->decl)
+      return nullptr;
+    if (t->decl->ownScope)
+      return t->decl->ownScope;
+    Entry e{t->decl, nullptr};
+    return scopeOfEntry(e, 0);
+  }
+
+  static constexpr int NotViable = 1000;
+
+  // Rank of converting an argument of type `arg` to a parameter of type `param`: 0 exact,
+  // 1 qualification, 2 promotion, 3 standard conversion, 4 user-defined, NotViable.
+  int conversionRank(const Ty* arg, const Ty* param, int depth = 0)
+  {
+    if (!arg || !param || !arg->isKnown() || !param->isKnown() || types.isDependent(arg) || types.isDependent(param))
+      return 2; // Unknown types never decide an overload.
+    if (depth > 4)
+      return NotViable;
+    const Ty* a = types.stripRef(arg);
+    if (param->isReference())
+    {
+      const Ty* pt = param->inner;
+      if (types.unqualified(a) == types.unqualified(pt))
+      {
+        if (!pt->isConst && a->isConst)
+          return NotViable;
+        return pt->isConst && !a->isConst ? 1 : 0;
+      }
+      if (a->kind == TyKind::Class && pt->kind == TyKind::Class && isBaseScope(classScopeOf(pt), classScopeOf(a)))
+        return !pt->isConst && a->isConst ? NotViable : 3;
+      if (param->kind == TyKind::LRef && !pt->isConst)
+        return NotViable; // A non-const lvalue reference binds only to the same type.
+      int r = conversionRank(a, pt, depth + 1);
+      return r >= NotViable ? NotViable : std::max(r, 2);
+    }
+    a = types.decay(a);
+    const Ty* p = types.unqualified(param);
+    if (a == p)
+      return 0;
+    auto isInt = [](const Ty* t) { return t->kind == TyKind::Int || t->kind == TyKind::Char || t->kind == TyKind::Bool; };
+    switch (p->kind)
+    {
+      case TyKind::Bool:
+        if (isInt(a) || a->kind == TyKind::Float || a->kind == TyKind::Pointer || a->kind == TyKind::Nullptr)
+          return 3;
+        if (a->kind == TyKind::Enum && !static_cast<EnumDecl*>(a->decl)->isClass)
+          return 3;
+        break;
+      case TyKind::Int:
+      case TyKind::Char:
+        if (isInt(a))
+        {
+          bool promotion = p->kind == TyKind::Int && p->bits == 32 && !p->isUnsigned &&
+                           (a->kind == TyKind::Bool || a->kind == TyKind::Char || a->bits < 32);
+          return promotion ? 2 : 3;
+        }
+        if (a->kind == TyKind::Float)
+          return 3;
+        if (a->kind == TyKind::Enum)
+          return static_cast<EnumDecl*>(a->decl)->isClass ? NotViable : (p->kind == TyKind::Int && p->bits == 32 ? 2 : 3);
+        break;
+      case TyKind::Float:
+        if (a->kind == TyKind::Float)
+          return p->bits > a->bits ? 2 : 3;
+        if (isInt(a))
+          return 3;
+        if (a->kind == TyKind::Enum && !static_cast<EnumDecl*>(a->decl)->isClass)
+          return 3;
+        break;
+      case TyKind::Enum:
+        if (a->kind == TyKind::Enum && a->decl == p->decl)
+          return 0;
+        break;
+      case TyKind::Pointer:
+        if (a->kind == TyKind::Nullptr)
+          return 3;
+        if (a->kind == TyKind::Pointer)
+        {
+          const Ty* ai = a->inner;
+          const Ty* pi = p->inner;
+          if (types.unqualified(ai) == types.unqualified(pi))
+            return pi->isConst == ai->isConst ? 0 : (pi->isConst ? 1 : NotViable);
+          if (pi->kind == TyKind::Void)
+            return 3;
+          if (ai->kind == TyKind::Class && pi->kind == TyKind::Class && isBaseScope(classScopeOf(pi), classScopeOf(ai)))
+            return !pi->isConst && ai->isConst ? NotViable : 3;
+          return NotViable;
+        }
+        if (a->kind == TyKind::Lambda && p->inner->kind == TyKind::Function)
+          return 3;
+        break;
+      case TyKind::Class:
+      {
+        if (a->kind == TyKind::Class)
+        {
+          if (types.unqualified(a)->decl == p->decl && a->args.size() == p->args.size())
+          {
+            bool same = true;
+            for (size_t i = 0; i < a->args.size(); ++i)
+              same = same && a->args[i] == p->args[i];
+            if (same)
+              return 0;
+          }
+          if (isBaseScope(classScopeOf(p), classScopeOf(a)))
+            return 3;
+        }
+        // User-defined: a non-explicit single-argument constructor of p accepting a.
+        if (Decl* def = p->decl && p->decl->ownScope ? p->decl : (classScopeOf(p) ? classScopeOf(p)->owner : nullptr))
+        {
+          Subst s = substFor(p);
+          for (Decl* m : static_cast<ClassDecl*>(def)->members)
+          {
+            if (m->kind != NodeKind::FunctionDecl || !(m->flags & DF_Constructor) || (m->flags & DF_Explicit))
+              continue;
+            auto* f = static_cast<FunctionDecl*>(m);
+            if (f->params.size() != 1 || !f->templateParams.empty())
+              continue;
+            const Ty* pt = declaredTypeOf(f->params[0], &s, 0);
+            if (pt && types.stripRef(pt)->kind == TyKind::Class && types.unqualified(types.stripRef(pt))->decl == p->decl)
+              continue; // The copy constructor is not a conversion.
+            if (conversionRank(a, pt, depth + 1) < 4)
+              return 4;
+          }
+        }
+        break;
+      }
+      default:
+        break;
+    }
+    // Conversion operator of the argument's class.
+    if (a->kind == TyKind::Class)
+      if (Scope* s = classScopeOf(a))
+      {
+        Subst subst = substFor(a);
+        for (Decl* m : static_cast<ClassDecl*>(s->owner)->members)
+        {
+          if (m->kind != NodeKind::FunctionDecl || !(m->flags & DF_Conversion) || (m->flags & DF_Explicit))
+            continue;
+          const Ty* ft = declaredTypeOf(m, &subst, 0);
+          if (ft && ft->kind == TyKind::Function && conversionRank(ft->inner, param, depth + 1) < 4)
+            return 4;
+        }
+      }
+    return NotViable;
+  }
+
+  struct Candidate
+  {
+    FunctionDecl* f;
+    std::vector<int> ranks;
+    int thisRank; // 0 exact constness, 1 const method on a non-const object, NotViable if const object/non-const method
+  };
+
+  // Picks the best candidate by C++'s rule (better in one argument, not worse in any); on a tie
+  // the non-template, then the first one. Null when no candidate is viable.
+  FunctionDecl* chooseAmong(const std::vector<FunctionDecl*>& candidates, const std::vector<const Ty*>& argTypes,
+                            const Subst* classSubst, const Ty* objectTy, bool& ambiguous)
+  {
+    std::vector<Candidate> viable;
+    bool objectConst = objectTy && types.stripRef(objectTy)->isConst;
+    for (FunctionDecl* f : candidates)
+    {
+      size_t required = 0, total = f->params.size();
+      bool variadic = (f->flags & DF_Variadic) != 0;
+      for (Decl* p : f->params)
+      {
+        auto* param = static_cast<ParamDecl*>(p);
+        if (param->isPack)
+          variadic = true;
+        else if (!param->defaultValue)
+          ++required;
+      }
+      if (argTypes.size() < required || (!variadic && argTypes.size() > total))
+        continue;
+      Candidate c{f, {}, 0};
+      bool constMethod = (f->flags & DF_Const) != 0;
+      if (objectTy && !(f->flags & DF_Static))
+      {
+        if (objectConst && !constMethod)
+          continue;
+        c.thisRank = (!objectConst && constMethod) ? 1 : 0;
+      }
+      const Ty* ft = declaredTypeOf(f, classSubst, 0);
+      Subst deduced = classSubst ? *classSubst : Subst{};
+      if (!f->templateParams.empty() && ft && ft->kind == TyKind::Function)
+        for (size_t i = 0; i < ft->args.size() && i < argTypes.size(); ++i)
+          deduce(ft->args[i], argTypes[i], deduced);
+      bool ok = true;
+      for (size_t i = 0; i < argTypes.size() && ok; ++i)
+      {
+        const Ty* pt = ft && ft->kind == TyKind::Function && i < ft->args.size() ? ft->args[i] : nullptr;
+        if (!pt)
+        {
+          c.ranks.push_back(3); // variadic tail
+          continue;
+        }
+        if (!f->templateParams.empty())
+          pt = substitute(pt, deduced);
+        int r = conversionRank(argTypes[i], pt);
+        if (r >= NotViable)
+          ok = false;
+        c.ranks.push_back(r);
+      }
+      if (ok)
+        viable.push_back(std::move(c));
+    }
+    ambiguous = false;
+    if (viable.empty())
+      return nullptr;
+    auto better = [&](const Candidate& a, const Candidate& b)
+    {
+      bool someBetter = false;
+      for (size_t i = 0; i < a.ranks.size(); ++i)
+      {
+        if (a.ranks[i] > b.ranks[i])
+          return false;
+        if (a.ranks[i] < b.ranks[i])
+          someBetter = true;
+      }
+      if (a.thisRank > b.thisRank)
+        return false;
+      if (a.thisRank < b.thisRank)
+        someBetter = true;
+      if (!someBetter && a.f->templateParams.empty() && !b.f->templateParams.empty())
+        return true;
+      return someBetter;
+    };
+    for (const Candidate& c : viable)
+    {
+      bool best = true;
+      for (const Candidate& o : viable)
+        if (&o != &c && !better(c, o))
+          best = false;
+      if (best)
+        return c.f;
+    }
+    ambiguous = viable.size() > 1;
+    // No clear winner: the smallest total rank, then non-template, then declaration order.
+    const Candidate* pick = &viable[0];
+    auto total = [](const Candidate& c) { int t = c.thisRank; for (int r : c.ranks) t += r; return t; };
+    for (const Candidate& c : viable)
+      if (total(c) < total(*pick) || (total(c) == total(*pick) && c.f->templateParams.empty() && !pick->f->templateParams.empty()))
+        pick = &c;
+    return pick->f;
+  }
+
   // ---------------- phase 2: walking ----------------
 
   struct Walker
@@ -1884,48 +2147,28 @@ struct GlobalScope::Impl
 
     // --- calls ---
 
-    // Picks a function among overloads by argument count. Returns null if none is viable.
-    FunctionDecl* pickOverload(Decl* primary, const std::vector<Entry>* overloads, size_t argCount, bool& ambiguous)
+    // Picks a function among overloads by argument count and conversion ranking.
+    FunctionDecl* pickOverload(Decl* primary, const std::vector<Entry>* overloads, const std::vector<const Ty*>& argTypes,
+                               const Subst* classSubst, const Ty* objectTy, bool& ambiguous)
     {
-      auto viable = [&](Decl* d) -> bool
-      {
-        if (!d || d->kind != NodeKind::FunctionDecl)
-          return false;
-        auto* f = static_cast<FunctionDecl*>(d);
-        size_t required = 0, total = f->params.size();
-        bool variadic = (f->flags & DF_Variadic) != 0;
-        for (Decl* p : f->params)
-        {
-          auto* param = static_cast<ParamDecl*>(p);
-          if (param->isPack)
-            variadic = true;
-          else if (!param->defaultValue)
-            ++required;
-        }
-        if (variadic)
-          return argCount + 1 >= required; // A pack may be empty.
-        return argCount >= required && argCount <= total;
-      };
-      std::vector<FunctionDecl*> hits;
+      std::vector<FunctionDecl*> candidates;
       if (overloads)
       {
         for (const Entry& e : *overloads)
-          if (viable(e.decl))
-            hits.push_back(static_cast<FunctionDecl*>(e.decl));
+          if (e.decl && e.decl->kind == NodeKind::FunctionDecl)
+            candidates.push_back(static_cast<FunctionDecl*>(e.decl));
       }
-      else if (viable(primary))
-        hits.push_back(static_cast<FunctionDecl*>(primary));
-      ambiguous = hits.size() > 1;
-      if (hits.empty())
-        return nullptr;
-      // Prefer a non-template exact arity match.
-      for (FunctionDecl* f : hits)
-        if (f->templateParams.empty() && f->params.size() == argCount)
-          return f;
-      for (FunctionDecl* f : hits)
-        if (f->templateParams.empty())
-          return f;
-      return hits[0];
+      else if (primary && primary->kind == NodeKind::FunctionDecl)
+        candidates.push_back(static_cast<FunctionDecl*>(primary));
+      return impl.chooseAmong(candidates, argTypes, classSubst, objectTy, ambiguous);
+    }
+
+    static std::vector<const Ty*> argTypesOf(const Span<Expr*>& args)
+    {
+      std::vector<const Ty*> out;
+      for (Expr* a : args)
+        out.push_back(a ? a->ty : nullptr);
+      return out;
     }
 
     // Return type of calling `f` with the given arguments, deducing its template parameters.
@@ -2038,7 +2281,7 @@ struct GlobalScope::Impl
         Decl* d = l.decl;
         if (d && d->kind == NodeKind::FunctionDecl)
         {
-          FunctionDecl* f = pickOverload(d, l.overloads, c->args.size(), ambiguous);
+          FunctionDecl* f = pickOverload(d, l.overloads, argTypesOf(c->args), nullptr, nullptr, ambiguous);
           if (!f)
           {
             record(n, types.unknown());
@@ -2107,7 +2350,7 @@ struct GlobalScope::Impl
         }
         if (r.decl->kind == NodeKind::FunctionDecl)
         {
-          FunctionDecl* f = pickOverload(r.decl, r.overloads, c->args.size(), ambiguous);
+          FunctionDecl* f = pickOverload(r.decl, r.overloads, argTypesOf(c->args), &r.subst, object, ambiguous);
           if (!f)
           {
             ++stats.membersBound;
@@ -2157,7 +2400,7 @@ struct GlobalScope::Impl
         if (r.decl && r.decl->kind == NodeKind::FunctionDecl)
         {
           bool ambiguous;
-          if (FunctionDecl* f = pickOverload(r.decl, r.overloads, c->args.size(), ambiguous))
+          if (FunctionDecl* f = pickOverload(r.decl, r.overloads, argTypesOf(c->args), &r.subst, t, ambiguous))
             return returnTypeOfCall(f, &r.subst, c->args, nullptr);
           return unknown(Why::Overload);
         }
@@ -2211,7 +2454,10 @@ struct GlobalScope::Impl
         {
           bool ambiguous;
           Span<Expr*> none;
-          if (FunctionDecl* f = pickOverload(r.decl, r.overloads, arity - 1, ambiguous))
+          std::vector<const Ty*> argTypes;
+          if (arity == 2)
+            argTypes.push_back(rhs);
+          if (FunctionDecl* f = pickOverload(r.decl, r.overloads, argTypes, &r.subst, lhs, ambiguous))
             return returnTypeOfCall(f, &r.subst, none, nullptr);
         }
       }
@@ -2232,7 +2478,10 @@ struct GlobalScope::Impl
           {
             bool ambiguous;
             Span<Expr*> none;
-            if (FunctionDecl* f = pickOverload(look.decl, look.overloads, arity, ambiguous))
+            std::vector<const Ty*> argTypes{lhs};
+            if (arity == 2)
+              argTypes.push_back(rhs);
+            if (FunctionDecl* f = pickOverload(look.decl, look.overloads, argTypes, nullptr, nullptr, ambiguous))
               return returnTypeOfCall(f, nullptr, none, nullptr);
           }
           break;
@@ -2442,7 +2691,7 @@ struct GlobalScope::Impl
         {
           bool ambiguous;
           Span<Expr*> none;
-          if (FunctionDecl* f = pickOverload(begin.decl, begin.overloads, 0, ambiguous))
+          if (FunctionDecl* f = pickOverload(begin.decl, begin.overloads, {}, &begin.subst, t, ambiguous))
             iterator = returnTypeOfCall(f, &begin.subst, none, nullptr);
         }
         if (!iterator || !iterator->isKnown())
@@ -2457,7 +2706,7 @@ struct GlobalScope::Impl
           {
             bool ambiguous;
             Span<Expr*> none;
-            if (FunctionDecl* f = pickOverload(deref.decl, deref.overloads, 0, ambiguous))
+            if (FunctionDecl* f = pickOverload(deref.decl, deref.overloads, {}, &deref.subst, it, ambiguous))
               return returnTypeOfCall(f, &deref.subst, none, nullptr);
           }
         }
@@ -2938,7 +3187,7 @@ struct GlobalScope::Impl
             if (r.decl && r.decl->kind == NodeKind::FunctionDecl)
             {
               bool ambiguous;
-              if (FunctionDecl* f = pickOverload(r.decl, r.overloads, i->args.size(), ambiguous))
+              if (FunctionDecl* f = pickOverload(r.decl, r.overloads, argTypesOf(i->args), &r.subst, b, ambiguous))
                 return record(e, returnTypeOfCall(f, &r.subst, i->args, nullptr));
             }
             return record(e, unknown(Why::Operator));
@@ -3300,6 +3549,17 @@ const Ty* GlobalScope::typeOfAstIn(Type* t, Decl* context, const TemplateArgs& a
   ParsedFile* file = context ? context->file : nullptr;
   return impl->convertType(t, Impl::TypeContext{dc.scope, &dc.params, args.empty() ? nullptr : &s, file ? file->tokens : nullptr,
                                                 file ? file->text : std::string_view()}, 0);
+}
+
+FunctionDecl* GlobalScope::chooseOverload(const std::vector<FunctionDecl*>& candidates, const std::vector<const Ty*>& argTypes,
+                                          const TemplateArgs& classArgs, const Ty* objectType, bool* ambiguous)
+{
+  Subst s = toSubst(classArgs);
+  bool amb = false;
+  FunctionDecl* f = impl->chooseAmong(candidates, argTypes, classArgs.empty() ? nullptr : &s, objectType, amb);
+  if (ambiguous)
+    *ambiguous = amb;
+  return f;
 }
 
 TemplateArgs GlobalScope::classArgsOf(const Ty* classType)

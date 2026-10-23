@@ -220,9 +220,15 @@ them, stores them in a `Vector<String>`, iterates with range-for and checks that
 destroyed. Needed in the code generator for this: range-for over arrays and classes with
 pointer-returning `begin()`/`end()`, placement `new`, explicit destructor calls (`x.~T()`).
 
-A limitation visible in the library's API: overloads are still chosen by argument count only,
-so `String` has `append(const char*)`, `appendBytes(const char*, int)` and `appendChar(char)`
-instead of three `append`s. Conversion-based overload resolution is the next checker item.
+Overload resolution with conversion ranking followed (exact, qualification, promotion,
+standard conversion, user-defined through non-explicit constructors and conversion operators;
+C++'s "better in one argument and not worse in any" rule, non-templates preferred, const
+methods matched to const objects), shared by the checker and the code generator's constructor
+and operator selection. `String` now has four `append` overloads and two `operator+=`. On
+Factorio, calls with several same-arity candidates went from 48,504 to 14,085 still-ambiguous
+ones (mostly identical signatures from macro-generated code); the resolve+check phase costs
+0.086 s on 32 threads with ranking instead of 0.032 s, which is worth optimising later by
+caching each class's conversion constructors.
 
 Not in v0 and reported as "codegen does not support X yet": lambdas, unions, exceptions,
 virtual functions, arrays of objects with constructors, globals with constructors, more than

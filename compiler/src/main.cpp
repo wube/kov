@@ -257,7 +257,7 @@ namespace
            (unsigned long long)total.unknownName, (unsigned long long)total.unknownBase, (unsigned long long)total.unknownMember,
            (unsigned long long)total.unknownOverload, (unsigned long long)total.unknownDeduction, (unsigned long long)total.unknownAutoReturn,
            (unsigned long long)total.unknownAuto, (unsigned long long)total.unknownOperator, (unsigned long long)total.unknownUnsupported);
-    report("  calls resolved to a function: %llu (%llu with several arity matches)\n", (unsigned long long)total.callsResolved,
+    report("  calls resolved to a function: %llu (%llu still ambiguous after conversion ranking)\n", (unsigned long long)total.callsResolved,
            (unsigned long long)total.callsAmbiguousArity);
     GlobalScope::InstantiationStats inst = global.instantiationStats();
     uint64_t instExprs = total.instExprsTyped + total.instExprsDependent + total.instExprsUnknown;

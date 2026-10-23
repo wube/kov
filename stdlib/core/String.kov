@@ -1,8 +1,6 @@
 // Kov standard library: String. A growable sequence of UTF-8 code units, always zero-terminated
 // so that c_str() is free. One plain class: no character traits, no allocator parameter.
 //
-// Overloads are given distinct names for now (append / appendBytes / appendChar), because the
-// v0 compiler resolves overloads by argument count only.
 struct String
 {
   char* data = nullptr; // nullptr while empty
@@ -11,7 +9,7 @@ struct String
 
   String() {}
   String(const char* text) { this->append(text); }
-  String(const String& other) { this->appendBytes(other.data, other.length); }
+  String(const String& other) { this->append(other.data, other.length); }
   ~String()
   {
     if (this->data)
@@ -23,7 +21,7 @@ struct String
     if (this == &other)
       return *this;
     this->length = 0;
-    this->appendBytes(other.data, other.length);
+    this->append(other.data, other.length);
     if (this->data)
       this->data[this->length] = 0;
     return *this;
@@ -53,7 +51,7 @@ struct String
     this->capacity = newCapacity;
   }
 
-  void appendBytes(const char* bytes, int count)
+  void append(const char* bytes, int count)
   {
     if (count <= 0)
       return;
@@ -62,8 +60,9 @@ struct String
     this->length += count;
     this->data[this->length] = 0;
   }
-  void append(const char* text) { this->appendBytes(text, (int)strlen(text)); }
-  void appendChar(char c)
+  void append(const char* text) { this->append(text, (int)strlen(text)); }
+  void append(const String& other) { this->append(other.data, other.length); }
+  void append(char c)
   {
     this->reserve(this->length + 1);
     this->data[this->length] = c;
@@ -73,7 +72,12 @@ struct String
 
   String& operator+=(const String& other)
   {
-    this->appendBytes(other.data, other.length);
+    this->append(other);
+    return *this;
+  }
+  String& operator+=(char c)
+  {
+    this->append(c);
     return *this;
   }
   String operator+(const String& other) const
@@ -110,7 +114,7 @@ struct String
     if (start < this->length)
     {
       int available = this->length - start;
-      result.appendBytes(this->data + start, count < available ? count : available);
+      result.append(this->data + start, count < available ? count : available);
     }
     return result;
   }
