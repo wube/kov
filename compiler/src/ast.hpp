@@ -86,7 +86,7 @@ struct Span
   /* declarations */ \
   X(NamespaceDecl) X(ClassDecl) X(EnumDecl) X(EnumeratorDecl) X(FunctionDecl) X(ParamDecl) \
   X(VariableDecl) X(UsingAliasDecl) X(UsingDirectiveDecl) X(UsingNameDecl) X(TemplateParamDecl) \
-  X(StaticAssertDecl) X(MacroDecl) X(ErrorDecl) X(EmptyDecl) X(AsmDecl) X(FriendDecl) \
+  X(StaticAssertDecl) X(MacroDecl) X(ErrorDecl) X(EmptyDecl) X(AsmDecl) X(FriendDecl) X(ImportDecl) \
   /* statements */ \
   X(BlockStmt) X(ExprStmt) X(DeclStmt) X(IfStmt) X(ForStmt) X(RangeForStmt) X(WhileStmt) \
   X(DoStmt) X(SwitchStmt) X(CaseStmt) X(DefaultStmt) X(ReturnStmt) X(BreakStmt) X(ContinueStmt) \
@@ -240,6 +240,7 @@ struct ErrorDecl : Decl { uint32_t endToken; };
 struct EmptyDecl : Decl {};
 struct AsmDecl : Decl {};
 struct FriendDecl : Decl { Type* type; Decl* decl; };
+struct ImportDecl : Decl { uint32_t pathToken; }; // extern "C" import "header.h"; (the string token)
 
 // --- Statements ---
 
@@ -331,6 +332,7 @@ struct ParsedFile
   const std::vector<Token>* tokens = nullptr; // Set by parseFile; the driver keeps the vector alive.
   std::string_view text;
   std::string path; // Set by the driver, for diagnostics.
+  bool isImported = false; // Preprocessed C declarations, not user code.
   std::vector<Diagnostic> diagnostics;
   uint32_t declCount = 0; // All declaration nodes created.
   uint32_t functionBodies = 0;

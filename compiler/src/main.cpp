@@ -6,6 +6,9 @@
 #include "source.hpp"
 #include <algorithm>
 #include <atomic>
+#include <cctype>
+#include <cstring>
+#include <exception>
 #include <cstdarg>
 #include <cstdlib>
 #include <chrono>
@@ -42,6 +45,8 @@ namespace
     std::string exe;      // --exe <path>
     std::string stdDir;   // --std <dir>; default: <kovc dir>\..\..\stdlib when it exists
     bool noStd = false;
+    std::vector<std::string> cIncludeDirs; // --cinclude DIR, for imported C headers
+    bool showImportErrors = false; // --errors given: list parse errors in imported headers too
     int repeat = 1;
   };
 
@@ -60,7 +65,8 @@ namespace
             "  --emit-llvm F write LLVM IR for the program to F\n"
             "  --exe F       compile the program to the executable F (needs clang)\n"
             "  --std DIR     standard library sources (default: stdlib next to the compiler)\n"
-            "  --no-std      compile without the standard library\n");
+            "  --no-std      compile without the standard library\n"
+            "  --cinclude D  directory searched by imported C headers (repeatable)\n");
   }
 
   struct FileStats
@@ -95,6 +101,154 @@ namespace
 
   double seconds(std::chrono::steady_clock::duration d);
   int codegenExit = 0;
+  void importCHeaders(std::vector<SourceFile>& files, std::vector<LexResult>& lexed, std::vector<std::unique_ptr<ParsedFile>>& parsed,
+                      SymbolTable& symbols, const Options& options);
+
+  std::string clangPath()
+  {
+    const char* clangEnv = getenv("KOV_CLANG");
+    return clangEnv ? clangEnv : "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\Llvm\\x64\\bin\\clang.exe";
+  }
+
+  std::string readWholeFile(const std::filesystem::path& path)
+  {
+    std::string text;
+    readFile(path, text);
+    return text;
+  }
+
+  // Turns `#define NAME body` lines (clang -dM output) into Kov constant declarations where the
+  // body looks like a constant: numbers, string literals, operators, parentheses and names.
+  std::string macroConstants(const std::string& defines)
+  {
+    std::string out = "\n// Object-like macros, as constants.\n";
+    size_t pos = 0;
+    while (pos < defines.size())
+    {
+      size_t end = defines.find('\n', pos);
+      if (end == std::string::npos)
+        end = defines.size();
+      std::string line = defines.substr(pos, end - pos);
+      pos = end + 1;
+      if (line.rfind("#define ", 0) != 0)
+        continue;
+      size_t nameStart = 8;
+      size_t nameEnd = line.find_first_of(" (", nameStart);
+      if (nameEnd == std::string::npos || line[nameEnd] == '(')
+        continue; // function-like or empty
+      std::string name = line.substr(nameStart, nameEnd - nameStart);
+      std::string body = line.substr(nameEnd + 1);
+      while (!body.empty() && (body.back() == ' ' || body.back() == '\r'))
+        body.pop_back();
+      if (name.empty() || name[0] == '_' || body.empty())
+        continue;
+      bool hasDigit = false, ok = true;
+      int quotes = 0;
+      for (char c : body)
+      {
+        if (c == '"')
+          ++quotes;
+        else if (isdigit((unsigned char)c))
+          hasDigit = true;
+        else if (!(isalnum((unsigned char)c) || strchr("_ .+-*/()<>|&~!^,'\\xX", c)))
+          ok = false;
+      }
+      if (!ok || (quotes != 0 && quotes != 2) || (!hasDigit && quotes == 0))
+        continue;
+      out += "const auto " + name + " = " + body + ";\n";
+    }
+    return out;
+  }
+
+  // Collects `extern "C" import "header";` declarations, preprocesses the headers with clang
+  // once (cached by content hash in the temp directory) and parses the result as one more file.
+  void importCHeaders(std::vector<SourceFile>& files, std::vector<LexResult>& lexed, std::vector<std::unique_ptr<ParsedFile>>& parsed,
+                      SymbolTable& symbols, const Options& options)
+  {
+    std::vector<std::string> headers;
+    for (size_t i = 0; i < parsed.size(); ++i)
+      for (Decl* d : parsed[i]->decls)
+        if (d->kind == NodeKind::ImportDecl)
+        {
+          const Token& t = lexed[i].tokens[static_cast<ImportDecl*>(d)->pathToken];
+          std::string path = files[i].text.substr(t.offset + 1, t.length - 2);
+          if (std::find(headers.begin(), headers.end(), path) == headers.end())
+            headers.push_back(path);
+        }
+    if (headers.empty())
+      return;
+    auto importStart = std::chrono::steady_clock::now();
+    std::string wrapper = "#define WIN32_LEAN_AND_MEAN\n#define NOMINMAX\n";
+    for (const std::string& h : headers)
+      wrapper += "#include <" + h + ">\n";
+    std::string includeArgs;
+    for (const std::string& dir : options.cIncludeDirs)
+      includeArgs += " -I\"" + dir + "\"";
+    uint64_t hash = 1469598103934665603ull;
+    for (unsigned char c : wrapper + includeArgs)
+      hash = (hash ^ c) * 1099511628211ull;
+    std::error_code ec;
+    std::filesystem::path cacheDir = std::filesystem::temp_directory_path(ec) / "kov-imports";
+    std::filesystem::create_directories(cacheDir, ec);
+    char hex[32];
+    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)hash);
+    std::filesystem::path cached = cacheDir / (std::string(hex) + ".i");
+    std::string text;
+    bool cacheHit = std::filesystem::exists(cached, ec);
+    if (!cacheHit)
+    {
+      std::filesystem::path wrapperPath = cacheDir / (std::string(hex) + ".c");
+      std::filesystem::path preprocessed = cacheDir / (std::string(hex) + ".pp");
+      std::filesystem::path defines = cacheDir / (std::string(hex) + ".dm");
+      FILE* w = fopen(wrapperPath.string().c_str(), "wb");
+      if (!w)
+      {
+        fprintf(stderr, "cannot write %s\n", wrapperPath.string().c_str());
+        return;
+      }
+      fwrite(wrapper.data(), 1, wrapper.size(), w);
+      fclose(w);
+      std::string clang = clangPath();
+      std::string base = "\"\"" + clang + "\" -x c -w" + includeArgs + " \"" + wrapperPath.string() + "\"";
+      int rc = system((base + " -E -P -o \"" + preprocessed.string() + "\"\"").c_str());
+      int rc2 = system((base + " -E -dM -o \"" + defines.string() + "\"\"").c_str());
+      if (rc != 0 || rc2 != 0)
+      {
+        fprintf(stderr, "importing C headers failed (clang exit %d/%d)\n", rc, rc2);
+        codegenExit = 1;
+        return;
+      }
+      text = readWholeFile(preprocessed) + macroConstants(readWholeFile(defines));
+      FILE* out = fopen(cached.string().c_str(), "wb");
+      if (out)
+      {
+        fwrite(text.data(), 1, text.size(), out);
+        fclose(out);
+      }
+    }
+    else
+      text = readWholeFile(cached);
+    // The imported declarations become one more file, parsed in C mode.
+    SourceFile source;
+    source.path = "<imported C headers>";
+    source.text = std::move(text);
+    source.text.reserve(source.text.size() + 1);
+    files.push_back(std::move(source));
+    lexed.push_back(lex(files.back().text, symbols));
+    parsed.push_back(std::make_unique<ParsedFile>());
+    parsed.back()->path = files.back().path.string();
+    parsed.back()->isImported = true;
+    parseFile(lexed.back().tokens, files.back().text, symbols, *parsed.back(), true);
+    for (size_t i = 0; i < parsed.size(); ++i)
+    {
+      // The vectors may have grown: re-point the parsed files at their tokens and text.
+      parsed[i]->tokens = &lexed[i].tokens;
+      parsed[i]->text = files[i].text;
+    }
+    report("imports: %zu header(s) -> %zu declarations, %zu parse errors (ignored), %.3f s%s\n", headers.size(),
+           size_t(parsed.back()->declCount), parsed.back()->diagnostics.size(), seconds(std::chrono::steady_clock::now() - importStart),
+           cacheHit ? " (cached)" : "");
+  }
 
   void runCodegen(std::vector<std::unique_ptr<ParsedFile>>& parsed, GlobalScope& global, SymbolTable& symbols, const Options& options)
   {
@@ -121,9 +275,9 @@ namespace
     fclose(out);
     if (options.exe.empty() || codegenExit)
       return;
-    const char* clangEnv = getenv("KOV_CLANG");
-    std::string clang = clangEnv ? clangEnv : "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\Llvm\\x64\\bin\\clang.exe";
-    std::string command = "\"\"" + clang + "\" -O2 -w \"" + llPath + "\" -o \"" + options.exe + "\"\"";
+    std::string clang = clangPath();
+    // legacy_stdio_definitions: the printf/scanf family that the UCRT headers define inline.
+    std::string command = "\"\"" + clang + "\" -O2 -w \"" + llPath + "\" -o \"" + options.exe + "\" -llegacy_stdio_definitions\"";
     start = Clock::now();
     int rc = system(command.c_str());
     report("clang:   %.3f s (exit %d)\n", seconds(Clock::now() - start), rc);
@@ -174,9 +328,12 @@ namespace
           parsed[i]->tokens = &lexed[i].tokens;
         }
     }
+    importCHeaders(files, lexed, parsed, symbols, options);
     uint64_t decls = 0, bodies = 0, nodes = 0, errors = 0, filesWithErrors = 0, arenaBytes = 0, lines = 0;
     for (size_t i = 0; i < files.size(); ++i)
     {
+      if (parsed[i]->isImported)
+        continue; // C headers are not part of the parse statistics
       decls += parsed[i]->declCount;
       bodies += parsed[i]->functionBodies;
       nodes += parsed[i]->nodeCount;
@@ -194,6 +351,8 @@ namespace
     for (size_t i = 0; i < files.size() && shown < options.showErrors; ++i)
       for (const Diagnostic& d : parsed[i]->diagnostics)
       {
+        if (parsed[i]->isImported && !options.showImportErrors)
+          break; // reported in one line by importCHeaders
         if (shown++ >= options.showErrors)
           break;
         const Token& t = lexed[i].tokens[std::min<size_t>(d.token, lexed[i].tokens.size() - 1)];
@@ -306,6 +465,18 @@ namespace
 
 int main(int argc, char** argv)
 {
+  setvbuf(stdout, nullptr, _IONBF, 0); // progress lines survive a crash
+  std::set_terminate([]
+  {
+    try
+    {
+      if (auto e = std::current_exception())
+        std::rethrow_exception(e);
+    }
+    catch (const std::exception& e) { fprintf(stderr, "fatal: %s\n", e.what()); }
+    catch (...) { fprintf(stderr, "fatal: unknown exception\n"); }
+    abort();
+  });
   Options options;
   for (int i = 1; i < argc; ++i)
   {
@@ -333,7 +504,7 @@ int main(int argc, char** argv)
     else if (arg == "--lex-only")
       options.parse = false;
     else if (arg == "--errors" && i + 1 < argc)
-      options.showErrors = atoi(argv[++i]);
+      options.showErrors = atoi(argv[++i]), options.showImportErrors = true;
     else if (arg == "--unresolved" && i + 1 < argc)
       options.showUnresolved = atoi(argv[++i]);
     else if (arg == "--quiet")
@@ -346,6 +517,8 @@ int main(int argc, char** argv)
       options.stdDir = argv[++i];
     else if (arg == "--no-std")
       options.noStd = true;
+    else if (arg == "--cinclude" && i + 1 < argc)
+      options.cIncludeDirs.push_back(argv[++i]);
     else if (arg[0] == '-')
     {
       usage();

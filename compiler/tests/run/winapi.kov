@@ -1,0 +1,17 @@
+// Importing the Windows API: unions, anonymous structs, macros and kernel32 calls from windows.h.
+extern "C" import "windows.h";
+extern "C" import "stdio.h";
+
+int main()
+{
+  LARGE_INTEGER frequency;
+  QueryPerformanceFrequency(&frequency);
+  SYSTEM_INFO info;
+  GetSystemInfo(&info);
+  HANDLE heap = GetProcessHeap();
+  int* block = (int*)HeapAlloc(heap, HEAP_ZERO_MEMORY, 16);
+  block[1] = 7;
+  printf("%d %d %d %d\n", frequency.QuadPart > 0 ? 1 : 0, info.dwNumberOfProcessors > 0 ? 1 : 0, block[0] + block[1], MAX_PATH);
+  HeapFree(heap, 0, block);
+  return 0;
+}

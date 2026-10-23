@@ -36,6 +36,8 @@ namespace
     std::vector<FunctionDecl*> vtable;        // implementation per slot (null for pure virtual)
     std::vector<const Ty*> vtableOwners;      // class type each implementation belongs to
     std::string vtableName;                   // @"vtable.Class"
+    bool isUnion = false;                     // all members at offset 0, storage sized for the largest
+    std::vector<std::pair<Decl*, uint32_t>> anonymous; // anonymous struct/union members -> field index
   };
 
   struct Emitter
@@ -284,9 +286,37 @@ namespace
       if (it != structs.end())
         return it->second;
       ClassDecl* c = static_cast<ClassDecl*>(key->decl);
-      if (c->keyword == Kw::union_)
-        unsupported(c, "unions");
       TemplateArgs args = global.classArgsOf(key);
+      if (c->keyword == Kw::union_)
+      {
+        // A union is one block of storage; every member lives at its start.
+        StructInfo& info = structs[key];
+        info.name = "%struct." + std::to_string(structs.size());
+        info.isUnion = true;
+        uint64_t size = 1, align = 1;
+        for (Decl* m : c->members)
+        {
+          const Ty* ft = nullptr;
+          if (m->kind == NodeKind::VariableDecl && !(m->flags & (DF_Static | DF_Typedef)))
+            ft = global.typeOfDeclIn(m, args);
+          else if (m->kind == NodeKind::ClassDecl && static_cast<ClassDecl*>(m)->name.empty() && static_cast<ClassDecl*>(m)->isDefinition)
+            ft = types.classType(m, {});
+          else
+            continue;
+          if (!ft || !ft->isKnown() || types.isDependent(ft))
+            unsupported(m, "a union member of unknown type");
+          info.fieldIndex[m] = 0;
+          info.fieldDecls.push_back(m);
+          if (m->kind == NodeKind::ClassDecl)
+            info.anonymous.push_back({m, 0});
+          size = std::max(size, sizeOf(ft, c));
+          align = std::max(align, alignOf(ft, c));
+        }
+        info.fieldTypes.push_back(types.array(types.intType(uint8_t(align * 8)), uint32_t((size + align - 1) / align)));
+        decls += info.name + " = type { " + llType(info.fieldTypes[0], c) + " }\n";
+        ++result.structs;
+        return structs[key];
+      }
       if (!c->templateParams.empty() && args.pairs.size() != c->templateParams.size())
         unsupported(at, "the class template " + global.qualifiedName(c) + " used without all its arguments");
       StructInfo& info = structs[key];
@@ -360,6 +390,17 @@ namespace
       info.vtableOwners = owners;
       for (Decl* m : c->members)
       {
+        if (m->kind == NodeKind::ClassDecl && static_cast<ClassDecl*>(m)->name.empty() && static_cast<ClassDecl*>(m)->isDefinition)
+        {
+          // Anonymous struct/union member: a field whose own members are reachable by name.
+          const Ty* ft = types.classType(m, {});
+          structFor(ft, c);
+          info.anonymous.push_back({m, uint32_t(info.fieldTypes.size())});
+          info.fieldIndex[m] = uint32_t(info.fieldTypes.size());
+          info.fieldDecls.push_back(m);
+          info.fieldTypes.push_back(ft);
+          continue;
+        }
         if (m->kind != NodeKind::VariableDecl || (m->flags & (DF_Static | DF_Typedef)))
           continue;
         const Ty* ft = global.typeOfDeclIn(m, args);
@@ -453,13 +494,24 @@ namespace
       auto it = info.fieldIndex.find(member);
       if (it != info.fieldIndex.end())
       {
-        out = gep(info.name, objectAddr, it->second);
+        out = info.isUnion ? objectAddr : gep(info.name, objectAddr, it->second);
         return true;
       }
-      for (auto& [baseDef, index] : info.bases)
+      std::vector<std::pair<Decl*, uint32_t>> anonymous = info.anonymous;
+      std::vector<std::pair<Decl*, uint32_t>> bases = info.bases;
+      std::vector<const Ty*> fieldTypes = info.fieldTypes;
+      bool isUnion = info.isUnion;
+      std::string name = info.name;
+      for (auto& [anon, index] : anonymous)
       {
-        std::string baseAddr = gep(info.name, objectAddr, index);
-        if (fieldAddress(info.fieldTypes[index], member, baseAddr, out, at))
+        std::string addr = isUnion ? objectAddr : gep(name, objectAddr, index);
+        if (fieldAddress(types.classType(anon, {}), member, addr, out, at))
+          return true;
+      }
+      for (auto& [baseDef, index] : bases)
+      {
+        std::string baseAddr = gep(name, objectAddr, index);
+        if (fieldAddress(fieldTypes[index], member, baseAddr, out, at))
           return true;
       }
       return false;
@@ -628,8 +680,12 @@ namespace
       }
       if (info.polymorphic)
         fn += "  store ptr " + info.vtableName + ", ptr " + addr + "\n";
+      if (info.isUnion)
+        return;
       for (Decl* d : info.fieldDecls)
       {
+        if (d->kind != NodeKind::VariableDecl)
+          continue; // anonymous struct member: zero-initialised with the whole object
         auto* v = static_cast<VariableDecl*>(d);
         const Ty* ft = info.fieldTypes[info.fieldIndex[d]];
         std::string fieldAddr = gep(info.name, addr, info.fieldIndex[d]);
@@ -1514,6 +1570,8 @@ namespace
       Decl* defDecl = global.definitionOf(f);
       FunctionDecl* def = defDecl && defDecl->kind == NodeKind::FunctionDecl ? static_cast<FunctionDecl*>(defDecl) : f;
       bool templated = !args.empty();
+      if (def->file && def->file->isImported)
+        def = f, templated = false; // inline C functions are declared, the library provides them
       if (def->body && templated)
       {
         if (!requested[name])
@@ -1523,7 +1581,7 @@ namespace
         }
         return name;
       }
-      if (def->body)
+      if (def->body && !(def->file && def->file->isImported))
         return name; // Defined by the main pass.
       if (declaredNames[name])
         return name;
@@ -3684,7 +3742,7 @@ namespace
           case NodeKind::FunctionDecl:
           {
             auto* f = static_cast<FunctionDecl*>(d);
-            if (f->body && f->templateParams.empty() && !global.isTemplateContext(f))
+            if (f->body && f->templateParams.empty() && !global.isTemplateContext(f) && !(f->file && f->file->isImported))
               out.push_back(f);
             break;
           }

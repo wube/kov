@@ -263,12 +263,51 @@ once per element (so `toString(args)` picks a different overload for each elemen
 plus `print`/`println` overloads taking a pattern; `format.kov` tests packs, folds over `+`
 and a join written with a comma fold.
 
-Not in v0 and reported as "codegen does not support X yet": unions, exceptions, multiple
+Not in v0 and reported as "codegen does not support X yet": exceptions, multiple
 polymorphic bases, arrays of objects with constructors, globals with constructors, more than
 four template parameters per function, class-typed iterators in range-for, packs in the middle
 of a parameter list. IR names are the
 qualified Kov names with parameter types in quotes (`@"Point::move(int32, int32)"`), so there is
 no mangling scheme.
+
+## C header import (2026-10-23)
+
+`extern "C" import "stdio.h";` makes the compiler run clang's preprocessor over all imported
+headers at once (`clang -x c -E -P`, plus `-E -dM` for the macros), parse the result in C mode as
+one more file of the program, and turn constant-looking object-like macros into `const auto`
+declarations. The preprocessed text is cached by content hash under the temp directory
+(`kov-imports`), so the preprocessor runs once per header set, not once per build.
+
+| import                              | declarations | parse errors | first build | cached  |
+|-------------------------------------|-------------:|-------------:|------------:|--------:|
+| stdio.h, string.h, math.h, stdlib.h |        3,575 |            0 |     0.085 s | 0.002 s |
+| windows.h, stdio.h                  |       44,856 |           18 |     0.195 s | 0.033 s |
+
+(The `imports:` line of kovc. The first-build time is the two clang invocations; the cached time
+is reading, lexing and parsing the preprocessed text on one thread.)
+
+`cimport.kov` uses `snprintf`, `sqrt`, `fopen`/`fprintf`/`fscanf`, `malloc`/`free`, `abs` and
+the macros `EOF` and `BUFSIZ`; `winapi.kov` uses `QueryPerformanceFrequency` on a
+`LARGE_INTEGER` (a union with an anonymous struct), `GetSystemInfo` (an anonymous union inside a
+struct), `GetProcessHeap`/`HeapAlloc`/`HeapFree` with `HEAP_ZERO_MEMORY` and `MAX_PATH`. Inline
+functions in the headers (`snprintf`, `printf` and friends in the UCRT) are declared, not
+compiled; the link line adds `legacy_stdio_definitions` so they resolve.
+
+What the C text needed from the front end: unions and anonymous struct/union members in codegen
+(a union is one block of storage, every member at offset 0), `typedef struct { ... } Name;`,
+synthetic names for `struct { ... } x;`, `(void)` parameter lists, `unsigned __int64` folded into
+the builtin type, MSVC calling conventions dropped from the token stream in C mode, and the
+macro-specifier heuristic switched off there (it was skipping `LONG` in `LONG const*`, the cause
+of 119 of the original 144 `windows.h` errors). The remaining 18 are `static` after
+`__declspec`, `POINTER_32` and a few expression forms; none affected the programs. `--errors N`
+lists them.
+
+One grammar decision fell out of it: `QueryPerformanceFrequency(&frequency);` parsed as a
+declaration of a reference `frequency` of type `QueryPerformanceFrequency` (the C++ reading of
+`T (&x);`). Kov now treats `f(*p);` and `f(&x);` as calls and accepts a parenthesised declarator
+only when `(` or `[` follows it (`R (*f)(int)`). On Factorio this turned two misparsed files into
+clean ones (208 errors in 59 files, 99.27% clean) and changed nothing else: parse 0.074 s,
+resolve 0.078 s, 78.2% of member accesses bound, 76.4% of expressions typed. 13 run-tests pass.
 
 ## Lessons
 

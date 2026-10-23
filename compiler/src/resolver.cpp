@@ -328,6 +328,8 @@ struct GlobalScope::Impl
     add("int_fast32_t", types.intType(32));
     add("uint_fast32_t", types.intType(32, true));
     add("nullptr_t", types.nullptrType());
+    add("_Bool", types.boolType());
+    add("wchar_t", types.charType(16, true));
   }
 
   const Ty* builtinByName(uint32_t symbol) const

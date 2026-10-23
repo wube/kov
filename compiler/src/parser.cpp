@@ -3,6 +3,7 @@
 // expression, template-id vs. less-than), this parser uses purely syntactic heuristics; the
 // resolver later checks the guesses. Unknown macros are recognised by their ALL_CAPS spelling.
 #include "parser.hpp"
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <string>
@@ -28,13 +29,14 @@ namespace
     Parser(std::vector<Token>& tokens, std::string_view text, SymbolTable& symbols, ParsedFile& out)
       : toks(tokens), text(text.data()), symbols(symbols), out(out), arena(out.arena)
     {
+      kwImport = symbols.intern("import");
       kwImplicit = symbols.intern("implicit");
       kwFallthrough = symbols.intern("fallthrough");
       kwBothConst = symbols.intern("both_const");
       kwClassConst = symbols.intern("class_const");
       kwAccumulate = symbols.intern("accumulate");
     }
-    uint32_t kwImplicit, kwFallthrough, kwBothConst, kwClassConst, kwAccumulate;
+    uint32_t kwImplicit, kwFallthrough, kwBothConst, kwClassConst, kwAccumulate, kwImport;
 
     void parseTranslationUnit()
     {
@@ -67,7 +69,10 @@ namespace
     Access currentAccess = Access::Default;
     bool inRecovery = false;
     int depth = 0;
+  public:
     bool externC = false; // Inside extern "C".
+    bool cMode = false;   // Preprocessed C text (imported headers): no macro heuristics.
+  private:
     bool conditionMode = false; // Declarations inside `if (...)` end at ')' instead of ';'.
     bool inRequires = false;    // Inside a requires-clause names are always template-ids.
     std::vector<std::pair<uint32_t, Token>> splits; // '>>' tokens split in place, for undo on backtrack.
@@ -337,7 +342,9 @@ namespace
         }
         else if (atIdent() && (spelling() == "__forceinline" || spelling() == "__inline" || spelling() == "__cdecl" ||
                                spelling() == "__stdcall" || spelling() == "__fastcall" || spelling() == "__vectorcall" ||
-                               spelling() == "__restrict" || spelling() == "__unaligned" || spelling() == "__thiscall"))
+                               spelling() == "__restrict" || spelling() == "__unaligned" || spelling() == "__thiscall" ||
+                               spelling() == "__ptr64" || spelling() == "__ptr32" || spelling() == "__sptr" ||
+                               spelling() == "__uptr" || spelling() == "__clrcall" || spelling() == "__w64"))
           advance();
         else if (at(TokenKind::Directive))
           advance();
@@ -350,6 +357,8 @@ namespace
     // `KOV_API(dll) class X`. Returns true if something was skipped.
     bool skipMacroSpecifier()
     {
+      if (cMode)
+        return false; // preprocessed C: there are no macros left to guess at
       if (!atMacroName())
         return false;
       // MACRO(...) followed by something that starts a declaration.
@@ -612,6 +621,20 @@ namespace
       }
     }
 
+    // A per-file number for synthetic names: a hash of the text, computed once.
+    uint64_t fileTag()
+    {
+      if (!tag)
+      {
+        uint64_t h = 1469598103934665603ull;
+        for (unsigned char ch : out.text)
+          h = (h ^ ch) * 1099511628211ull;
+        tag = h % 1000000007ull + 1;
+      }
+      return tag;
+    }
+    uint64_t tag = 0;
+
     bool atBuiltinTypeIdent() const
     {
       if (!atIdent())
@@ -667,6 +690,19 @@ namespace
           advance();
         }
         (void)any;
+        if (atIdent())
+        {
+          // MSVC's `unsigned __int64` and friends fold into the builtin type.
+          std::string_view s = spelling();
+          if (s == "__int64" || s == "__int32" || s == "__int16" || s == "__int8")
+          {
+            b->keyword = s == "__int64" ? Kw::long_ : s == "__int32" ? Kw::int_ : s == "__int16" ? Kw::short_ : Kw::char_;
+            b->longCount = s == "__int64" ? 2 : 0;
+            if (s == "__int8" && !b->isUnsigned)
+              b->isSigned = true;
+            advance();
+          }
+        }
         type = b;
       }
       else if (atBuiltinTypeIdent())
@@ -1000,6 +1036,17 @@ namespace
         bool savedExternC = externC;
         externC = spelling() == "\"C\"";
         advance();
+        if (atIdent(kwImport) && at(TokenKind::String, 1))
+        {
+          ImportDecl* imp = decl<ImportDecl>(start);
+          advance();
+          imp->pathToken = pos;
+          advance();
+          expect(P::Semi, "expected ';' after import");
+          externC = savedExternC;
+          pushDecl(imp);
+          return;
+        }
         if (accept(P::LBrace))
         {
           while (!at(P::RBrace) && !at(TokenKind::End))
@@ -1372,7 +1419,9 @@ namespace
     {
       expect(P::LParen, "expected '('");
       size_t mark = scratch.size();
-      if (!at(P::RParen))
+      if (at(Kw::void_) && at(P::RParen, 1))
+        advance(); // C's `(void)`: no parameters
+      else if (!at(P::RParen))
       {
         for (;;)
         {
@@ -1952,6 +2001,15 @@ namespace
       if (!at(P::Semi))
       {
         parseDeclSpecifiers(flags);
+        bool synthetic = false;
+        if (c->name.empty())
+        {
+          // `struct { ... } x;`: the class needs a name for x's type to refer to.
+          NamePart part;
+          part.symbol = symbols.intern("__anon" + std::to_string(start) + "_" + std::to_string(fileTag()));
+          c->name.parts = makeSpanOf(std::vector<NamePart>{part});
+          synthetic = true;
+        }
         NamedType* selfType = node<NamedType>(start);
         selfType->name = c->name;
         for (;;)
@@ -1961,6 +2019,15 @@ namespace
           parseDeclarator(d, scope);
           if (inRecovery)
             return true;
+          if ((flags & DF_Typedef) && synthetic && d.type == selfType && d.name.parts.size() == 1)
+          {
+            // `typedef struct { ... } Name;`: the class itself takes the name.
+            c->name = d.name;
+            selfType->name = d.name;
+            if (!accept(P::Comma))
+              break;
+            continue;
+          }
           VariableDecl* v = decl<VariableDecl>(start);
           v->type = d.type;
           v->name = d.name;
@@ -2410,8 +2477,9 @@ namespace
             result = atIdent() && (at(P::Semi, 1) || at(P::Assign, 1) || at(P::LParen, 1) || at(P::LBrace, 1) ||
                                    at(P::Comma, 1) || at(P::LBracket, 1) || at(P::RParen, 1));
           }
-          else if (at(P::LParen) && (at(P::Star, 1) || at(P::Amp, 1)) && atIdent(2) && (at(P::RParen, 3) || at(P::LBracket, 3)))
-            result = true; // function pointer declarator
+          else if (at(P::LParen) && (at(P::Star, 1) || at(P::Amp, 1)) && atIdent(2) &&
+                   ((at(P::RParen, 3) && at(P::LParen, 4)) || at(P::LBracket, 3)))
+            result = true; // function pointer declarator `R (*f)(...)`; `f(*p);` and `f(&x);` are calls
           else if (at(P::LBracket) && t->kind == NodeKind::AutoType)
             result = true;
         }
@@ -3484,6 +3552,7 @@ namespace
   template<> constexpr NodeKind Parser::nodeKindOf<EmptyDecl>() { return NodeKind::EmptyDecl; }
   template<> constexpr NodeKind Parser::nodeKindOf<AsmDecl>() { return NodeKind::AsmDecl; }
   template<> constexpr NodeKind Parser::nodeKindOf<FriendDecl>() { return NodeKind::FriendDecl; }
+  template<> constexpr NodeKind Parser::nodeKindOf<ImportDecl>() { return NodeKind::ImportDecl; }
   template<> constexpr NodeKind Parser::nodeKindOf<BlockStmt>() { return NodeKind::BlockStmt; }
   template<> constexpr NodeKind Parser::nodeKindOf<ExprStmt>() { return NodeKind::ExprStmt; }
   template<> constexpr NodeKind Parser::nodeKindOf<DeclStmt>() { return NodeKind::DeclStmt; }
@@ -3630,12 +3699,29 @@ namespace
   }
 }
 
-void parseFile(std::vector<Token>& tokens, std::string_view text, SymbolTable& symbols, ParsedFile& out)
+void parseFile(std::vector<Token>& tokens, std::string_view text, SymbolTable& symbols, ParsedFile& out, bool cMode)
 {
   filterDirectives(tokens, text);
+  if (cMode)
+  {
+    // C headers: calling conventions and pointer-size modifiers mean nothing here, and they
+    // appear in positions the declarator grammar does not expect, as in `int (__cdecl* f)(void)`.
+    auto isNoise = [&](const Token& t)
+    {
+      if (TokenKind(t.kind) != TokenKind::Identifier)
+        return false;
+      std::string_view s(text.data() + t.offset, t.length);
+      return s == "__cdecl" || s == "__stdcall" || s == "__fastcall" || s == "__vectorcall" || s == "__thiscall" ||
+             s == "__clrcall" || s == "__ptr64" || s == "__ptr32" || s == "__sptr" || s == "__uptr" || s == "__w64" ||
+             s == "__unaligned";
+    };
+    tokens.erase(std::remove_if(tokens.begin(), tokens.end(), isNoise), tokens.end());
+  }
   out.tokens = &tokens;
   out.text = text;
   out.arena.reserve(tokens.size() * 40 + 4096); // Measured: about 30 bytes of AST per token.
   Parser parser(tokens, text, symbols, out);
+  parser.externC = cMode;
+  parser.cMode = cMode;
   parser.parseTranslationUnit();
 }

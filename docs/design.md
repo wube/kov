@@ -60,6 +60,18 @@ builds win less unless machine code is cached per function.
 ### 5. Interop: C only
 - Import C headers / C ABI (OS APIs, SDL, Lua, zlib, openssl, curl...).
 - C++ libraries (glm, imgui, tracy, re2, Steam SDK...) get a thin C wrapper or a port.
+- Mechanism (decided 2026-10-23): `extern "C" import "header.h";` anywhere in the program. The
+  compiler collects all imports, runs clang's preprocessor over them once (cached by content hash
+  under `%TEMP%\kov-imports`), parses the result in C mode as one more file of the program and
+  turns object-like macros that look like constants (`EOF`, `MAX_PATH`, `HEAP_ZERO_MEMORY`) into
+  `const auto` declarations. Function-like macros are not imported. Inline functions in headers are
+  declared, not compiled: the library provides them (the link line adds
+  `legacy_stdio_definitions` for the UCRT's inline printf/scanf family). `--cinclude DIR` adds
+  include directories for the imports.
+- C constructs accepted for this: unions (one block of storage, every member at offset 0),
+  anonymous struct/union members, `typedef struct { ... } Name;`, `(void)` parameter lists,
+  MSVC's `__intN`, calling conventions and `__declspec`. Imported declarations never appear in
+  parse statistics or diagnostics unless `--errors` is given.
 
 ### 6. Language changes from the proposal (not yet scheduled)
 Real enum class with methods/str()/iteration, `this` as a reference, required `this->`,
@@ -89,6 +101,10 @@ The smallest language that is still Kov, as the target of the first code generat
   3. `name<...>` is a template-id in type positions always, and in expression positions only
      when the closing `>` is followed by `(`, `::`, `{`, `.` or `->`. `a < b > c` without
      parentheses is a compile error.
+  4. `f(*p);` and `f(&x);` are calls. A parenthesised declarator is a declaration only when a
+     parameter list or an array bound follows: `R (*f)(int)`, `T (&a)[3]`. Pointer and reference
+     variables are written `T* p;`, never `T (*p);` (decided 2026-10-23, when `windows.h` showed
+     that the C++ reading turns every `QueryPerformanceFrequency(&f);` into a declaration).
   No `typename` or `template` disambiguators (as in the proposal).
 - **Types.** `bool`, `i8/i16/i32/i64`, `u8/u16/u32/u64`, `f32/f64`, `char` (UTF-8 code unit),
   pointers, references, arrays, `const`. `int` is an alias of `i32`, `size_t`/`usize` of `u64`.
@@ -100,7 +116,7 @@ The smallest language that is still Kov, as the target of the first code generat
 - **C interop.** `extern "C"` declarations of functions and structs; those are the only
   externally linked names (nothing is mangled across Kov code, since everything is one program).
 - **Not in v0:** exceptions, RTTI, virtual inheritance, `both_const`/`class_const`, typed
-  unions, `accumulate`, coroutines.
+  unions (plain C unions exist, for interop), `accumulate`, coroutines.
 
 **Backend plan.** The compiler writes textual LLVM IR for the whole program and runs the
 bundled clang on it (`clang -O2 program.ll`). This needs no LLVM development libraries on the
@@ -149,7 +165,8 @@ qualified Kov names with parameter types, quoted, so there is no mangling scheme
    through textual IR and clang, see prototype-results.md "Stage 4"; constructors, destructors,
    copies, operators, templates and the standard library seed `stdlib/core` with `String` and
    `Vector<T>`, virtual functions, lambdas, `HashMap`, `Optional` and `toString`/`println`
-   and variadic templates with a type-safe `format` followed the same day). Next inside this
-   item: the C header importer, and a first real program beyond tests.
+   and variadic templates with a type-safe `format` followed the same day, then the C header
+   importer: `extern "C" import` of the UCRT and `windows.h`, see "C header import" in
+   prototype-results.md). Next inside this item: a first real program beyond tests.
 3. Standard library, C import, converter from Factorio-style C++ to Kov.
 4. Persistent compiler + IDE integration.

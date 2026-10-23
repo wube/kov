@@ -1,0 +1,32 @@
+// Importing C headers: declarations and constants come from the real headers through clang's
+// preprocessor; the C runtime is used directly.
+extern "C" import "stdio.h";
+extern "C" import "string.h";
+extern "C" import "math.h";
+extern "C" import "stdlib.h";
+
+int main()
+{
+  char buffer[64];
+  snprintf(buffer, sizeof(buffer), "%.3f", sqrt(2.0));
+  puts(buffer);
+  FILE* f = fopen("build/tests/cimport.txt", "w");
+  fprintf(f, "%d\n", (int)strlen("kov"));
+  fclose(f);
+  f = fopen("build/tests/cimport.txt", "r");
+  int n = 0;
+  fscanf(f, "%d", &n);
+  fclose(f);
+  int* numbers = (int*)malloc(4 * sizeof(int));
+  numbers[0] = 4;
+  numbers[1] = 1;
+  numbers[2] = 3;
+  numbers[3] = 2;
+  int biggest = 0;
+  for (int i = 0; i < 4; ++i)
+    if (numbers[i] > biggest)
+      biggest = numbers[i];
+  free(numbers);
+  printf("%d %d %d %d %d\n", n, EOF, BUFSIZ > 0 ? 1 : 0, abs(-7), biggest);
+  return 0;
+}
