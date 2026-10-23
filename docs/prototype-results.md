@@ -423,8 +423,17 @@ calls from the others. On the 8,000-class program, 32 threads: codegen 0.95 s (s
 single-threaded; the IR grows to 148 MB because struct types are repeated in every module),
 clang -O0 0.49 s plus 0.12 s of link, so the whole debug build is 1.7 s from source to
 executable; release 3.67 s plus 0.13 s of link. Against the single module: 5.0 s to 0.6 s at
--O0, 109 s to 3.8 s at -O2. The test suite compiles about twice as fast as before. Next on this
-track: write the IR in parallel per module too.
+-O0, 109 s to 3.8 s at -O2. The test suite compiles about twice as fast as before.
+
+**Unchanged modules keep their objects (same day).** The driver hashes each module's text (with
+the optimisation level) and skips clang for a module whose hash and object file are still there.
+On the 8,000-class program, debug: a fresh build 1.76 s; a rebuild with nothing changed 1.25 s
+(64 of 64 modules unchanged, 0.12 s of link); a rebuild after a one-line change in one file
+1.25 s (63 unchanged, one module compiled in 0.10 s). Of that 1.25 s, 0.93 s is the
+single-threaded IR writing and 0.10 s the front end, so the one-line-change rebuild of a program
+with Factorio's number of functions is 1.25 s against Factorio's 16 s, and the next thing to
+make parallel is the IR writing itself. (The same cache serves release builds: a one-line
+change costs one module's -O2, about 0.3 s, instead of 3.7 s.)
 
 ## Lessons
 

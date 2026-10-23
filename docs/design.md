@@ -308,8 +308,9 @@ qualified Kov names with parameter types, quoted, so there is no mangling scheme
    scale": for 73 k functions LLVM needs 5 s at -O0 and 109 s at -O2 on one thread, kovc 0.84 s
    for everything before it). Done the same day: one IR module per group of files, compiled by
    clang in parallel, -O0 for debug and -O2 for release: 0.6 s and 3.8 s of LLVM for the 73 k
-   functions on 32 threads, a debug build of 615 k lines in 1.7 s. Next: write the IR in parallel
-   too; per-function caching for incremental release builds; cross-module inlining; in-process
-   LLVM instead of clang.exe when the textual round trip shows up in the numbers.
+   functions on 32 threads, a debug build of 615 k lines in 1.7 s; unchanged modules keep their
+   object files, so a one-line change rebuilds in 1.25 s (0.93 s of it single-threaded IR
+   writing). Next: write the IR in parallel too; cross-module inlining; in-process LLVM instead
+   of clang.exe when the textual round trip shows up in the numbers.
 6. Persistent compiler + IDE integration: the one-line-change rebuild (16 s in Factorio today).
 7. Converter from Factorio-style C++ to Kov (needs 4).

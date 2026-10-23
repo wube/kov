@@ -359,12 +359,26 @@ namespace
     if (codegenExit)
       return;
     std::vector<std::string> objects(cg.modules.size());
-    std::atomic<int> failures{0};
+    std::atomic<int> failures{0}, cached{0};
     start = Clock::now();
     parallelFor(cg.modules.size(), options.threads, [&](size_t k)
     {
       std::string llPath = options.exe + "." + std::to_string(k) + ".ll";
       objects[k] = options.exe + "." + std::to_string(k) + ".o";
+      // A module whose text (and optimisation level) did not change keeps its object file.
+      uint64_t h = 1469598103934665603ull;
+      for (unsigned char c : cg.modules[k])
+        h = (h ^ c) * 1099511628211ull;
+      for (const char* c = level; *c; ++c)
+        h = (h ^ (unsigned char)*c) * 1099511628211ull;
+      std::string hashText = std::to_string(h);
+      std::string hashPath = options.exe + "." + std::to_string(k) + ".hash";
+      std::error_code ec;
+      if (readWholeFile(hashPath) == hashText && std::filesystem::exists(objects[k], ec))
+      {
+        ++cached;
+        return;
+      }
       if (!writeFile(llPath, cg.modules[k]))
       {
         ++failures;
@@ -373,6 +387,8 @@ namespace
       std::string command = "\"\"" + clang + "\" " + level + " -w -c \"" + llPath + "\" -o \"" + objects[k] + "\"\"";
       if (system(command.c_str()) != 0)
         ++failures;
+      else
+        writeFile(hashPath, hashText);
     });
     double compileTime = seconds(Clock::now() - start);
     if (failures)
@@ -399,8 +415,8 @@ namespace
       return;
     std::string link = "\"\"" + clang + "\" @\"" + responsePath + "\"\"";
     int rc = system(link.c_str());
-    report("clang:   %.3f s (%s, %zu modules on %u threads) + link %.3f s (exit %d)\n", compileTime, level, cg.modules.size(), options.threads,
-           seconds(Clock::now() - start), rc);
+    report("clang:   %.3f s (%s, %zu modules on %u threads, %d unchanged) + link %.3f s (exit %d)\n", compileTime, level, cg.modules.size(),
+           options.threads, cached.load(), seconds(Clock::now() - start), rc);
     if (rc != 0)
       codegenExit = 1;
   }
