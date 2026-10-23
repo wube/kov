@@ -1,0 +1,52 @@
+// Lambdas: captures by copy, by reference and of this, closures passed to function templates,
+// closures stored in variables, a lambda in a method.
+extern "C" int printf(const char* format, ...);
+
+template<typename F>
+int apply(int x, F f)
+{
+  return f(x);
+}
+
+template<typename T, typename F>
+void forEach(Vector<T>& v, F f)
+{
+  for (T& item : v)
+    f(item);
+}
+
+struct Counter
+{
+  int count = 0;
+  void run()
+  {
+    auto bump = [this](int by) { this->count += by; };
+    bump(2);
+    bump(3);
+  }
+};
+
+int main()
+{
+  int base = 10;
+  auto add = [base](int x) { return x + base; };
+  auto mul = [&](int x)
+  {
+    base *= x;
+    return base;
+  };
+  int sum = 0;
+  Vector<int> v;
+  for (int i = 1; i <= 4; ++i)
+    v.push_back(i);
+  forEach(v, [&](int& item)
+  {
+    item *= 2;
+    sum += item;
+  });
+  Counter c;
+  c.run();
+  printf("%d %d %d %d %d\n", add(5), apply(3, add), mul(2), sum, c.count);
+  printf("%d %d\n", base, v[3]);
+  return 0;
+}

@@ -73,7 +73,7 @@ public:
   const Ty* classType(Decl* decl, Span<const Ty*> args);
   const Ty* enumType(Decl* decl);
   const Ty* param(Decl* decl);
-  const Ty* lambda(const Ty* result, Span<const Ty*> params);
+  const Ty* lambda(const Ty* result, Span<const Ty*> params, Decl* closure = nullptr);
   const Ty* memberPointer(const Ty* member, Decl* cls);
   // Same type with qualifiers added (references and functions ignore them).
   const Ty* qualified(const Ty* t, bool isConst, bool isVolatile);

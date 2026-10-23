@@ -3,7 +3,9 @@
 // expression, template-id vs. less-than), this parser uses purely syntactic heuristics; the
 // resolver later checks the guesses. Unknown macros are recognised by their ALL_CAPS spelling.
 #include "parser.hpp"
+#include <atomic>
 #include <cstring>
+#include <string>
 
 namespace
 {
@@ -3264,7 +3266,70 @@ namespace
     Expr* parseLambda(uint32_t start)
     {
       LambdaExpr* l = node<LambdaExpr>(start);
-      skipBalanced(); // captures
+      expect(P::LBracket, "expected '['");
+      std::vector<LambdaCapture> captures;
+      while (!at(P::RBracket) && !at(TokenKind::End))
+      {
+        LambdaCapture cap{};
+        if (at(P::Amp) && (at(P::Comma, 1) || at(P::RBracket, 1)))
+        {
+          advance();
+          l->defaultCapture = 2;
+        }
+        else if (at(P::Assign) && (at(P::Comma, 1) || at(P::RBracket, 1)))
+        {
+          advance();
+          l->defaultCapture = 1;
+        }
+        else if (accept(Kw::this_))
+        {
+          cap.isThis = true;
+          captures.push_back(cap);
+        }
+        else if (at(P::Star) && at(Kw::this_, 1))
+        {
+          advance();
+          advance();
+          cap.isThis = true;
+          captures.push_back(cap);
+        }
+        else
+        {
+          cap.byRef = accept(P::Amp);
+          if (!atIdent())
+          {
+            error("expected a capture");
+            break;
+          }
+          cap.symbol = tok().id;
+          advance();
+          accept(P::Ellipsis);
+          if (accept(P::Assign))
+            cap.init = parseAssignment();
+          else if (at(P::LBrace))
+            cap.init = parseBraceInit();
+          else if (accept(P::LParen))
+          {
+            cap.init = parseExpression();
+            expect(P::RParen, "expected ')'");
+          }
+          captures.push_back(cap);
+        }
+        if (!accept(P::Comma))
+          break;
+      }
+      expect(P::RBracket, "expected ']' after captures");
+      l->captures = makeSpanOf(captures);
+      // The closure type: a synthetic class with a unique name, never indexed as a declaration.
+      static std::atomic<uint32_t> lambdaCounter{0};
+      ClassDecl* closure = decl<ClassDecl>(start);
+      closure->keyword = Kw::struct_;
+      NamePart part;
+      part.symbol = symbols.intern("__lambda_" + std::to_string(lambdaCounter++));
+      closure->name.parts = makeSpanOf(std::vector<NamePart>{part});
+      closure->isClosure = true;
+      closure->lambda = l;
+      l->closure = closure;
       if (at(P::Less))
       {
         advance();

@@ -184,6 +184,7 @@ struct Decl : Node
   std::atomic<const Ty*> cachedType{nullptr}; // Declared type, filled lazily by the type checker (non-dependent only).
 };
 
+struct LambdaExpr;
 struct NamespaceDecl : Decl { uint32_t name = UINT32_MAX; Span<Decl*> decls; bool isInline = false; QualifiedName nested; };
 struct TemplateParamDecl : Decl { uint32_t name = UINT32_MAX; bool isType = true; bool isPack = false; Type* valueType = nullptr; Node* defaultArg = nullptr; Span<Decl*> innerParams; };
 struct ClassDecl : Decl
@@ -196,6 +197,8 @@ struct ClassDecl : Decl
   bool isDefinition = false;
   bool isFinal = false;
   bool isClassConst = false;
+  bool isClosure = false;         // Synthetic class standing for a lambda's closure type.
+  LambdaExpr* lambda = nullptr;   // The lambda, for closures.
 };
 struct EnumeratorDecl : Decl { uint32_t name; Expr* value = nullptr; };
 struct EnumDecl : Decl
@@ -289,7 +292,23 @@ struct NamedCastExpr : Expr { Kw castKind; Type* type; Expr* operand; };
 struct SizeofExpr : Expr { Kw sizeofKind; Type* type = nullptr; Expr* operand = nullptr; bool isPack = false; };
 struct NewExpr : Expr { Type* type; Span<Expr*> placement; Span<Expr*> args; bool braced = false; bool global = false; };
 struct DeleteExpr : Expr { Expr* operand; bool isArray; bool global; };
-struct LambdaExpr : Expr { Span<Decl*> params; Stmt* body; Type* returnType = nullptr; Span<Decl*> templateParams; };
+struct LambdaCapture
+{
+  uint32_t symbol = UINT32_MAX; // Captured variable (UINT32_MAX for `this`).
+  bool byRef = false;
+  bool isThis = false;
+  Expr* init = nullptr;         // Init-capture `[x = expr]`.
+};
+struct LambdaExpr : Expr
+{
+  Span<Decl*> params;
+  Stmt* body;
+  Type* returnType = nullptr;
+  Span<Decl*> templateParams;
+  Span<LambdaCapture> captures;
+  uint8_t defaultCapture = 0; // 0 none, 1 by copy (=), 2 by reference (&)
+  Decl* closure = nullptr;    // Synthetic ClassDecl giving this lambda an identity and a name.
+};
 struct BraceInitExpr : Expr { Span<Expr*> args; };
 struct ThrowExpr : Expr { Expr* operand; };
 struct FunctionalCastExpr : Expr { Type* type; Span<Expr*> args; bool braced; };

@@ -1,4 +1,5 @@
 #include "codegen.hpp"
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -94,6 +95,21 @@ namespace
       TemplateArgs args;
       const Ty* classTy;
     };
+
+    // A lambda's closure: one struct per lambda, fields for the captures, one function.
+    struct ClosureInfo
+    {
+      std::string structName;
+      std::vector<Decl*> captured;       // enclosing local per field (null for `this`)
+      std::vector<bool> byRef;
+      std::vector<const Ty*> fieldTypes; // pointee type for references and `this`
+      const Ty* enclosingClass = nullptr;
+      std::string functionName;
+      bool emitted = false;
+    };
+    std::unordered_map<Decl*, ClosureInfo> closures; // keyed by the closure ClassDecl
+    static bool isLambda(const Ty* t) { return t && t->kind == TyKind::Lambda && t->decl; }
+    static bool isAggregate(const Ty* t) { return isClass(t) || isLambda(t); }
     std::deque<Instantiation> worklist;
     std::unordered_map<std::string, bool> requested; // instantiated names queued or emitted
 
@@ -167,8 +183,9 @@ namespace
         case TyKind::Char: case TyKind::Int: return "i" + std::to_string(t->bits);
         case TyKind::Float: return t->bits == 32 ? "float" : "double";
         case TyKind::Nullptr: case TyKind::Pointer: case TyKind::LRef: case TyKind::RRef: case TyKind::Function:
-        case TyKind::Lambda: case TyKind::MemberPointer:
+        case TyKind::MemberPointer:
           return "ptr";
+        case TyKind::Lambda: return t->decl ? closureFor(t, at).structName : "ptr";
         case TyKind::Array:
           return "[" + std::to_string(t->count) + " x " + llType(t->inner, at) + "]";
         case TyKind::Class: return structFor(t, at).name;
@@ -196,8 +213,17 @@ namespace
         case TyKind::Bool: return 1;
         case TyKind::Char: case TyKind::Int: case TyKind::Float: return t->bits / 8;
         case TyKind::Nullptr: case TyKind::Pointer: case TyKind::LRef: case TyKind::RRef: case TyKind::Function:
-        case TyKind::Lambda: case TyKind::MemberPointer:
+        case TyKind::MemberPointer:
           return 8;
+        case TyKind::Lambda:
+        {
+          if (!t->decl)
+            return 8;
+          uint64_t size = 0;
+          for (const Ty* f : closureFor(t, at).fieldTypes)
+            size += 8 > sizeOf(f, at) ? 8 : sizeOf(f, at); // generous: fields aligned to 8
+          return std::max<uint64_t>(size, 1);
+        }
         case TyKind::Array: return t->count * sizeOf(t->inner, at);
         case TyKind::Enum: return sizeOf(enumUnderlying(t->decl), at);
         case TyKind::Class:
@@ -718,6 +744,16 @@ namespace
     void initializeFrom(const std::string& addr, const Ty* t, Expr* init, Node* at)
     {
       t = types.stripRef(t);
+      if (isLambda(t))
+      {
+        Value v = rvalue(init);
+        if (!isLambda(v.ty))
+          unsupported(at, "initialising a lambda variable from something else");
+        std::string tmp = newTemp();
+        fn += "  " + tmp + " = load " + llType(t, at) + ", ptr " + v.text + "\n";
+        fn += "  store " + llType(t, at) + " " + tmp + ", ptr " + addr + "\n";
+        return;
+      }
       if (isClass(t))
       {
         if (init->kind == NodeKind::FunctionalCastExpr && isClass(types.stripRef(init->ty)))
@@ -783,6 +819,393 @@ namespace
       std::string slot = "%o" + std::to_string(temp++);
       allocas += "  " + slot + " = alloca " + llType(t, at) + "\n";
       return slot;
+    }
+
+    // --- lambdas ---
+
+    // Collects the enclosing locals a lambda body refers to (for default captures) and whether
+    // it uses `this`.
+    void scanCaptures(Node* n, std::vector<Decl*>& found, bool& usesThis, int depth = 0)
+    {
+      if (!n || depth > 64)
+        return;
+      auto visit = [&](Node* c) { scanCaptures(c, found, usesThis, depth + 1); };
+      auto visitExprs = [&](Span<Expr*> es) { for (Expr* e : es) visit(e); };
+      switch (n->kind)
+      {
+        case NodeKind::NameExpr:
+        {
+          auto* e = static_cast<NameExpr*>(n);
+          Decl* d = e->resolved;
+          if (d && locals.count(d) && std::find(found.begin(), found.end(), d) == found.end())
+            found.push_back(d);
+          if (d && d->kind == NodeKind::VariableDecl && !locals.count(d) && global.owningClass(d) && !(d->flags & DF_Static))
+            usesThis = true;
+          if (d && d->kind == NodeKind::FunctionDecl && global.owningClass(d) && !(d->flags & DF_Static))
+            usesThis = true;
+          break;
+        }
+        case NodeKind::ThisExpr: usesThis = true; break;
+        case NodeKind::CallExpr: visit(static_cast<CallExpr*>(n)->callee); visitExprs(static_cast<CallExpr*>(n)->args); break;
+        case NodeKind::IndexExpr: visit(static_cast<IndexExpr*>(n)->base); visitExprs(static_cast<IndexExpr*>(n)->args); break;
+        case NodeKind::MemberExpr: visit(static_cast<MemberExpr*>(n)->base); break;
+        case NodeKind::UnaryExpr: visit(static_cast<UnaryExpr*>(n)->operand); break;
+        case NodeKind::BinaryExpr: visit(static_cast<BinaryExpr*>(n)->lhs); visit(static_cast<BinaryExpr*>(n)->rhs); break;
+        case NodeKind::ConditionalExpr:
+          visit(static_cast<ConditionalExpr*>(n)->cond);
+          visit(static_cast<ConditionalExpr*>(n)->then);
+          visit(static_cast<ConditionalExpr*>(n)->else_);
+          break;
+        case NodeKind::CastExpr: visit(static_cast<CastExpr*>(n)->operand); break;
+        case NodeKind::NamedCastExpr: visit(static_cast<NamedCastExpr*>(n)->operand); break;
+        case NodeKind::FunctionalCastExpr: visitExprs(static_cast<FunctionalCastExpr*>(n)->args); break;
+        case NodeKind::SizeofExpr: visit(static_cast<SizeofExpr*>(n)->operand); break;
+        case NodeKind::NewExpr: visitExprs(static_cast<NewExpr*>(n)->placement); visitExprs(static_cast<NewExpr*>(n)->args); break;
+        case NodeKind::DeleteExpr: visit(static_cast<DeleteExpr*>(n)->operand); break;
+        case NodeKind::BraceInitExpr: visitExprs(static_cast<BraceInitExpr*>(n)->args); break;
+        case NodeKind::ThrowExpr: visit(static_cast<ThrowExpr*>(n)->operand); break;
+        case NodeKind::ParenExpr: visit(static_cast<ParenExpr*>(n)->inner); break;
+        case NodeKind::LambdaExpr:
+        {
+          auto* l = static_cast<LambdaExpr*>(n);
+          for (const LambdaCapture& c : l->captures)
+            visit(c.init);
+          visit(l->body);
+          break;
+        }
+        case NodeKind::BlockStmt: for (Stmt* s : static_cast<BlockStmt*>(n)->stmts) visit(s); break;
+        case NodeKind::ExprStmt: visit(static_cast<ExprStmt*>(n)->expr); break;
+        case NodeKind::DeclStmt:
+          for (Decl* d : static_cast<DeclStmt*>(n)->decls)
+            if (d->kind == NodeKind::VariableDecl)
+              visit(static_cast<VariableDecl*>(d)->init);
+          break;
+        case NodeKind::IfStmt:
+          visit(static_cast<IfStmt*>(n)->init);
+          visit(static_cast<IfStmt*>(n)->cond);
+          visit(static_cast<IfStmt*>(n)->then);
+          visit(static_cast<IfStmt*>(n)->else_);
+          break;
+        case NodeKind::ForStmt:
+          visit(static_cast<ForStmt*>(n)->init);
+          visit(static_cast<ForStmt*>(n)->cond);
+          visit(static_cast<ForStmt*>(n)->step);
+          visit(static_cast<ForStmt*>(n)->body);
+          break;
+        case NodeKind::RangeForStmt: visit(static_cast<RangeForStmt*>(n)->range); visit(static_cast<RangeForStmt*>(n)->body); break;
+        case NodeKind::WhileStmt: visit(static_cast<WhileStmt*>(n)->cond); visit(static_cast<WhileStmt*>(n)->body); break;
+        case NodeKind::DoStmt: visit(static_cast<DoStmt*>(n)->body); visit(static_cast<DoStmt*>(n)->cond); break;
+        case NodeKind::SwitchStmt:
+          visit(static_cast<SwitchStmt*>(n)->init);
+          visit(static_cast<SwitchStmt*>(n)->cond);
+          visit(static_cast<SwitchStmt*>(n)->body);
+          break;
+        case NodeKind::CaseStmt: visit(static_cast<CaseStmt*>(n)->value); break;
+        case NodeKind::ReturnStmt: visit(static_cast<ReturnStmt*>(n)->value); break;
+        default: break;
+      }
+    }
+
+    Decl* localByName(uint32_t symbol)
+    {
+      for (auto& [d, local] : locals)
+      {
+        if (!d)
+          continue;
+        if (d->kind == NodeKind::VariableDecl && !static_cast<VariableDecl*>(d)->name.empty() &&
+            static_cast<VariableDecl*>(d)->name.last().symbol == symbol)
+          return d;
+        if (d->kind == NodeKind::ParamDecl && static_cast<ParamDecl*>(d)->name == symbol)
+          return d;
+      }
+      return nullptr;
+    }
+
+    // The closure of a lambda type, created from its capture list in the current function.
+    ClosureInfo& closureFor(const Ty* t, Node* at)
+    {
+      auto it = closures.find(t->decl);
+      if (it != closures.end())
+        return it->second;
+      auto* c = static_cast<ClassDecl*>(t->decl);
+      LambdaExpr* l = c->lambda;
+      if (!l)
+        unsupported(at, "a lambda without its expression");
+      ClosureInfo& info = closures[t->decl];
+      info.structName = "%closure." + std::to_string(closures.size());
+      info.enclosingClass = currentClassTy;
+      bool usesThis = false;
+      std::vector<Decl*> explicitDecls;
+      bool thisCaptured = false;
+      for (const LambdaCapture& cap : l->captures)
+      {
+        if (cap.init)
+          unsupported(l, "init-captures");
+        if (cap.isThis)
+        {
+          thisCaptured = true;
+          continue;
+        }
+        Decl* d = localByName(cap.symbol);
+        if (!d)
+          unsupported(l, "a capture that is not a local variable (" + sym(cap.symbol) + ")");
+        info.captured.push_back(d);
+        info.byRef.push_back(cap.byRef);
+      }
+      if (l->defaultCapture != 0)
+      {
+        std::vector<Decl*> found;
+        scanCaptures(l->body, found, usesThis);
+        for (Decl* d : found)
+          if (std::find(info.captured.begin(), info.captured.end(), d) == info.captured.end())
+          {
+            info.captured.push_back(d);
+            info.byRef.push_back(l->defaultCapture == 2);
+          }
+        if (usesThis)
+          thisCaptured = true;
+      }
+      for (size_t i = 0; i < info.captured.size(); ++i)
+      {
+        Local& local = locals[info.captured[i]];
+        const Ty* vt = types.stripRef(local.ty);
+        info.fieldTypes.push_back(vt);
+      }
+      if (thisCaptured)
+      {
+        if (!currentClassTy)
+          unsupported(l, "capturing this outside a method");
+        info.captured.push_back(nullptr);
+        info.byRef.push_back(true);
+        info.fieldTypes.push_back(currentClassTy);
+      }
+      std::string line = info.structName + " = type { ";
+      for (size_t i = 0; i < info.fieldTypes.size(); ++i)
+        line += (i ? ", " : "") + (info.byRef[i] ? std::string("ptr") : llType(info.fieldTypes[i], at));
+      line += info.fieldTypes.empty() ? "i8 }\n" : " }\n";
+      decls += line;
+      const Ty* ft = t;
+      std::string params;
+      for (size_t i = 0; i < ft->args.size(); ++i)
+        params += (i ? ", " : "") + types.toString(ft->args[i], &symbols);
+      info.functionName = "@\"" + std::string(symbols.name(c->name.last().symbol)) + "::operator()(" + params + ")\"";
+      return closures[t->decl];
+    }
+
+    // Builds the closure object of a lambda expression in a fresh slot and emits its function.
+    Value makeClosure(LambdaExpr* l)
+    {
+      const Ty* t = l->ty;
+      if (!isLambda(t))
+        unsupported(l, "a lambda whose type is unknown");
+      ClosureInfo info = closureFor(t, l);
+      std::string slot = newObjectSlot(t, l);
+      for (size_t i = 0; i < info.captured.size(); ++i)
+      {
+        std::string field = gep(info.structName, slot, uint32_t(i));
+        Decl* d = info.captured[i];
+        if (!d)
+        {
+          fn += "  store ptr " + thisPointer(l) + ", ptr " + field + "\n";
+          continue;
+        }
+        Local& local = locals[d];
+        std::string addr = local.addr;
+        if (local.isRef)
+        {
+          addr = newTemp();
+          fn += "  " + addr + " = load ptr, ptr " + local.addr + "\n";
+        }
+        if (info.byRef[i])
+          fn += "  store ptr " + addr + ", ptr " + field + "\n";
+        else if (isAggregate(info.fieldTypes[i]))
+        {
+          if (isClass(info.fieldTypes[i]))
+            copyConstruct(field, addr, info.fieldTypes[i], l);
+          else
+          {
+            std::string v = newTemp();
+            fn += "  " + v + " = load " + llType(info.fieldTypes[i], l) + ", ptr " + addr + "\n";
+            fn += "  store " + llType(info.fieldTypes[i], l) + " " + v + ", ptr " + field + "\n";
+          }
+        }
+        else
+          store(load(addr, info.fieldTypes[i], l), field, info.fieldTypes[i], l);
+      }
+      if (!closures[t->decl].emitted)
+      {
+        closures[t->decl].emitted = true;
+        emitLambda(l, t);
+      }
+      return {slot, t, false};
+    }
+
+    struct FunctionState
+    {
+      std::string fn, allocas, currentBlock, sretAddr;
+      std::unordered_map<Decl*, Local> locals;
+      std::vector<Loop> loops;
+      std::vector<std::vector<Object>> scopes;
+      std::vector<Object> statementTemps;
+      uint32_t temp, label;
+      bool blockTerminated;
+      FunctionDecl* currentFunction;
+      const Ty* currentReturn;
+      const Ty* currentClassTy;
+    };
+
+    FunctionState saveState()
+    {
+      return {fn, allocas, currentBlock, sretAddr, locals, loops, scopes, statementTemps, temp, label, blockTerminated,
+              currentFunction, currentReturn, currentClassTy};
+    }
+
+    void restoreState(FunctionState& s)
+    {
+      fn = s.fn;
+      allocas = s.allocas;
+      currentBlock = s.currentBlock;
+      sretAddr = s.sretAddr;
+      locals = s.locals;
+      loops = s.loops;
+      scopes = s.scopes;
+      statementTemps = s.statementTemps;
+      temp = s.temp;
+      label = s.label;
+      blockTerminated = s.blockTerminated;
+      currentFunction = s.currentFunction;
+      currentReturn = s.currentReturn;
+      currentClassTy = s.currentClassTy;
+    }
+
+    // Emits the lambda's function while another function is being emitted: the enclosing
+    // function's state is saved and restored around it.
+    void emitLambda(LambdaExpr* l, const Ty* t)
+    {
+      ClosureInfo info = closureFor(t, l);
+      FunctionState saved = saveState();
+      fn.clear();
+      allocas.clear();
+      locals.clear();
+      loops.clear();
+      scopes.clear();
+      statementTemps.clear();
+      temp = 0;
+      label = 0;
+      blockTerminated = false;
+      currentBlock = "entry";
+      currentReturn = t->inner ? t->inner : types.voidType();
+      sretAddr.clear();
+      currentClassTy = info.enclosingClass;
+      try
+      {
+        std::string params = "ptr %closure";
+        bool hasSret = isClass(currentReturn);
+        if (hasSret)
+        {
+          params += ", ptr %sret";
+          sretAddr = "%sret";
+        }
+        std::vector<std::string> paramNames;
+        for (size_t i = 0; i < t->args.size(); ++i)
+        {
+          const Ty* pt = t->args[i];
+          std::string pn = "%p" + std::to_string(i);
+          paramNames.push_back(pn);
+          params += ", " + std::string(isAggregate(pt) || pt->isReference() ? "ptr" : llType(pt, l)) + " " + pn;
+        }
+        std::string retType = hasSret ? "void" : currentReturn->isReference() ? "ptr" : llType(currentReturn, l);
+        std::string header = "define " + retType + " " + info.functionName + "(" + params + ") {\nentry:\n";
+        pushScope();
+        // Captures become locals: by-value captures live in the closure, references point out.
+        for (size_t i = 0; i < info.captured.size(); ++i)
+        {
+          std::string field = gep(info.structName, "%closure", uint32_t(i));
+          Decl* d = info.captured[i];
+          if (!d)
+          {
+            std::string thisSlot = "%v" + std::to_string(temp++);
+            allocas += "  " + thisSlot + " = alloca ptr\n";
+            std::string loaded = newTemp();
+            fn += "  " + loaded + " = load ptr, ptr " + field + "\n";
+            fn += "  store ptr " + loaded + ", ptr " + thisSlot + "\n";
+            locals[nullptr] = {thisSlot, nullptr, false};
+            continue;
+          }
+          locals[d] = {field, info.byRef[i] ? types.lref(info.fieldTypes[i]) : info.fieldTypes[i], info.byRef[i]};
+        }
+        for (size_t i = 0; i < l->params.size() && i < t->args.size(); ++i)
+        {
+          const Ty* pt = t->args[i];
+          if (isAggregate(pt))
+          {
+            locals[l->params[i]] = {paramNames[i], pt, false};
+            if (needsDestruction(pt, l))
+              scopes.back().push_back({paramNames[i], pt});
+            continue;
+          }
+          bool isRef = pt->isReference();
+          std::string ps = "%v" + std::to_string(temp++);
+          allocas += "  " + ps + " = alloca " + (isRef ? std::string("ptr") : llType(pt, l)) + "\n";
+          fn += "  store " + (isRef ? std::string("ptr") : llType(pt, l)) + " " + paramNames[i] + ", ptr " + ps + "\n";
+          locals[l->params[i]] = {ps, pt, isRef};
+        }
+        statement(l->body);
+        if (!blockTerminated)
+        {
+          popScope();
+          if (currentReturn->kind == TyKind::Void || hasSret)
+            fn += "  ret void\n";
+          else
+            fn += "  unreachable\n";
+        }
+        body += header + allocas + fn + "}\n\n";
+        ++result.functions;
+      }
+      catch (Unsupported&)
+      {
+        restoreState(saved);
+        throw;
+      }
+      restoreState(saved);
+    }
+
+    // Calls a closure value with arguments.
+    Value callClosure(Value closure, Span<Expr*> callArgs, const std::string& sret, Node* at)
+    {
+      const Ty* t = closure.ty;
+      ClosureInfo info = closureFor(t, at);
+      const Ty* ret = t->inner ? t->inner : types.voidType();
+      std::string argText = "ptr " + closure.text;
+      std::string resultAddr = sret;
+      bool hasSret = isClass(ret);
+      if (hasSret)
+      {
+        if (resultAddr.empty())
+        {
+          resultAddr = newObjectSlot(ret, at);
+          statementTemps.push_back({resultAddr, ret});
+        }
+        argText += ", ptr " + resultAddr;
+      }
+      std::string sig = (hasSret ? "void" : ret->isReference() ? "ptr" : llType(ret, at)) + std::string(" (ptr") + (hasSret ? ", ptr" : "");
+      for (size_t i = 0; i < callArgs.size(); ++i)
+      {
+        const Ty* pt = i < t->args.size() ? t->args[i] : nullptr;
+        if (!pt)
+          unsupported(at, "too many arguments to a lambda");
+        sig += ", " + std::string(isAggregate(pt) || pt->isReference() ? "ptr" : llType(pt, at));
+        argText += ", " + argumentText(pt, callArgs[i], at);
+      }
+      sig += ")";
+      if (hasSret || ret->kind == TyKind::Void)
+      {
+        fn += "  call " + sig + " " + info.functionName + "(" + argText + ")\n";
+        return hasSret ? Value{resultAddr, ret, sret.empty()} : Value{"", types.voidType(), false};
+      }
+      std::string r = newTemp();
+      fn += "  " + r + " = call " + sig + " " + info.functionName + "(" + argText + ")\n";
+      return {r, ret, false};
     }
 
     // --- functions ---
@@ -866,7 +1289,7 @@ namespace
       {
         if (!pt->isKnown() || types.isDependent(pt))
           unsupported(f, "a parameter of unknown type");
-        s.paramTypes.push_back(isClass(pt) || pt->isReference() ? "ptr" : llType(pt, f));
+        s.paramTypes.push_back(isAggregate(pt) || pt->isReference() ? "ptr" : llType(pt, f));
         s.paramTys.push_back(pt);
       }
       s.variadic = ft->variadic;
@@ -968,51 +1391,7 @@ namespace
       for (size_t i = 0; i < callArgs.size(); ++i)
       {
         const Ty* pt = slot + i < s.paramTys.size() ? s.paramTys[slot + i] : nullptr;
-        std::string text;
-        if (pt && pt->isReference())
-        {
-          if (isClass(types.stripRef(pt)))
-          {
-            Value o = rvalue(callArgs[i]);
-            if (!isClass(o.ty))
-              unsupported(at, "binding a non-class to a class reference");
-            std::string addr = o.text;
-            if (classKey(o.ty) != classKey(pt))
-              if (!baseAddress(o.ty, types.stripRef(pt), o.text, addr, at))
-                unsupported(at, "binding an unrelated class to a reference");
-            text = "ptr " + addr;
-          }
-          else
-            text = "ptr " + lvalue(callArgs[i]);
-        }
-        else if (pt && isClass(pt))
-        {
-          Value v = rvalue(callArgs[i]);
-          if (!isClass(v.ty))
-            unsupported(at, "passing a non-class to a class parameter");
-          std::string copy = newObjectSlot(pt, at);
-          if (v.isTemporary)
-            moveTemporary(copy, v, pt, at);
-          else
-            copyConstruct(copy, v.text, pt, at);
-          text = "ptr " + copy;
-        }
-        else
-        {
-          Value a = rvalue(callArgs[i]);
-          if (isClass(a.ty))
-            unsupported(at, "passing a class where a scalar is expected");
-          if (pt)
-            a = convert(a, pt, at);
-          else if (a.ty->kind == TyKind::Float && a.ty->bits == 32)
-            a = convert(a, types.floatType(64), at);
-          else if ((a.ty->kind == TyKind::Int || a.ty->kind == TyKind::Char) && a.ty->bits < 32)
-            a = convert(a, types.intType(32), at);
-          else if (a.ty->kind == TyKind::Bool)
-            a = convert(a, types.intType(32), at);
-          text = llType(a.ty, at) + " " + a.text;
-        }
-        argText += std::string(argText.empty() ? "" : ", ") + text;
+        argText += std::string(argText.empty() ? "" : ", ") + argumentText(pt, callArgs[i], at);
       }
       std::string sig = (s.variadic || !indirect.empty()) ? signatureText(s) + " " : s.returnType + " ";
       if (s.returnType == "void")
@@ -1025,6 +1404,56 @@ namespace
       std::string r = newTemp();
       fn += "  " + r + " = call " + sig + name + "(" + argText + ")\n";
       return {r, ret, false};
+    }
+
+    // One call argument as "<type> <operand>", converted to the parameter type (null: variadic).
+    std::string argumentText(const Ty* pt, Expr* arg, Node* at)
+    {
+      if (pt && pt->isReference())
+      {
+        if (isAggregate(types.stripRef(pt)))
+        {
+          Value o = rvalue(arg);
+          if (!isAggregate(o.ty))
+            unsupported(at, "binding a non-class to a class reference");
+          std::string addr = o.text;
+          if (isClass(o.ty) && classKey(o.ty) != classKey(pt))
+            if (!baseAddress(o.ty, types.stripRef(pt), o.text, addr, at))
+              unsupported(at, "binding an unrelated class to a reference");
+          return "ptr " + addr;
+        }
+        return "ptr " + lvalue(arg);
+      }
+      if (pt && isAggregate(pt))
+      {
+        Value v = rvalue(arg);
+        if (!isAggregate(v.ty))
+          unsupported(at, "passing a non-class to a class parameter");
+        std::string copy = newObjectSlot(pt, at);
+        if (isLambda(pt))
+        {
+          std::string tmp = newTemp();
+          fn += "  " + tmp + " = load " + llType(pt, at) + ", ptr " + v.text + "\n";
+          fn += "  store " + llType(pt, at) + " " + tmp + ", ptr " + copy + "\n";
+        }
+        else if (v.isTemporary)
+          moveTemporary(copy, v, pt, at);
+        else
+          copyConstruct(copy, v.text, pt, at);
+        return "ptr " + copy;
+      }
+      Value a = rvalue(arg);
+      if (isAggregate(a.ty))
+        unsupported(at, "passing a class where a scalar is expected");
+      if (pt)
+        a = convert(a, pt, at);
+      else if (a.ty->kind == TyKind::Float && a.ty->bits == 32)
+        a = convert(a, types.floatType(64), at);
+      else if ((a.ty->kind == TyKind::Int || a.ty->kind == TyKind::Char) && a.ty->bits < 32)
+        a = convert(a, types.intType(32), at);
+      else if (a.ty->kind == TyKind::Bool)
+        a = convert(a, types.intType(32), at);
+      return llType(a.ty, at) + " " + a.text;
     }
 
     // --- constants ---
@@ -1431,7 +1860,7 @@ namespace
         fn += "  " + r + " = getelementptr inbounds " + llType(ty, at) + ", ptr " + addr + ", i64 0, i64 0\n";
         return {r, types.pointer(ty->inner)};
       }
-      if (isClass(ty))
+      if (isAggregate(ty))
         return {addr, types.unqualified(ty)};
       std::string r = newTemp();
       fn += "  " + r + " = load " + llType(ty, at) + ", ptr " + addr + "\n";
@@ -1982,8 +2411,10 @@ namespace
           return callFunction(f, calleeArgs(f, objectTy, c, c), objectTy, thisArg, sret, c->args, c, indirect);
         }
       }
-      // Call through a function pointer.
+      // Call through a closure or a function pointer.
       Value fnValue = rvalue(callee);
+      if (isLambda(fnValue.ty))
+        return callClosure(fnValue, c->args, sret, c);
       const Ty* ft = fnValue.ty->kind == TyKind::Pointer ? fnValue.ty->inner : fnValue.ty;
       if (!ft || ft->kind != TyKind::Function)
         unsupported(c, "a call that did not resolve to a function");
@@ -2213,6 +2644,7 @@ namespace
             fn += "  store " + llType(t, e) + " zeroinitializer, ptr " + r + "\n";
           return {r, e->ty};
         }
+        case NodeKind::LambdaExpr: return makeClosure(static_cast<LambdaExpr*>(e));
         case NodeKind::DeleteExpr:
         {
           auto* d = static_cast<DeleteExpr*>(e);
@@ -2911,7 +3343,7 @@ namespace
         for (size_t i = 0; i < f->params.size(); ++i, ++slot)
         {
           const Ty* pt = s.paramTys[slot];
-          if (isClass(pt))
+          if (isAggregate(pt))
           {
             locals[f->params[i]] = {paramNames[slot], pt, false};
             if (needsDestruction(pt, f))

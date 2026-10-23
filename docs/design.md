@@ -148,7 +148,7 @@ qualified Kov names with parameter types, quoted, so there is no mangling scheme
 3. Compiler that runs real Kov programs via LLVM (started 2026-10-23: the v0 subset compiles
    through textual IR and clang, see prototype-results.md "Stage 4"; constructors, destructors,
    copies, operators, templates and the standard library seed `stdlib/core` with `String` and
-   `Vector<T>` and virtual functions followed the same day). Next inside this item: lambdas,
-   then HashMap, Optional and formatting in the library.
+   `Vector<T>`, virtual functions and lambdas followed the same day). Next inside this item:
+   HashMap, Optional and formatting in the library, then the C header importer.
 3. Standard library, C import, converter from Factorio-style C++ to Kov.
 4. Persistent compiler + IDE integration.

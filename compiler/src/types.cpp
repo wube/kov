@@ -193,11 +193,12 @@ const Ty* TypeTable::param(Decl* decl)
   return intern(t);
 }
 
-const Ty* TypeTable::lambda(const Ty* result, Span<const Ty*> params)
+const Ty* TypeTable::lambda(const Ty* result, Span<const Ty*> params, Decl* closure)
 {
   Ty t{TyKind::Lambda};
   t.inner = result;
   t.args = params;
+  t.decl = closure;
   return intern(t);
 }
 
@@ -309,8 +310,14 @@ std::string TypeTable::toString(const Ty* t, const SymbolTable* symbols) const
     case TyKind::LRef: s += toString(t->inner, symbols) + "&"; break;
     case TyKind::RRef: s += toString(t->inner, symbols) + "&&"; break;
     case TyKind::Array: s += toString(t->inner, symbols) + "[" + (t->count ? std::to_string(t->count) : "") + "]"; break;
-    case TyKind::Function:
     case TyKind::Lambda:
+      if (t->decl)
+      {
+        s += declName(t->decl);
+        break;
+      }
+      [[fallthrough]];
+    case TyKind::Function:
       s += (t->kind == TyKind::Lambda ? "lambda " : "") + toString(t->inner, symbols) + "(";
       for (size_t i = 0; i < t->args.size(); ++i)
         s += (i ? ", " : "") + toString(t->args[i], symbols);

@@ -189,8 +189,8 @@ methods and single inheritance, enums, the arithmetic types, pointers, reference
 globals, `new`/`delete`, all control flow including `switch`, `extern "C"` functions.
 
 Tests: `compiler\tests\run_tests.cmd` compiles every `tests/run/*.kov`, runs it and compares the
-output with the `.expected` file. Eight programs so far (hello, control, types, structs,
-objects, templates, strings, virtual).
+output with the `.expected` file. Nine programs so far (hello, control, types, structs,
+objects, templates, strings, virtual, lambdas).
 
 Object model (added the same day): constructors with member initializers and default member
 initializers, destructors, destruction at scope exit in reverse order including the scopes left
@@ -238,9 +238,18 @@ through a base pointer dispatches to the virtual destructor. `virtual.kov` cover
 through pointers and references, a virtual destructor, a pure virtual method and a non-virtual
 method calling a virtual one. A polymorphic base must be the first base (no secondary vtables).
 
-Not in v0 and reported as "codegen does not support X yet": lambdas, unions, exceptions,
-multiple polymorphic bases, arrays of objects with constructors, globals with constructors,
-more than four template parameters per function, class-typed iterators in range-for. IR names are the
+Lambdas (same day): the parser reads the capture list and gives every lambda a closure identity
+(a synthetic class `__lambda_N`), so a lambda's type is unique and templates instantiate once
+per lambda. The code generator builds a closure struct from the captures (by copy, by
+reference, `this`, or the defaults `[=]`/`[&]`, whose capture set is found by scanning the
+body for enclosing locals), emits the lambda's function right where the lambda appears, and
+calls closure values directly: `@"__lambda_3::operator()(int32)"`. `lambdas.kov` stores
+closures in variables, passes them to `apply` and `forEach` templates and captures `this` in a
+method. Not yet: init-captures, generic lambdas, conversion to function pointers.
+
+Not in v0 and reported as "codegen does not support X yet": unions, exceptions, multiple
+polymorphic bases, arrays of objects with constructors, globals with constructors, more than
+four template parameters per function, class-typed iterators in range-for. IR names are the
 qualified Kov names with parameter types in quotes (`@"Point::move(int32, int32)"`), so there is
 no mangling scheme.
 

@@ -1333,7 +1333,7 @@ struct GlobalScope::Impl
         if (t->kind == TyKind::Function)
           return types.function(substitute(t->inner, s, depth + 1), span, t->variadic);
         if (t->kind == TyKind::Lambda)
-          return types.lambda(substitute(t->inner, s, depth + 1), span);
+          return types.lambda(substitute(t->inner, s, depth + 1), span, t->decl);
         return types.qualified(types.classType(t->decl, span), t->isConst, t->isVolatile);
       }
       default:
@@ -3279,7 +3279,7 @@ struct GlobalScope::Impl
           if (!result)
             result = deduced ? types.decay(deduced) : types.voidType();
           locals.pop(mark);
-          return record(e, types.lambda(result, Span<const Ty*>{params.data(), uint32_t(params.size())}));
+          return record(e, types.lambda(result, Span<const Ty*>{params.data(), uint32_t(params.size())}, l->closure));
         }
         case NodeKind::BraceInitExpr:
           walkExprs(static_cast<BraceInitExpr*>(e)->args);
