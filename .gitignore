@@ -5,3 +5,6 @@ out/
 *.exe
 *.ll
 *.obj
+*.o
+*.rsp
+*.hash
