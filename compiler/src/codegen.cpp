@@ -657,6 +657,8 @@ namespace
           initializeMembers(fieldAddr, ft, {}, at);
         else if (ft->kind == TyKind::Array && needsDestruction(ft, at))
           unsupported(at, "arrays of objects with constructors");
+        else
+          fn += "  store " + llType(ft, at) + " zeroinitializer, ptr " + fieldAddr + "\n";
       }
     }
 
@@ -732,11 +734,89 @@ namespace
         fn += "  call void " + useFunction(copy, args, canonicalClass(t, at)) + "(ptr " + dst + ", ptr " + src + ")\n";
         return;
       }
-      if (needsDestruction(t, at))
+      if (findDestructor(c))
         unsupported(at, "copying " + global.qualifiedName(c) + ", which has a destructor but no copy constructor");
-      std::string v = newTemp();
-      fn += "  " + v + " = load " + llType(t, at) + ", ptr " + src + "\n";
-      fn += "  store " + llType(t, at) + " " + v + ", ptr " + dst + "\n";
+      if (!needsDestruction(t, at))
+      {
+        std::string v = newTemp();
+        fn += "  " + v + " = load " + llType(t, at) + ", ptr " + src + "\n";
+        fn += "  store " + llType(t, at) + " " + v + ", ptr " + dst + "\n";
+        return;
+      }
+      // Memberwise: bases and members in order, each with its own copy semantics.
+      StructInfo info = structFor(t, at);
+      if (info.polymorphic)
+        fn += "  store ptr " + info.vtableName + ", ptr " + dst + "\n";
+      for (auto& [baseDef, index] : info.bases)
+        copyConstruct(gep(info.name, dst, index), gep(info.name, src, index), info.fieldTypes[index], at);
+      for (Decl* d : info.fieldDecls)
+      {
+        uint32_t index = info.fieldIndex[d];
+        const Ty* ft = info.fieldTypes[index];
+        std::string to = gep(info.name, dst, index), from = gep(info.name, src, index);
+        if (isClass(ft))
+          copyConstruct(to, from, ft, at);
+        else
+        {
+          std::string v = newTemp();
+          fn += "  " + v + " = load " + llType(ft, at) + ", ptr " + from + "\n";
+          fn += "  store " + llType(ft, at) + " " + v + ", ptr " + to + "\n";
+        }
+      }
+    }
+
+    // Implicit copy assignment: user operator= where one exists, memberwise otherwise.
+    void assignObject(const std::string& dst, const std::string& src, const Ty* t, Node* at)
+    {
+      const Ty* foundIn = nullptr;
+      std::vector<const Ty*> argTypes{types.lref(types.qualified(t, true, false))};
+      if (FunctionDecl* op = findMemberFunction(t, "operator=", argTypes, t, at, &foundIn))
+      {
+        std::string thisArg = dst;
+        if (canonicalClass(t, at) != foundIn)
+          baseAddress(t, foundIn, dst, thisArg, at);
+        std::string name = useFunction(op, global.classArgsOf(foundIn), foundIn);
+        Signature s;
+        {
+          TemplateArgs args = global.classArgsOf(foundIn);
+          ArgsScope scope(*this, &args);
+          s = signatureOf(op);
+        }
+        if (s.returnType == "void")
+          fn += "  call void " + name + "(ptr " + thisArg + ", ptr " + src + ")\n";
+        else
+        {
+          std::string r = newTemp();
+          fn += "  " + r + " = call " + s.returnType + " " + name + "(ptr " + thisArg + ", ptr " + src + ")\n";
+        }
+        return;
+      }
+      if (!needsDestruction(t, at))
+      {
+        std::string v = newTemp();
+        fn += "  " + v + " = load " + llType(t, at) + ", ptr " + src + "\n";
+        fn += "  store " + llType(t, at) + " " + v + ", ptr " + dst + "\n";
+        return;
+      }
+      if (findDestructor(classDef(t->decl, at)))
+        unsupported(at, "assignment to " + global.qualifiedName(t->decl) + ", which has a destructor but no operator=");
+      StructInfo info = structFor(t, at);
+      for (auto& [baseDef, index] : info.bases)
+        assignObject(gep(info.name, dst, index), gep(info.name, src, index), info.fieldTypes[index], at);
+      for (Decl* d : info.fieldDecls)
+      {
+        uint32_t index = info.fieldIndex[d];
+        const Ty* ft = info.fieldTypes[index];
+        std::string to = gep(info.name, dst, index), from = gep(info.name, src, index);
+        if (isClass(ft))
+          assignObject(to, from, ft, at);
+        else
+        {
+          std::string v = newTemp();
+          fn += "  " + v + " = load " + llType(ft, at) + ", ptr " + from + "\n";
+          fn += "  store " + llType(ft, at) + " " + v + ", ptr " + to + "\n";
+        }
+      }
     }
 
     // Initialises the object/scalar at addr of type t from an initializer expression,
@@ -2314,7 +2394,8 @@ namespace
               indirect = loadSlot(thisArg, slot);
           return callFunction(f, calleeArgs(f, classTy, c, c), classTy, thisArg, sret, c->args, c, indirect);
         }
-        if (!d || d->kind == NodeKind::ClassDecl || d->kind == NodeKind::EnumDecl || d->kind == NodeKind::UsingAliasDecl)
+        if (!d || d->kind == NodeKind::ClassDecl || d->kind == NodeKind::EnumDecl || d->kind == NodeKind::UsingAliasDecl ||
+            d->kind == NodeKind::TemplateParamDecl)
         {
           const Ty* t = c->ty;
           if (!t || !t->isKnown())
@@ -2780,11 +2861,11 @@ namespace
           Value r = rvalue(b->rhs);
           if (!isClass(r.ty))
             unsupported(b, "assigning a non-class to a class");
-          if (needsDestruction(l.ty, b))
-            unsupported(b, "assignment to " + global.qualifiedName(l.ty->decl) + ", which has a destructor but no operator=");
-          std::string v = newTemp();
-          fn += "  " + v + " = load " + llType(l.ty, b) + ", ptr " + r.text + "\n";
-          fn += "  store " + llType(l.ty, b) + " " + v + ", ptr " + l.text + "\n";
+          std::string src = r.text;
+          if (classKey(r.ty) != classKey(l.ty))
+            if (!baseAddress(r.ty, l.ty, r.text, src, b))
+              unsupported(b, "assigning an unrelated class");
+          assignObject(l.text, src, l.ty, b);
           return l;
         }
         unsupported(b, global.qualifiedName(l.ty->decl) + " has no " + name);

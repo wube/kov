@@ -1,0 +1,34 @@
+// HashMap<K, V> with String and int keys, Optional<T>, toString and println.
+extern "C" int printf(const char* format, ...);
+
+int main()
+{
+  HashMap<String, int> ages;
+  ages.insert(String("ann"), 31);
+  ages.insert(String("bob"), 40);
+  ages[String("ann")] = 32;
+  ages[String("cy")] += 5;
+  int total = 0;
+  ages.forEach([&](const String& name, int age) { total += age; });
+  int* bob = ages.find(String("bob"));
+  bool hasDan = ages.contains(String("dan"));
+  printf("%d %d %d %d %d\n", ages.size(), total, *bob, hasDan ? 1 : 0, ages.erase(String("bob")) ? 1 : 0);
+
+  HashMap<int, String> names;
+  for (int i = 0; i < 100; ++i)
+    names.insert(i, toString(i * 7));
+  HashMap<int, String> copy = names;
+  names.erase(50);
+  printf("%d %d %s %s\n", names.size(), copy.size(), copy.find(50)->c_str(), names.find(99)->c_str());
+
+  Optional<String> maybe;
+  Optional<String> some(String("value"));
+  Optional<int> number(41);
+  Optional<String> other = some;
+  other.set(String("changed"));
+  printf("%d %d %s %s %d\n", maybe.hasValue() ? 1 : 0, some.hasValue() ? 1 : 0, some.get().c_str(), other.get().c_str(), number.get() + 1);
+
+  String text = toString(-1234) + String(" ") + toString(2.5) + String(" ") + toString(true);
+  println(text);
+  return 0;
+}

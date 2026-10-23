@@ -1,0 +1,18 @@
+// Kov standard library: hashing. HashMap<K, V> calls hashOf(key); add an overload for your own
+// key types.
+size_t hashOf(int value) { return (size_t)(unsigned int)value * 11400714819323198485ull; }
+size_t hashOf(unsigned int value) { return (size_t)value * 11400714819323198485ull; }
+size_t hashOf(long long value) { return (size_t)value * 11400714819323198485ull; }
+size_t hashOf(unsigned long long value) { return value * 11400714819323198485ull; }
+
+// FNV-1a over the bytes.
+size_t hashOf(const String& text)
+{
+  size_t hash = 14695981039346656037ull;
+  for (int i = 0; i < text.size(); ++i)
+  {
+    hash = hash ^ (size_t)(unsigned char)text[i];
+    hash = hash * 1099511628211ull;
+  }
+  return hash;
+}

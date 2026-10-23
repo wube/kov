@@ -1,0 +1,165 @@
+// Kov standard library: HashMap<K, V>, open addressing with linear probing. Keys need hashOf(key)
+// (see Hash.kov) and operator==.
+template<typename K, typename V>
+struct HashEntry
+{
+  K key;
+  V value;
+  int state = 0; // 0 empty, 1 used, 2 deleted
+};
+
+template<typename K, typename V>
+struct HashMap
+{
+  HashEntry<K, V>* entries = nullptr;
+  int capacity = 0; // always a power of two
+  int count = 0;    // used entries
+  int used = 0;     // used + deleted entries
+
+  HashMap() {}
+  HashMap(const HashMap<K, V>& other)
+  {
+    for (int i = 0; i < other.capacity; ++i)
+      if (other.entries[i].state == 1)
+        this->insertNew(other.entries[i].key, other.entries[i].value);
+  }
+  ~HashMap() { this->destroyEntries(); }
+
+  HashMap<K, V>& operator=(const HashMap<K, V>& other)
+  {
+    if (this == &other)
+      return *this;
+    this->destroyEntries();
+    for (int i = 0; i < other.capacity; ++i)
+      if (other.entries[i].state == 1)
+        this->insertNew(other.entries[i].key, other.entries[i].value);
+    return *this;
+  }
+
+  int size() const { return this->count; }
+  bool empty() const { return this->count == 0; }
+  bool contains(const K& key) const { return this->findSlot(key) >= 0; }
+
+  V* find(const K& key)
+  {
+    int slot = this->findSlot(key);
+    if (slot < 0)
+      return nullptr;
+    return &this->entries[slot].value;
+  }
+
+  V& operator[](const K& key)
+  {
+    int slot = this->findSlot(key);
+    if (slot >= 0)
+      return this->entries[slot].value;
+    return this->insertNew(key, V());
+  }
+
+  void insert(const K& key, const V& value)
+  {
+    int slot = this->findSlot(key);
+    if (slot >= 0)
+    {
+      this->entries[slot].value = value;
+      return;
+    }
+    this->insertNew(key, value);
+  }
+
+  bool erase(const K& key)
+  {
+    int slot = this->findSlot(key);
+    if (slot < 0)
+      return false;
+    this->entries[slot].key.~K();
+    this->entries[slot].value.~V();
+    this->entries[slot].state = 2;
+    --this->count;
+    return true;
+  }
+
+  template<typename F>
+  void forEach(F f)
+  {
+    for (int i = 0; i < this->capacity; ++i)
+      if (this->entries[i].state == 1)
+        f(this->entries[i].key, this->entries[i].value);
+  }
+
+  void clear() { this->destroyEntries(); }
+
+  // Internals.
+  int findSlot(const K& key) const
+  {
+    if (this->capacity == 0)
+      return -1;
+    size_t mask = this->capacity - 1;
+    size_t i = hashOf(key) & mask;
+    while (true)
+    {
+      HashEntry<K, V>& e = this->entries[i];
+      if (e.state == 0)
+        return -1;
+      if (e.state == 1 && e.key == key)
+        return (int)i;
+      i = (i + 1) & mask;
+    }
+  }
+
+  V& insertNew(const K& key, const V& value)
+  {
+    if ((this->used + 1) * 4 > this->capacity * 3)
+      this->grow();
+    size_t mask = this->capacity - 1;
+    size_t i = hashOf(key) & mask;
+    while (this->entries[i].state == 1)
+      i = (i + 1) & mask;
+    HashEntry<K, V>& e = this->entries[i];
+    if (e.state == 0)
+      ++this->used;
+    new (&e.key) K(key);
+    new (&e.value) V(value);
+    e.state = 1;
+    ++this->count;
+    return e.value;
+  }
+
+  void grow()
+  {
+    int newCapacity = this->capacity == 0 ? 8 : this->capacity * 2;
+    HashEntry<K, V>* old = this->entries;
+    int oldCapacity = this->capacity;
+    this->entries = (HashEntry<K, V>*)malloc(newCapacity * sizeof(HashEntry<K, V>));
+    for (int i = 0; i < newCapacity; ++i)
+      this->entries[i].state = 0;
+    this->capacity = newCapacity;
+    this->count = 0;
+    this->used = 0;
+    for (int i = 0; i < oldCapacity; ++i)
+      if (old[i].state == 1)
+      {
+        this->insertNew(old[i].key, old[i].value);
+        old[i].key.~K();
+        old[i].value.~V();
+      }
+    if (old)
+      free(old);
+  }
+
+  void destroyEntries()
+  {
+    for (int i = 0; i < this->capacity; ++i)
+      if (this->entries[i].state == 1)
+      {
+        this->entries[i].key.~K();
+        this->entries[i].value.~V();
+      }
+    if (this->entries)
+      free(this->entries);
+    this->entries = nullptr;
+    this->capacity = 0;
+    this->count = 0;
+    this->used = 0;
+  }
+};

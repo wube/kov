@@ -1,0 +1,45 @@
+// Kov standard library: text conversion and output. A type-safe format() will replace printf
+// once variadic templates exist; until then toString() overloads and print()/println().
+extern "C" int printf(const char* format, ...);
+extern "C" int snprintf(char* buffer, size_t size, const char* format, ...);
+
+String toString(long long value)
+{
+  char digits[24];
+  int n = 0;
+  bool negative = value < 0;
+  unsigned long long magnitude = negative ? (unsigned long long)(-(value + 1)) + 1 : (unsigned long long)value;
+  do
+  {
+    digits[n] = (char)('0' + magnitude % 10);
+    ++n;
+    magnitude /= 10;
+  } while (magnitude != 0);
+  String result;
+  if (negative)
+    result.append('-');
+  while (n > 0)
+  {
+    --n;
+    result.append(digits[n]);
+  }
+  return result;
+}
+
+String toString(int value) { return toString((long long)value); }
+String toString(unsigned int value) { return toString((long long)value); }
+
+String toString(double value)
+{
+  char buffer[64];
+  int n = snprintf(buffer, 64, "%g", value);
+  String result;
+  result.append(buffer, n);
+  return result;
+}
+
+String toString(bool value) { return String(value ? "true" : "false"); }
+String toString(const String& text) { return text; }
+
+void print(const String& text) { printf("%s", text.c_str()); }
+void println(const String& text) { printf("%s\n", text.c_str()); }

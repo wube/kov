@@ -3029,6 +3029,12 @@ namespace
       // After `(T)`: a cast if T is obviously a type (builtin, pointer, const...) or the next
       // token cannot continue an expression that `(T)` started.
       bool obviousType = t->kind != NodeKind::NamedType;
+      if (!obviousType)
+      {
+        std::string_view s = spelling(toks[t->token]);
+        obviousType = s == "size_t" || s == "ptrdiff_t" || s == "intptr_t" || s == "uintptr_t" || s.starts_with("__int") ||
+                      ((s.starts_with("int") || s.starts_with("uint")) && s.ends_with("_t"));
+      }
       if (obviousType)
         return atIdent() || at(TokenKind::Number) || at(TokenKind::String) || at(TokenKind::Char) || at(P::LParen) ||
                at(P::Minus) || at(P::Plus) || at(P::Bang) || at(P::Tilde) || at(P::Star) || at(P::Amp) ||

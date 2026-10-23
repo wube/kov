@@ -189,8 +189,8 @@ methods and single inheritance, enums, the arithmetic types, pointers, reference
 globals, `new`/`delete`, all control flow including `switch`, `extern "C"` functions.
 
 Tests: `compiler\tests\run_tests.cmd` compiles every `tests/run/*.kov`, runs it and compares the
-output with the `.expected` file. Nine programs so far (hello, control, types, structs,
-objects, templates, strings, virtual, lambdas).
+output with the `.expected` file. Ten programs so far (hello, control, types, structs,
+objects, templates, strings, virtual, lambdas, containers).
 
 Object model (added the same day): constructors with member initializers and default member
 initializers, destructors, destruction at scope exit in reverse order including the scopes left
@@ -247,9 +247,19 @@ calls closure values directly: `@"__lambda_3::operator()(int32)"`. `lambdas.kov`
 closures in variables, passes them to `apply` and `forEach` templates and captures `this` in a
 method. Not yet: init-captures, generic lambdas, conversion to function pointers.
 
+Library, second round (same day): `Hash.kov` (`hashOf` overloads for the integers and `String`,
+FNV-1a), `Optional<T>`, `HashMap<K, V>` (open addressing with linear probing, `insert`, `find`,
+`operator[]`, `erase`, `forEach` with a lambda, copy and assignment) and `Format.kov`
+(`toString` for integers, doubles, bools and strings, `print`, `println`). The code generator
+gained implicit memberwise copy construction and copy assignment for classes whose members
+need them, zero-initialisation of scalar members left out of a constructor, and `T(args)` for
+a template parameter `T`. `containers.kov` exercises a `HashMap<String, int>`, a
+`HashMap<int, String>` with 100 entries and a copy, `Optional<String>` and the conversions.
+
 Not in v0 and reported as "codegen does not support X yet": unions, exceptions, multiple
 polymorphic bases, arrays of objects with constructors, globals with constructors, more than
-four template parameters per function, class-typed iterators in range-for. IR names are the
+four template parameters per function, class-typed iterators in range-for, variadic
+templates (so no type-safe `format` yet). IR names are the
 qualified Kov names with parameter types in quotes (`@"Point::move(int32, int32)"`), so there is
 no mangling scheme.
 

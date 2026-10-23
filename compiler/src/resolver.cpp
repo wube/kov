@@ -2281,8 +2281,9 @@ struct GlobalScope::Impl
         }
         if (l.found == Found::Dependent)
         {
-          record(n, types.param(l.decl));
-          return types.param(l.decl);
+          const Ty* t = l.decl ? impl.declaredTypeOf(l.decl, activeSubst, 0) : types.unknown();
+          record(n, t);
+          return t;
         }
         Decl* d = l.decl;
         if (d && d->kind == NodeKind::FunctionDecl)

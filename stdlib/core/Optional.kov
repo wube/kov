@@ -1,0 +1,27 @@
+// Kov standard library: Optional<T>, a value that may be absent. The value is stored inline and
+// default-constructed while absent (a later version will avoid that with raw storage).
+template<typename T>
+struct Optional
+{
+  T value;
+  bool present = false;
+
+  Optional() {}
+  Optional(const T& v) : value(v), present(true) {}
+
+  bool hasValue() const { return this->present; }
+  T& get() { return this->value; }
+  const T& get() const { return this->value; }
+  T valueOr(const T& fallback) const
+  {
+    if (this->present)
+      return this->value;
+    return fallback;
+  }
+  void set(const T& v)
+  {
+    this->value = v;
+    this->present = true;
+  }
+  void reset() { this->present = false; }
+};
