@@ -1769,6 +1769,29 @@ namespace
       else if (callee->kind == NodeKind::MemberExpr)
       {
         auto* m = static_cast<MemberExpr*>(callee);
+        if (!m->member.empty() && m->member.last().special == 1)
+        {
+          // Explicit destructor call.
+          std::string addr;
+          const Ty* objectTy;
+          if (m->op == P::Arrow)
+          {
+            Value p = rvalue(m->base);
+            if (p.ty->kind != TyKind::Pointer)
+              unsupported(c, "-> on something that is not a pointer");
+            addr = p.text;
+            objectTy = p.ty->inner;
+          }
+          else
+          {
+            Value o = rvalue(m->base);
+            addr = o.text;
+            objectTy = o.ty;
+          }
+          if (isClass(objectTy))
+            destroy(addr, objectTy, c);
+          return {"", types.voidType()};
+        }
         if (m->resolved && m->resolved->kind == NodeKind::FunctionDecl)
         {
           auto* f = static_cast<FunctionDecl*>(m->resolved);
@@ -2023,9 +2046,17 @@ namespace
           const Ty* t = e->ty && e->ty->kind == TyKind::Pointer ? e->ty->inner : nullptr;
           if (!t)
             unsupported(e, "new of an unknown type");
-          ensureMalloc();
-          std::string r = newTemp();
-          fn += "  " + r + " = call ptr @malloc(i64 " + std::to_string(sizeOf(t, e)) + ")\n";
+          std::string r;
+          if (n->placement.size() == 1)
+            r = convert(rvalue(n->placement[0]), types.pointer(types.voidType()), e).text;
+          else if (!n->placement.empty())
+            unsupported(e, "placement new with several arguments");
+          else
+          {
+            ensureMalloc();
+            r = newTemp();
+            fn += "  " + r + " = call ptr @malloc(i64 " + std::to_string(sizeOf(t, e)) + ")\n";
+          }
           if (isClass(t))
             constructInto(r, t, n->args, e);
           else if (!n->args.empty())
@@ -2476,6 +2507,9 @@ namespace
         case NodeKind::SwitchStmt:
           switchStatement(static_cast<SwitchStmt*>(s));
           break;
+        case NodeKind::RangeForStmt:
+          rangeFor(static_cast<RangeForStmt*>(s));
+          break;
         case NodeKind::CaseStmt:
         case NodeKind::DefaultStmt:
           unsupported(s, "a case label outside a switch body");
@@ -2484,6 +2518,109 @@ namespace
         default:
           unsupported(s, std::string("the statement kind ") + nodeKindName(s->kind));
       }
+    }
+
+    // Finds a zero-argument member function by name (searching bases), with the class it lives in.
+    FunctionDecl* findMember(const Ty* classTy, const std::string& name, Node* at, const Ty** foundIn)
+    {
+      return findOperator(classTy, name, 0, at, foundIn);
+    }
+
+    void rangeFor(RangeForStmt* f)
+    {
+      pushScope();
+      const Ty* rt = types.stripRef(f->range->ty);
+      if (!rt || !rt->isKnown())
+        unsupported(f, "a range of unknown type");
+      std::string beginV, endV;
+      const Ty* elementTy;
+      if (rt->kind == TyKind::Array)
+      {
+        std::string base = lvalue(f->range);
+        beginV = newTemp();
+        fn += "  " + beginV + " = getelementptr inbounds " + llType(rt, f) + ", ptr " + base + ", i64 0, i64 0\n";
+        endV = newTemp();
+        fn += "  " + endV + " = getelementptr inbounds " + llType(rt, f) + ", ptr " + base + ", i64 0, i64 " + std::to_string(rt->count) + "\n";
+        elementTy = rt->inner;
+      }
+      else if (isClass(rt))
+      {
+        Value range = rvalue(f->range);
+        if (range.isTemporary)
+        {
+          for (size_t i = statementTemps.size(); i-- > 0;)
+            if (statementTemps[i].addr == range.text)
+              statementTemps.erase(statementTemps.begin() + i);
+          scopes.back().push_back({range.text, range.ty});
+        }
+        const Ty* in = nullptr;
+        FunctionDecl* begin = findMember(range.ty, "begin", f, &in);
+        FunctionDecl* end = findMember(range.ty, "end", f, &in);
+        if (!begin || !end)
+          unsupported(f, "a range without begin()/end()");
+        Value b = callFunction(begin, global.classArgsOf(in), in, range.text, "", {}, f);
+        Value e = callFunction(end, global.classArgsOf(in), in, range.text, "", {}, f);
+        if (!b.ty || b.ty->kind != TyKind::Pointer)
+          unsupported(f, "a range whose iterators are not pointers");
+        beginV = b.text;
+        endV = e.text;
+        elementTy = b.ty->inner;
+      }
+      else
+        unsupported(f, "this kind of range");
+      std::string itSlot = "%v" + std::to_string(temp++);
+      allocas += "  " + itSlot + " = alloca ptr\n";
+      fn += "  store ptr " + beginV + ", ptr " + itSlot + "\n";
+      destroyTemps();
+      std::string cL = newLabel("range.cond"), bL = newLabel("range.body"), sL = newLabel("range.step"), eL = newLabel("range.end");
+      emitBranch(cL);
+      startBlock(cL);
+      std::string it = newTemp();
+      fn += "  " + it + " = load ptr, ptr " + itSlot + "\n";
+      std::string done = newTemp();
+      fn += "  " + done + " = icmp eq ptr " + it + ", " + endV + "\n";
+      fn += "  br i1 " + done + ", label %" + eL + ", label %" + bL + "\n";
+      startBlock(bL);
+      pushScope();
+      // The loop variable: a reference binds to the element, a value copies it.
+      auto* v = static_cast<VariableDecl*>(f->var);
+      const Ty* vt = declType(v);
+      if (!vt || !vt->isKnown() || types.isDependent(vt))
+        unsupported(v, "a loop variable of unknown type");
+      std::string element = newTemp();
+      fn += "  " + element + " = load ptr, ptr " + itSlot + "\n";
+      std::string slot = "%v" + std::to_string(temp++);
+      if (vt->isReference())
+      {
+        allocas += "  " + slot + " = alloca ptr\n";
+        fn += "  store ptr " + element + ", ptr " + slot + "\n";
+        locals[v] = {slot, vt, true};
+      }
+      else
+      {
+        allocas += "  " + slot + " = alloca " + llType(vt, v) + "\n";
+        if (isClass(vt))
+          copyConstruct(slot, element, vt, v);
+        else
+          store(load(element, elementTy, v), slot, vt, v);
+        locals[v] = {slot, vt, false};
+        if (needsDestruction(vt, v))
+          scopes.back().push_back({slot, vt});
+      }
+      loops.push_back({eL, sL, scopes.size()});
+      statement(f->body);
+      loops.pop_back();
+      popScope();
+      emitBranch(sL);
+      startBlock(sL);
+      std::string cur = newTemp();
+      fn += "  " + cur + " = load ptr, ptr " + itSlot + "\n";
+      std::string next = newTemp();
+      fn += "  " + next + " = getelementptr inbounds " + llType(elementTy, f) + ", ptr " + cur + ", i64 1\n";
+      fn += "  store ptr " + next + ", ptr " + itSlot + "\n";
+      emitBranch(cL);
+      startBlock(eL);
+      popScope();
     }
 
     Value condition(Node* cond, Node* at)

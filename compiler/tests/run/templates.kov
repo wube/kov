@@ -1,4 +1,4 @@
-// Class and function templates in generated code: Vector<T> with a destructor, instantiated
+// Class and function templates in generated code: List<T> with a destructor, instantiated
 // for two element types, a function template with deduction, and a member template.
 extern "C" int printf(const char* format, ...);
 extern "C" void* malloc(unsigned long long size);
@@ -8,13 +8,13 @@ extern "C" void* memcpy(void* dst, const void* src, unsigned long long size);
 static int allocations = 0;
 
 template<typename T>
-struct Vector
+struct List
 {
   T* data = nullptr;
   int size = 0;
   int capacity = 0;
 
-  ~Vector()
+  ~List()
   {
     if (this->data)
     {
@@ -63,7 +63,7 @@ T maxOf(T a, T b)
 }
 
 template<typename T>
-T total(const Vector<T>& v)
+T total(const List<T>& v)
 {
   T sum = 0;
   for (int i = 0; i < v.count(); ++i)
@@ -74,10 +74,10 @@ T total(const Vector<T>& v)
 int main()
 {
   {
-    Vector<int> ints;
+    List<int> ints;
     for (int i = 1; i <= 10; ++i)
       ints.push_back(i * i);
-    Vector<double> doubles;
+    List<double> doubles;
     doubles.push_back(0.5);
     doubles.push_back(0.25);
     ints[0] = 100;

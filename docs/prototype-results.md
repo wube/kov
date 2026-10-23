@@ -189,8 +189,8 @@ methods and single inheritance, enums, the arithmetic types, pointers, reference
 globals, `new`/`delete`, all control flow including `switch`, `extern "C"` functions.
 
 Tests: `compiler\tests\run_tests.cmd` compiles every `tests/run/*.kov`, runs it and compares the
-output with the `.expected` file. Six programs so far (hello, control, types, structs, objects,
-templates).
+output with the `.expected` file. Seven programs so far (hello, control, types, structs,
+objects, templates, strings).
 
 Object model (added the same day): constructors with member initializers and default member
 initializers, destructors, destruction at scope exit in reverse order including the scopes left
@@ -212,9 +212,21 @@ templates of class templates, destructors of instantiations. IR names carry the 
 `@"Vector<int32>::push_back(const int32&)"`, `@"Vector<int32>::sumAs<int64>()"`.
 `templates.kov` exercises a `Vector<T>` for two element types and function templates.
 
+Standard library seed (same day, `stdlib/core/`): `String` (one UTF-8 class, zero-terminated,
+no traits or allocator parameters) and `Vector<T>` (growable, elements relocated bitwise), both
+written in Kov v0 and compiled from source with every program; `kovc` adds `stdlib/` next to
+the compiler automatically (`--std DIR`, `--no-std`). `strings.kov` builds strings, copies
+them, stores them in a `Vector<String>`, iterates with range-for and checks that everything is
+destroyed. Needed in the code generator for this: range-for over arrays and classes with
+pointer-returning `begin()`/`end()`, placement `new`, explicit destructor calls (`x.~T()`).
+
+A limitation visible in the library's API: overloads are still chosen by argument count only,
+so `String` has `append(const char*)`, `appendBytes(const char*, int)` and `appendChar(char)`
+instead of three `append`s. Conversion-based overload resolution is the next checker item.
+
 Not in v0 and reported as "codegen does not support X yet": lambdas, unions, exceptions,
 virtual functions, arrays of objects with constructors, globals with constructors, more than
-four template parameters per function. IR names are the
+four template parameters per function, class-typed iterators in range-for. IR names are the
 qualified Kov names with parameter types in quotes (`@"Point::move(int32, int32)"`), so there is
 no mangling scheme.
 

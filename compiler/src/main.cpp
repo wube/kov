@@ -40,6 +40,8 @@ namespace
     bool quiet = false;
     std::string emitLLVM; // --emit-llvm <path>
     std::string exe;      // --exe <path>
+    std::string stdDir;   // --std <dir>; default: <kovc dir>\..\..\stdlib when it exists
+    bool noStd = false;
     int repeat = 1;
   };
 
@@ -56,7 +58,9 @@ namespace
             "  --unresolved N show the N most common unresolved names (default 25)\n"
             "  --quiet       no statistics\n"
             "  --emit-llvm F write LLVM IR for the program to F\n"
-            "  --exe F       compile the program to the executable F (needs clang)\n");
+            "  --exe F       compile the program to the executable F (needs clang)\n"
+            "  --std DIR     standard library sources (default: stdlib next to the compiler)\n"
+            "  --no-std      compile without the standard library\n");
   }
 
   struct FileStats
@@ -338,6 +342,10 @@ int main(int argc, char** argv)
       options.emitLLVM = argv[++i];
     else if (arg == "--exe" && i + 1 < argc)
       options.exe = argv[++i];
+    else if (arg == "--std" && i + 1 < argc)
+      options.stdDir = argv[++i];
+    else if (arg == "--no-std")
+      options.noStd = true;
     else if (arg[0] == '-')
     {
       usage();
@@ -354,6 +362,17 @@ int main(int argc, char** argv)
   if (options.threads == 0)
     options.threads = 1;
   quietOutput = options.quiet;
+  if ((!options.exe.empty() || !options.emitLLVM.empty()) && !options.noStd)
+  {
+    std::error_code ec;
+    std::filesystem::path stdPath = options.stdDir.empty()
+      ? std::filesystem::absolute(argv[0], ec).parent_path() / ".." / ".." / "stdlib"
+      : std::filesystem::path(options.stdDir);
+    if (std::filesystem::is_directory(stdPath, ec))
+      options.roots.insert(options.roots.begin(), stdPath.lexically_normal());
+    else if (!options.stdDir.empty())
+      fprintf(stderr, "warning: standard library directory %s not found\n", options.stdDir.c_str());
+  }
 
   using Clock = std::chrono::steady_clock;
 

@@ -1,0 +1,8 @@
+// Kov standard library: the C memory and string primitives everything else is built on.
+// These are the only external symbols the core library needs.
+extern "C" void* malloc(size_t size);
+extern "C" void free(void* p);
+extern "C" void* memcpy(void* dst, const void* src, size_t n);
+extern "C" void* memmove(void* dst, const void* src, size_t n);
+extern "C" int memcmp(const void* a, const void* b, size_t n);
+extern "C" size_t strlen(const char* s);

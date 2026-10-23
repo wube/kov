@@ -1,0 +1,82 @@
+// Kov standard library: Vector<T>. A growable array; elements are relocated bitwise when the
+// buffer grows, which every Kov type is expected to allow.
+template<typename T>
+struct Vector
+{
+  T* data = nullptr;
+  int length = 0;
+  int capacity = 0;
+
+  Vector() {}
+  Vector(const Vector<T>& other)
+  {
+    this->reserve(other.length);
+    for (int i = 0; i < other.length; ++i)
+      this->push_back(other.data[i]);
+  }
+  ~Vector()
+  {
+    this->clear();
+    if (this->data)
+      free(this->data);
+  }
+
+  Vector<T>& operator=(const Vector<T>& other)
+  {
+    if (this == &other)
+      return *this;
+    this->clear();
+    this->reserve(other.length);
+    for (int i = 0; i < other.length; ++i)
+      this->push_back(other.data[i]);
+    return *this;
+  }
+
+  int size() const { return this->length; }
+  bool empty() const { return this->length == 0; }
+  T& operator[](int index) { return this->data[index]; }
+  T& back() { return this->data[this->length - 1]; }
+  T* begin() { return this->data; }
+  T* end() { return this->data + this->length; }
+
+  void reserve(int needed)
+  {
+    if (needed <= this->capacity)
+      return;
+    int newCapacity = this->capacity == 0 ? 4 : this->capacity;
+    while (newCapacity < needed)
+      newCapacity *= 2;
+    T* bigger = (T*)malloc(newCapacity * sizeof(T));
+    if (this->data)
+    {
+      memcpy(bigger, this->data, this->length * sizeof(T));
+      free(this->data);
+    }
+    this->data = bigger;
+    this->capacity = newCapacity;
+  }
+
+  void push_back(const T& value)
+  {
+    this->reserve(this->length + 1);
+    new (this->data + this->length) T(value);
+    ++this->length;
+  }
+  void pop_back()
+  {
+    --this->length;
+    this->data[this->length].~T();
+  }
+  void clear()
+  {
+    for (int i = 0; i < this->length; ++i)
+      this->data[i].~T();
+    this->length = 0;
+  }
+  void erase(int index)
+  {
+    this->data[index].~T();
+    memmove(this->data + index, this->data + index + 1, (this->length - index - 1) * sizeof(T));
+    --this->length;
+  }
+};

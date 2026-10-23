@@ -1,0 +1,123 @@
+// Kov standard library: String. A growable sequence of UTF-8 code units, always zero-terminated
+// so that c_str() is free. One plain class: no character traits, no allocator parameter.
+//
+// Overloads are given distinct names for now (append / appendBytes / appendChar), because the
+// v0 compiler resolves overloads by argument count only.
+struct String
+{
+  char* data = nullptr; // nullptr while empty
+  int length = 0;
+  int capacity = 0;
+
+  String() {}
+  String(const char* text) { this->append(text); }
+  String(const String& other) { this->appendBytes(other.data, other.length); }
+  ~String()
+  {
+    if (this->data)
+      free(this->data);
+  }
+
+  String& operator=(const String& other)
+  {
+    if (this == &other)
+      return *this;
+    this->length = 0;
+    this->appendBytes(other.data, other.length);
+    if (this->data)
+      this->data[this->length] = 0;
+    return *this;
+  }
+
+  int size() const { return this->length; }
+  bool empty() const { return this->length == 0; }
+  const char* c_str() const { return this->data ? this->data : ""; }
+  char operator[](int index) const { return this->data[index]; }
+
+  void reserve(int needed)
+  {
+    if (needed + 1 <= this->capacity)
+      return;
+    int newCapacity = this->capacity == 0 ? 16 : this->capacity;
+    while (newCapacity < needed + 1)
+      newCapacity *= 2;
+    char* bigger = (char*)malloc(newCapacity);
+    if (this->data)
+    {
+      memcpy(bigger, this->data, this->length + 1);
+      free(this->data);
+    }
+    else
+      bigger[0] = 0;
+    this->data = bigger;
+    this->capacity = newCapacity;
+  }
+
+  void appendBytes(const char* bytes, int count)
+  {
+    if (count <= 0)
+      return;
+    this->reserve(this->length + count);
+    memcpy(this->data + this->length, bytes, count);
+    this->length += count;
+    this->data[this->length] = 0;
+  }
+  void append(const char* text) { this->appendBytes(text, (int)strlen(text)); }
+  void appendChar(char c)
+  {
+    this->reserve(this->length + 1);
+    this->data[this->length] = c;
+    ++this->length;
+    this->data[this->length] = 0;
+  }
+
+  String& operator+=(const String& other)
+  {
+    this->appendBytes(other.data, other.length);
+    return *this;
+  }
+  String operator+(const String& other) const
+  {
+    String result(*this);
+    result += other;
+    return result;
+  }
+
+  bool operator==(const String& other) const
+  {
+    if (this->length != other.length)
+      return false;
+    return memcmp(this->c_str(), other.c_str(), this->length) == 0;
+  }
+  bool operator!=(const String& other) const { return !(*this == other); }
+
+  int find(char c) const
+  {
+    for (int i = 0; i < this->length; ++i)
+      if (this->data[i] == c)
+        return i;
+    return -1;
+  }
+  bool startsWith(const String& prefix) const
+  {
+    if (prefix.length > this->length)
+      return false;
+    return memcmp(this->c_str(), prefix.c_str(), prefix.length) == 0;
+  }
+  String substr(int start, int count) const
+  {
+    String result;
+    if (start < this->length)
+    {
+      int available = this->length - start;
+      result.appendBytes(this->data + start, count < available ? count : available);
+    }
+    return result;
+  }
+  void clear()
+  {
+    this->length = 0;
+    if (this->data)
+      this->data[0] = 0;
+  }
+};

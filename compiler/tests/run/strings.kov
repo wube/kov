@@ -1,0 +1,34 @@
+// The standard library seed: String and Vector<T>, including Vector<String>.
+extern "C" int printf(const char* format, ...);
+
+int main()
+{
+  String greeting("Hello");
+  greeting += String(", ");
+  greeting.append("Kov");
+  greeting.appendChar('!');
+  String copy = greeting;
+  String head = copy.substr(0, 5) + String("...");
+  printf("%s|%s|%d|%d|%d\n", greeting.c_str(), head.c_str(), greeting.size(), greeting.find('K'), greeting == copy ? 1 : 0);
+
+  Vector<String> words;
+  words.push_back(String("alpha"));
+  words.push_back(String("beta"));
+  words.push_back(greeting);
+  Vector<String> wordsCopy = words;
+  words.erase(0);
+  int total = 0;
+  for (String& w : wordsCopy)
+    total += w.size();
+  printf("%d %d %s %s %d\n", words.size(), wordsCopy.size(), words[0].c_str(), wordsCopy[2].c_str(), total);
+
+  Vector<int> numbers;
+  for (int i = 0; i < 5; ++i)
+    numbers.push_back(i * 3);
+  int sum = 0;
+  for (int n : numbers)
+    sum += n;
+  numbers.pop_back();
+  printf("%d %d %d\n", sum, numbers.size(), numbers.back());
+  return 0;
+}

@@ -10,6 +10,8 @@ simple templates, own standard library, C-only interop.
   it when a decision is made or changed. `docs/prototype-results.md`: measurements and method.
 - `compiler/`: the compiler. `compiler\build.cmd` builds `compiler\build\kovc.exe` (CMake + Ninja +
   clang-cl from VS 2022). Benchmarks live in `compiler/bench/`, test inputs in `compiler/tests/`.
+- `stdlib/`: the standard library, written in Kov and compiled from source with every program
+  (`kovc` finds it next to the compiler; `--std DIR` or `--no-std` override that).
 
 ## Machine
 - Work happens on PC-PRACOVNA (Windows 10, Ryzen 9 9950X 16C/32T, 128 GB RAM).
