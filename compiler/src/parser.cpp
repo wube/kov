@@ -466,7 +466,7 @@ namespace
       }
       if (at(Kw::new_) || at(Kw::delete_))
       {
-        part.opToken = tok().id;
+        part.opToken = uint32_t(P::Count) + tok().id; // Keyword operators live above the punctuator ids.
         advance();
         if (at(P::LBracket) && at(P::RBracket, 1))
         {

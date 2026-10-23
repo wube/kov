@@ -114,6 +114,45 @@ template instantiation and code generation, where the Kov design wins by generat
 instantiation once and by never linking; the Factorio numbers above say that linking alone is
 10 of the 16 seconds of an incremental build today.
 
+## Stage 2: type checker (2026-10-23, later the same day)
+
+On top of the resolver: canonical interned types (`types.cpp`), declared types with template
+parameter substitution, and a type for every expression in every function body
+(`resolver.cpp`, the `Walker`). Overload selection is by argument count only, there are no
+implicit-conversion rankings yet, and template bodies are not re-checked per instantiation.
+
+| Phase (32 threads) | before | with type checking |
+|---|---|---|
+| index | 0.013 s | 0.014 s |
+| resolve + check | 0.030 s | **0.028 s** (0.31 s single-threaded) |
+| whole front end, wall time | 0.32 s | 0.33 s |
+
+Typing 1.94 M expressions costs about 0.2 s of CPU in total; it is invisible in the wall time.
+The type table ends with 42,862 distinct types for the whole code base.
+
+What the checker could determine on Factorio:
+
+| | count | result |
+|---|---|---|
+| member accesses `a.b`, `a->b`, `this->b` | 461,697 | **78.9% bound** to a declaration, 4.5% dependent on a template parameter, 16.3% object type unknown, 0.3% no such member |
+| expressions | 1,936,622 | **77.8% typed**, 2.8% dependent, 19.4% unknown |
+| calls | 219,572 | resolved to a function (43k had several candidates with the same arity, mostly const/non-const pairs) |
+| type names | 273,439 | 84.3% resolved (fixed-width integer names count as builtins), 2.8% dependent, 12.9% unresolved |
+
+The unknowns are what the corpus cannot answer, not what the checker cannot do: the members
+accessed on objects of unknown type are `size`, `empty`, `second`, `c_str`, `push_back`,
+`emplace_back`, `reset`, `first`, `begin`, `end` (std containers, smart pointers and pairs, not
+in the corpus), the unresolved names are `assert`, the Lua C API and macro-generated
+declarations, and the 0.3% "no such member" are `get##type` members produced by macros. Of the
+unknown expressions, 52k are unresolved names, 75k an unknown object type, 11k `auto` variables
+initialised from such expressions, 6k constructs not modelled yet (brace initialisers,
+`typeid`, folds).
+
+Not done yet, in order of value: checking template bodies once per instantiation with the
+proposal's produce/wait protocol (the real test of the template design), implicit conversions
+in overload resolution, members inherited through templated bases (`Derived<int> : Base<T>`
+currently stays dependent), constexpr evaluation.
+
 ## Lessons
 
 - **Windows memory allocation serialises parallel work.** The first parser version allocated and

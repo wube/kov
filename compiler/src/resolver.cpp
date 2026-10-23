@@ -1,5 +1,7 @@
 #include "resolver.hpp"
+#include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <string_view>
@@ -10,18 +12,42 @@ void ResolveStats::add(const ResolveStats& o)
   typesResolved += o.typesResolved;
   typesDependent += o.typesDependent;
   typesUnresolved += o.typesUnresolved;
+  typesBuiltinByName += o.typesBuiltinByName;
   namesLocal += o.namesLocal;
   namesMember += o.namesMember;
   namesGlobal += o.namesGlobal;
   namesDependent += o.namesDependent;
   namesUnresolved += o.namesUnresolved;
-  membersDeferred += o.membersDeferred;
   qualifiedUnresolvedStd += o.qualifiedUnresolvedStd;
   unresolvedMacroLike += o.unresolvedMacroLike;
   for (const auto& [symbol, count] : o.unresolvedSymbols)
     unresolvedSymbols[symbol] += count;
   for (const auto& [symbol, where] : o.unresolvedFirst)
     unresolvedFirst.emplace(symbol, where);
+  membersBound += o.membersBound;
+  membersDependent += o.membersDependent;
+  membersUnknownBase += o.membersUnknownBase;
+  membersNotFound += o.membersNotFound;
+  for (const auto& [symbol, count] : o.missingMembers)
+    missingMembers[symbol] += count;
+  for (const auto& [symbol, where] : o.missingMembersFirst)
+    missingMembersFirst.emplace(symbol, where);
+  for (const auto& [symbol, count] : o.unknownBaseMembers)
+    unknownBaseMembers[symbol] += count;
+  exprsTyped += o.exprsTyped;
+  exprsDependent += o.exprsDependent;
+  exprsUnknown += o.exprsUnknown;
+  unknownName += o.unknownName;
+  unknownBase += o.unknownBase;
+  unknownMember += o.unknownMember;
+  unknownOverload += o.unknownOverload;
+  unknownDeduction += o.unknownDeduction;
+  unknownAutoReturn += o.unknownAutoReturn;
+  unknownUnsupported += o.unknownUnsupported;
+  unknownOperator += o.unknownOperator;
+  unknownAuto += o.unknownAuto;
+  callsResolved += o.callsResolved;
+  callsAmbiguousArity += o.callsAmbiguousArity;
 }
 
 // --- Scope tree ---------------------------------------------------------------------------
@@ -135,7 +161,28 @@ namespace
   {
     Found found = Found::No;
     Decl* decl = nullptr;
-    Scope* scope = nullptr; // Scope opened by decl, if any.
+    Scope* scope = nullptr;                        // Scope opened by decl, if any.
+    const std::vector<Entry>* overloads = nullptr; // All entries with that name in the scope where it was found.
+    Scope* foundIn = nullptr;                      // Scope the name was found in.
+  };
+
+  // Template parameter -> type, for members seen through an instantiation like Vector<int>.
+  struct Subst
+  {
+    struct Pair
+    {
+      Decl* param;
+      const Ty* type;
+    };
+    std::vector<Pair> pairs;
+    const Ty* find(Decl* param) const
+    {
+      for (const Pair& p : pairs)
+        if (p.param == param)
+          return p.type;
+      return nullptr;
+    }
+    bool empty() const { return pairs.empty(); }
   };
 
   bool isAllCaps(std::string_view s)
@@ -156,19 +203,78 @@ namespace
 
 struct GlobalScope::Impl
 {
+  SymbolTable& symbols;
+  TypeTable types;
   Scope root{ScopeKind::Namespace, nullptr, nullptr, 256};
   std::mutex deferredMutex;
   std::vector<std::pair<Decl*, Scope*>> deferredQualified; // Out-of-line class/enum definitions.
   std::atomic<size_t> scopes{1};
   std::atomic<size_t> entries{0};
-  uint32_t symStd = UINT32_MAX;
-  const SymbolTable* symbols = nullptr;
+  uint32_t symStd;
+  uint32_t opSymbols[size_t(P::Count)]; // "operator+" etc., so operators can be looked up by name.
+  uint32_t symBegin, symFirst, symSecond;
+  struct BuiltinName
+  {
+    uint32_t symbol;
+    const Ty* type;
+  };
+  std::vector<BuiltinName> builtinNames; // uint32_t, size_t... which come from headers outside the corpus.
+
+  explicit Impl(SymbolTable& symbols) : symbols(symbols)
+  {
+    symStd = symbols.intern("std");
+    symBegin = symbols.intern("begin");
+    symFirst = symbols.intern("first");
+    symSecond = symbols.intern("second");
+    for (uint32_t i = 0; i < uint32_t(P::Count); ++i)
+      opSymbols[i] = symbols.intern("operator" + std::string(punctuatorSpelling(P(i))));
+    auto add = [&](const char* name, const Ty* t) { builtinNames.push_back({symbols.intern(name), t}); };
+    add("int8_t", types.intType(8));
+    add("int16_t", types.intType(16));
+    add("int32_t", types.intType(32));
+    add("int64_t", types.intType(64));
+    add("uint8_t", types.intType(8, true));
+    add("uint16_t", types.intType(16, true));
+    add("uint32_t", types.intType(32, true));
+    add("uint64_t", types.intType(64, true));
+    add("size_t", types.sizeType());
+    add("ptrdiff_t", types.ptrdiffType());
+    add("intptr_t", types.intType(64));
+    add("uintptr_t", types.intType(64, true));
+    add("__int64", types.intType(64));
+    add("__int32", types.intType(32));
+    add("__int16", types.intType(16));
+    add("__int8", types.intType(8));
+    add("ssize_t", types.ptrdiffType());
+    add("int_fast32_t", types.intType(32));
+    add("uint_fast32_t", types.intType(32, true));
+    add("nullptr_t", types.nullptrType());
+  }
+
+  const Ty* builtinByName(uint32_t symbol) const
+  {
+    for (const BuiltinName& b : builtinNames)
+      if (b.symbol == symbol)
+        return b.type;
+    return nullptr;
+  }
 
   // ---------------- phase 1: indexing ----------------
 
   static uint32_t simpleName(const QualifiedName& name)
   {
     return name.parts.size() == 1 && name.parts[0].special == 0 ? name.parts[0].symbol : UINT32_MAX;
+  }
+
+  // Symbol under which a (possibly operator) function is indexed, or UINT32_MAX.
+  uint32_t functionSymbol(const QualifiedName& name) const
+  {
+    const NamePart& part = name.parts[0];
+    if (part.special == 0)
+      return part.symbol;
+    if (part.special == 2 && part.opToken < uint32_t(P::Count))
+      return opSymbols[part.opToken];
+    return UINT32_MAX;
   }
 
   void indexDecls(Span<Decl*> decls, Scope* scope)
@@ -280,8 +386,8 @@ struct GlobalScope::Impl
         if (f->name.parts.size() == 1 && !(f->flags & (DF_Constructor | DF_Destructor | DF_Conversion)) &&
             !(f->flags & DF_Friend))
         {
-          uint32_t symbol = f->name.parts[0].symbol;
-          if (f->name.parts[0].special == 0 && symbol != UINT32_MAX)
+          uint32_t symbol = functionSymbol(f->name);
+          if (symbol != UINT32_MAX)
           {
             scope->add(symbol, f, nullptr);
             ++entries;
@@ -495,6 +601,8 @@ struct GlobalScope::Impl
       out.decl = e.decl;
       out.scope = e.scope ? e.scope : scopeOfEntry(e, depth + 1);
       out.found = s->kind == ScopeKind::Namespace ? Found::Global : Found::Member;
+      out.overloads = entries;
+      out.foundIn = s;
       return true;
     }
     if (s->kind == ScopeKind::Class)
@@ -570,9 +678,20 @@ struct GlobalScope::Impl
           out = lookupUnqualified(part.symbol, context, locals, depth);
         return out;
       }
+      if (part.special == 2 && part.opToken < uint32_t(P::Count))
+      {
+        if (!last)
+          return {};
+        uint32_t symbol = opSymbols[part.opToken];
+        if (current)
+          lookupInScope(current, symbol, out, depth);
+        else
+          out = lookupUnqualified(symbol, context, locals, depth);
+        return out;
+      }
       if (part.special != 0 || part.symbol == UINT32_MAX)
       {
-        // operator names and `decltype(...)` components: the class scope is the result.
+        // conversion operators and `decltype(...)` components: the class scope is the result.
         if (current)
         {
           out.found = current->kind == ScopeKind::Namespace ? Found::Global : Found::Member;
@@ -611,17 +730,496 @@ struct GlobalScope::Impl
     return out;
   }
 
+  // ---------------- phase 2: types ----------------
+
+  struct TypeContext
+  {
+    Scope* scope;
+    const LocalStack* locals;
+    const Subst* subst;
+  };
+
+  static Decl* enclosingClassDecl(Scope* s)
+  {
+    for (; s; s = s->parent)
+      if (s->kind == ScopeKind::Class)
+        return s->owner;
+    return nullptr;
+  }
+
+  // Type of a class or enum declaration as written inside it: template parameters stay dependent.
+  const Ty* selfType(Decl* d)
+  {
+    if (d->kind == NodeKind::EnumDecl)
+      return types.enumType(d);
+    std::vector<const Ty*> args;
+    for (Decl* p : d->templateParams)
+      args.push_back(types.param(p));
+    return types.classType(d, Span<const Ty*>{args.data(), uint32_t(args.size())});
+  }
+
+  // Maps the template parameters of `cls` to the arguments of an instantiation type.
+  Subst substFor(const Ty* classTy)
+  {
+    Subst s;
+    if (!classTy || classTy->kind != TyKind::Class || !classTy->decl)
+      return s;
+    Span<Decl*> params = classTy->decl->templateParams;
+    for (size_t i = 0; i < params.size() && i < classTy->args.size(); ++i)
+      s.pairs.push_back({params[i], classTy->args[i]});
+    return s;
+  }
+
+  // The canonical type a resolved name denotes when used as a type.
+  const Ty* typeOfTypeDecl(Decl* d, const Lookup& l, const NamePart& lastPart, const TypeContext& ctx, int depth)
+  {
+    switch (d->kind)
+    {
+      case NodeKind::ClassDecl:
+      {
+        // Use the definition (the scope owner) so that all mentions share one decl.
+        Decl* def = l.scope && l.scope->owner && l.scope->kind == ScopeKind::Class ? l.scope->owner : d;
+        std::vector<const Ty*> args;
+        Span<Decl*> params = def->templateParams;
+        for (size_t i = 0; i < lastPart.templateArgs.size(); ++i)
+        {
+          Node* arg = lastPart.templateArgs[i];
+          if (uint8_t(arg->kind) <= uint8_t(NodeKind::PackType))
+            args.push_back(convertType(static_cast<Type*>(arg), ctx, depth + 1));
+          else
+            args.push_back(types.unknown()); // Non-type arguments are not modelled.
+        }
+        if (args.empty() && !params.empty() && ctx.subst)
+        {
+          // Injected class name inside its own template, or a dependent mention: keep parameters.
+          for (Decl* p : params)
+            args.push_back(ctx.subst->find(p) ? ctx.subst->find(p) : types.param(p));
+        }
+        else if (args.empty() && !params.empty())
+          for (Decl* p : params)
+            args.push_back(types.param(p));
+        return types.classType(def, Span<const Ty*>{args.data(), uint32_t(args.size())});
+      }
+      case NodeKind::EnumDecl:
+      {
+        Decl* def = l.scope && l.scope->owner && l.scope->kind == ScopeKind::Enum ? l.scope->owner : d;
+        return types.enumType(def);
+      }
+      case NodeKind::TemplateParamDecl:
+        if (ctx.subst)
+          if (const Ty* t = ctx.subst->find(d))
+            return t;
+        return types.param(d);
+      case NodeKind::UsingAliasDecl:
+      {
+        auto* u = static_cast<UsingAliasDecl*>(d);
+        if (!u->templateParams.empty())
+          return types.unknown(); // Alias templates: not modelled yet.
+        return declaredTypeOf(d, nullptr, depth + 1);
+      }
+      case NodeKind::VariableDecl:
+        if (d->flags & DF_Typedef)
+          return declaredTypeOf(d, nullptr, depth + 1);
+        return types.unknown();
+      case NodeKind::UsingNameDecl:
+      {
+        Lookup inner = lookupQualified(static_cast<UsingNameDecl*>(d)->name, lexicalScopeOf(d), nullptr, depth + 1);
+        if (inner.decl && inner.decl != d)
+          return typeOfTypeDecl(inner.decl, inner, static_cast<UsingNameDecl*>(d)->name.last(), TypeContext{lexicalScopeOf(d), nullptr, nullptr}, depth + 1);
+        return types.unknown();
+      }
+      default:
+        return types.unknown();
+    }
+  }
+
+  // AST type -> canonical type.
+  const Ty* convertType(Type* t, const TypeContext& ctx, int depth)
+  {
+    if (!t || depth > 40)
+      return types.unknown();
+    switch (t->kind)
+    {
+      case NodeKind::BuiltinType:
+      {
+        auto* b = static_cast<BuiltinType*>(t);
+        switch (b->keyword)
+        {
+          case Kw::void_: return types.voidType();
+          case Kw::bool_: return types.boolType();
+          case Kw::char_: return types.charType(8, b->isUnsigned);
+          case Kw::char8_t_: return types.charType(8, true);
+          case Kw::char16_t_: return types.charType(16, true);
+          case Kw::char32_t_: return types.charType(32, true);
+          case Kw::wchar_t_: return types.charType(16, true);
+          case Kw::float_: return types.floatType(32);
+          case Kw::double_: return types.floatType(64);
+          case Kw::short_: return types.intType(16, b->isUnsigned);
+          default:
+            // int, long, long long, unsigned, signed: Windows LLP64.
+            return types.intType(b->longCount >= 2 ? 64 : 32, b->isUnsigned);
+        }
+      }
+      case NodeKind::NamedType:
+      {
+        auto* n = static_cast<NamedType*>(t);
+        if (n->name.empty())
+          return types.unknown();
+        Lookup l = lookupQualified(n->name, ctx.scope, ctx.locals, depth + 1);
+        if (l.found == Found::No)
+        {
+          if (n->name.parts.size() == 1)
+            if (const Ty* b = builtinByName(n->name.parts[0].symbol))
+              return b;
+          return types.unknown();
+        }
+        if (l.found == Found::Dependent && l.decl && l.decl->kind == NodeKind::TemplateParamDecl)
+        {
+          if (n->name.parts.size() > 1)
+          {
+            // T::type: dependent on T; the substituted T could be looked up, but not yet.
+            if (ctx.subst)
+              if (const Ty* sub = ctx.subst->find(l.decl))
+              {
+                if (sub->kind == TyKind::Class && sub->decl && sub->decl->ownScope)
+                {
+                  // Resolve the rest of the name inside the substituted class.
+                  QualifiedName rest = n->name;
+                  rest.parts.data += 1;
+                  rest.parts.count -= 1;
+                  Lookup inner = lookupQualified(rest, sub->decl->ownScope, nullptr, depth + 1);
+                  if (inner.decl && inner.found != Found::No)
+                  {
+                    Subst s2 = substFor(sub);
+                    TypeContext c2{sub->decl->ownScope, nullptr, &s2};
+                    return typeOfTypeDecl(inner.decl, inner, rest.last(), c2, depth + 1);
+                  }
+                }
+                return types.unknown();
+              }
+            return types.param(l.decl);
+          }
+          if (ctx.subst)
+            if (const Ty* sub = ctx.subst->find(l.decl))
+              return sub;
+          return types.param(l.decl);
+        }
+        if (!l.decl)
+          return types.unknown();
+        return typeOfTypeDecl(l.decl, l, n->name.last(), ctx, depth);
+      }
+      case NodeKind::PointerType: return types.pointer(convertType(static_cast<PointerType*>(t)->pointee, ctx, depth + 1));
+      case NodeKind::LRefType: return types.lref(convertType(static_cast<LRefType*>(t)->referenced, ctx, depth + 1));
+      case NodeKind::RRefType: return types.rref(convertType(static_cast<RRefType*>(t)->referenced, ctx, depth + 1));
+      case NodeKind::ConstType:
+      {
+        auto* c = static_cast<ConstType*>(t);
+        return types.qualified(convertType(c->inner, ctx, depth + 1), true, c->isVolatile);
+      }
+      case NodeKind::ArrayType: return types.array(convertType(static_cast<ArrayType*>(t)->element, ctx, depth + 1), 0);
+      case NodeKind::FunctionType:
+      {
+        auto* f = static_cast<FunctionType*>(t);
+        std::vector<const Ty*> params;
+        for (Decl* p : f->params)
+          params.push_back(convertType(static_cast<ParamDecl*>(p)->type, ctx, depth + 1));
+        return types.function(convertType(f->result, ctx, depth + 1), Span<const Ty*>{params.data(), uint32_t(params.size())}, false);
+      }
+      case NodeKind::AutoType: return types.autoType();
+      case NodeKind::DecltypeType:
+      {
+        auto* d = static_cast<DecltypeType*>(t);
+        return d->expr && d->expr->ty ? d->expr->ty : types.unknown();
+      }
+      case NodeKind::MemberPointerType:
+      {
+        auto* m = static_cast<MemberPointerType*>(t);
+        const Ty* cls = convertType(m->classType, ctx, depth + 1);
+        return types.memberPointer(convertType(m->pointee, ctx, depth + 1), cls->kind == TyKind::Class ? cls->decl : nullptr);
+      }
+      case NodeKind::PackType: return convertType(static_cast<PackType*>(t)->pattern, ctx, depth + 1);
+      default: return types.unknown();
+    }
+  }
+
+  // Context in which a declaration's own type is written: its lexical scope plus the template
+  // parameters of the declaration and of its enclosing templates.
+  struct DeclContext
+  {
+    LocalStack params;
+    Scope* scope;
+  };
+  void declContextFor(Decl* d, DeclContext& out)
+  {
+    out.scope = lexicalScopeOf(d);
+    std::vector<Decl*> chain;
+    for (Decl* p = d; p; p = p->parent)
+      chain.push_back(p);
+    for (size_t i = chain.size(); i-- > 0;)
+      for (Decl* tp : chain[i]->templateParams)
+        out.params.push(static_cast<TemplateParamDecl*>(tp)->name, tp);
+  }
+
+  // Declared type of a declaration, seen through an optional substitution (for members of
+  // template instantiations). Non-dependent results are cached on the declaration.
+  const Ty* declaredTypeOf(Decl* d, const Subst* subst, int depth)
+  {
+    if (!d || depth > 40)
+      return types.unknown();
+    bool useCache = !subst || subst->empty();
+    if (useCache)
+      if (const Ty* cached = d->cachedType.load(std::memory_order_acquire))
+        return cached;
+    const Ty* result = computeDeclaredType(d, subst, depth);
+    if (useCache && result->kind != TyKind::Auto)
+      d->cachedType.store(result, std::memory_order_release);
+    return result;
+  }
+
+  const Ty* computeDeclaredType(Decl* d, const Subst* subst, int depth)
+  {
+    DeclContext dc;
+    declContextFor(d, dc);
+    TypeContext ctx{dc.scope, &dc.params, subst};
+    switch (d->kind)
+    {
+      case NodeKind::VariableDecl:
+      {
+        auto* v = static_cast<VariableDecl*>(d);
+        const Ty* t = convertType(v->type, ctx, depth + 1);
+        if (types.isDependent(t) && containsAuto(t))
+          return t; // Deduced from the initializer by the walker when it reaches the declaration.
+        return t;
+      }
+      case NodeKind::ParamDecl:
+        return convertType(static_cast<ParamDecl*>(d)->type, ctx, depth + 1);
+      case NodeKind::EnumeratorDecl:
+        return d->parent && d->parent->kind == NodeKind::EnumDecl ? types.enumType(d->parent) : types.intType();
+      case NodeKind::FunctionDecl:
+      {
+        auto* f = static_cast<FunctionDecl*>(d);
+        const Ty* result;
+        if (f->flags & (DF_Constructor | DF_Destructor))
+          result = types.voidType();
+        else if (f->flags & DF_Conversion)
+          result = convertType(f->name.last().convType, ctx, depth + 1);
+        else if (f->trailingReturn)
+          result = convertType(f->trailingReturn, ctx, depth + 1);
+        else
+          result = convertType(f->returnType, ctx, depth + 1);
+        std::vector<const Ty*> params;
+        for (Decl* p : f->params)
+          params.push_back(convertType(static_cast<ParamDecl*>(p)->type, ctx, depth + 1));
+        bool variadic = (f->flags & DF_Variadic) != 0;
+        for (Decl* p : f->params)
+          if (static_cast<ParamDecl*>(p)->isPack)
+            variadic = true;
+        return types.function(result, Span<const Ty*>{params.data(), uint32_t(params.size())}, variadic);
+      }
+      case NodeKind::ClassDecl:
+      case NodeKind::EnumDecl:
+        return selfType(d);
+      case NodeKind::TemplateParamDecl:
+      {
+        auto* p = static_cast<TemplateParamDecl*>(d);
+        if (subst)
+          if (const Ty* t = subst->find(d))
+            return p->isType ? t : t;
+        if (p->isType)
+          return types.param(d);
+        return p->valueType ? convertType(p->valueType, ctx, depth + 1) : types.intType();
+      }
+      case NodeKind::UsingAliasDecl:
+        return convertType(static_cast<UsingAliasDecl*>(d)->type, ctx, depth + 1);
+      default:
+        return types.unknown();
+    }
+  }
+
+  bool containsAuto(const Ty* t) const
+  {
+    for (; t; t = t->inner)
+      if (t->kind == TyKind::Auto)
+        return true;
+    return false;
+  }
+
+  // Replaces the Auto placeholder in `pattern` with the type deduced from an initializer.
+  const Ty* deduceAuto(const Ty* pattern, const Ty* init)
+  {
+    if (!pattern || !init || !init->isKnown())
+      return types.unknown();
+    if (pattern->kind == TyKind::Auto)
+      return pattern->isConst ? types.qualified(types.decay(init), true, false) : types.decay(init);
+    auto leaf = [&](const Ty* p) -> const Ty*
+    {
+      const Ty* base = types.stripRef(init);
+      return types.qualified(base, p->isConst, p->isVolatile);
+    };
+    switch (pattern->kind)
+    {
+      case TyKind::LRef:
+        return pattern->inner->kind == TyKind::Auto ? types.lref(leaf(pattern->inner)) : types.lref(deduceAuto(pattern->inner, init));
+      case TyKind::RRef:
+        return pattern->inner->kind == TyKind::Auto ? (init->isReference() ? init : types.rref(leaf(pattern->inner)))
+                                                    : types.rref(deduceAuto(pattern->inner, init));
+      case TyKind::Pointer:
+      {
+        const Ty* base = types.stripRef(init);
+        if (pattern->inner->kind == TyKind::Auto && base->kind == TyKind::Pointer)
+          return types.qualified(types.pointer(types.qualified(base->inner, pattern->inner->isConst, false)), pattern->isConst, false);
+        if (base->kind == TyKind::Pointer)
+          return types.pointer(deduceAuto(pattern->inner, base->inner));
+        return types.unknown();
+      }
+      default:
+        return types.unknown();
+    }
+  }
+
+  // Does `t` mention one of the given template parameters?
+  static bool dependsOn(const Ty* t, Span<Decl*> params)
+  {
+    if (!t)
+      return false;
+    switch (t->kind)
+    {
+      case TyKind::Param:
+        for (Decl* p : params)
+          if (p == t->decl)
+            return true;
+        return false;
+      case TyKind::Pointer: case TyKind::LRef: case TyKind::RRef: case TyKind::Array: case TyKind::MemberPointer:
+        return dependsOn(t->inner, params);
+      case TyKind::Function: case TyKind::Class: case TyKind::Lambda:
+        if (dependsOn(t->inner, params))
+          return true;
+        for (const Ty* a : t->args)
+          if (dependsOn(a, params))
+            return true;
+        return false;
+      default:
+        return false;
+    }
+  }
+
+  // Structural template argument deduction: binds parameters of `pattern` from `arg`.
+  void deduce(const Ty* pattern, const Ty* arg, Subst& out, int depth = 0)
+  {
+    if (!pattern || !arg || depth > 16 || !arg->isKnown())
+      return;
+    if (pattern->kind == TyKind::Param)
+    {
+      if (!out.find(pattern->decl))
+        out.pairs.push_back({pattern->decl, types.decay(arg)});
+      return;
+    }
+    if (pattern->isReference())
+    {
+      // `const T&` binds T to the argument without its reference and top-level const.
+      const Ty* a = types.stripRef(arg);
+      if (pattern->inner->kind == TyKind::Param)
+      {
+        if (!out.find(pattern->inner->decl))
+          out.pairs.push_back({pattern->inner->decl, pattern->inner->isConst ? types.unqualified(a) : types.unqualified(a)});
+        return;
+      }
+      deduce(pattern->inner, a, out, depth + 1);
+      return;
+    }
+    const Ty* a = types.stripRef(arg);
+    switch (pattern->kind)
+    {
+      case TyKind::Pointer:
+        if (a->kind == TyKind::Pointer)
+          deduce(pattern->inner, a->inner, out, depth + 1);
+        else if (a->kind == TyKind::Array)
+          deduce(pattern->inner, a->inner, out, depth + 1);
+        break;
+      case TyKind::Array:
+        if (a->kind == TyKind::Array || a->kind == TyKind::Pointer)
+          deduce(pattern->inner, a->inner, out, depth + 1);
+        break;
+      case TyKind::Class:
+        if (a->kind == TyKind::Class && a->decl == pattern->decl)
+          for (size_t i = 0; i < pattern->args.size() && i < a->args.size(); ++i)
+            deduce(pattern->args[i], a->args[i], out, depth + 1);
+        break;
+      case TyKind::Function:
+        if (a->kind == TyKind::Function || a->kind == TyKind::Lambda)
+        {
+          deduce(pattern->inner, a->inner, out, depth + 1);
+          for (size_t i = 0; i < pattern->args.size() && i < a->args.size(); ++i)
+            deduce(pattern->args[i], a->args[i], out, depth + 1);
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  // Applies a substitution to a canonical type.
+  const Ty* substitute(const Ty* t, const Subst& s, int depth = 0)
+  {
+    if (!t || s.empty() || depth > 16)
+      return t;
+    switch (t->kind)
+    {
+      case TyKind::Param:
+        if (const Ty* r = s.find(t->decl))
+          return types.qualified(r, t->isConst, t->isVolatile);
+        return t;
+      case TyKind::Pointer: return types.qualified(types.pointer(substitute(t->inner, s, depth + 1)), t->isConst, t->isVolatile);
+      case TyKind::LRef: return types.lref(substitute(t->inner, s, depth + 1));
+      case TyKind::RRef: return types.rref(substitute(t->inner, s, depth + 1));
+      case TyKind::Array: return types.array(substitute(t->inner, s, depth + 1), t->count);
+      case TyKind::Function:
+      case TyKind::Class:
+      case TyKind::Lambda:
+      {
+        std::vector<const Ty*> args;
+        for (const Ty* a : t->args)
+          args.push_back(substitute(a, s, depth + 1));
+        Span<const Ty*> span{args.data(), uint32_t(args.size())};
+        if (t->kind == TyKind::Function)
+          return types.function(substitute(t->inner, s, depth + 1), span, t->variadic);
+        if (t->kind == TyKind::Lambda)
+          return types.lambda(substitute(t->inner, s, depth + 1), span);
+        return types.qualified(types.classType(t->decl, span), t->isConst, t->isVolatile);
+      }
+      default:
+        return t;
+    }
+  }
+
   // ---------------- phase 2: walking ----------------
 
   struct Walker
   {
     Impl& impl;
+    TypeTable& types;
     ResolveStats& stats;
     const SymbolTable& symbols;
+    const std::vector<Token>& tokens;
+    std::string_view text;
     LocalStack locals;
-    Scope* scope; // Current lexical/semantic scope.
+    Scope* scope;            // Current lexical/semantic scope.
+    const Ty* thisType = nullptr;
+    // Return statements inside lambdas / auto functions record their type here.
+    std::vector<const Ty*> returnFrames;
 
-    Walker(Impl& impl, ResolveStats& stats, const SymbolTable& symbols) : impl(impl), stats(stats), symbols(symbols), scope(&impl.root) {}
+    Walker(Impl& impl, ResolveStats& stats, const std::vector<Token>& tokens, std::string_view text)
+      : impl(impl), types(impl.types), stats(stats), symbols(impl.symbols), tokens(tokens), text(text), scope(&impl.root)
+    {
+    }
+
+    std::string_view spelling(uint32_t token) const
+    {
+      const Token& t = tokens[std::min<size_t>(token, tokens.size() - 1)];
+      return text.substr(t.offset, t.length);
+    }
+
+    // --- statistics helpers ---
 
     void countUnresolved(const QualifiedName& name, uint32_t token)
     {
@@ -643,6 +1241,45 @@ struct GlobalScope::Impl
       stats.unresolvedFirst.emplace(key, ResolveStats::Where{stats.fileIndex, token});
     }
 
+    enum class Why : uint8_t { None, Name, Base, Member, Overload, Deduction, AutoReturn, Unsupported, Operator, Auto };
+
+    const Ty* unknown(Why why)
+    {
+      switch (why)
+      {
+        case Why::Name: ++stats.unknownName; break;
+        case Why::Base: ++stats.unknownBase; break;
+        case Why::Member: ++stats.unknownMember; break;
+        case Why::Overload: ++stats.unknownOverload; break;
+        case Why::Deduction: ++stats.unknownDeduction; break;
+        case Why::AutoReturn: ++stats.unknownAutoReturn; break;
+        case Why::Unsupported: ++stats.unknownUnsupported; break;
+        case Why::Operator: ++stats.unknownOperator; break;
+        case Why::Auto: ++stats.unknownAuto; break;
+        default: break;
+      }
+      return types.unknown();
+    }
+
+    // Records the type of an expression node and counts it.
+    const Ty* record(Expr* e, const Ty* t)
+    {
+      if (!t)
+        t = types.unknown();
+      e->ty = t;
+      if (!t->isKnown())
+        ++stats.exprsUnknown;
+      else if (types.isDependent(t))
+        ++stats.exprsDependent;
+      else
+        ++stats.exprsTyped;
+      return t;
+    }
+
+    TypeContext ctx() const { return TypeContext{scope, &locals, nullptr}; }
+
+    // --- names ---
+
     void resolveTypeName(NamedType* t)
     {
       if (t->name.empty())
@@ -651,8 +1288,13 @@ struct GlobalScope::Impl
       t->resolved = l.decl;
       if (l.found == Found::No)
       {
-        ++stats.typesUnresolved;
-        countUnresolved(t->name, t->token);
+        if (t->name.parts.size() == 1 && impl.builtinByName(t->name.parts[0].symbol))
+          ++stats.typesBuiltinByName;
+        else
+        {
+          ++stats.typesUnresolved;
+          countUnresolved(t->name, t->token);
+        }
       }
       else if (l.found == Found::Dependent)
         ++stats.typesDependent;
@@ -663,47 +1305,855 @@ struct GlobalScope::Impl
           walkNode(arg);
     }
 
-    void resolveName(NameExpr* e)
+    // Converts a type written in the current context.
+    const Ty* typeOf(Type* t) { return impl.convertType(t, ctx(), 0); }
+
+    // Type of a name expression from the declaration it resolved to.
+    const Ty* typeOfResolvedName(const Lookup& l, const NamePart& lastPart, Expr* e)
+    {
+      Decl* d = l.decl;
+      if (!d)
+        return unknown(Why::Name);
+      switch (d->kind)
+      {
+        case NodeKind::VariableDecl:
+        {
+          const Ty* t = impl.declaredTypeOf(d, nullptr, 0);
+          if (impl.containsAuto(t))
+          {
+            // A local whose initializer was typed already has its deduced type cached by the
+            // walker; otherwise (members/globals in other files) deduce from the initializer now.
+            auto* v = static_cast<VariableDecl*>(d);
+            if (v->init && v->init->ty)
+              return impl.deduceAuto(t, v->init->ty);
+            return unknown(Why::Auto);
+          }
+          return t;
+        }
+        case NodeKind::ParamDecl:
+        {
+          const Ty* t = impl.declaredTypeOf(d, nullptr, 0);
+          return impl.containsAuto(t) ? unknown(Why::Auto) : t;
+        }
+        case NodeKind::EnumeratorDecl:
+          return impl.declaredTypeOf(d, nullptr, 0);
+        case NodeKind::FunctionDecl:
+          return impl.declaredTypeOf(d, nullptr, 0);
+        case NodeKind::ClassDecl:
+        case NodeKind::EnumDecl:
+        case NodeKind::UsingAliasDecl:
+        {
+          // A type used as an expression: constructor call `Foo(x)`, `Foo{}` or `Enum(x)`.
+          TypeContext c = ctx();
+          return impl.typeOfTypeDecl(d, l, lastPart, c, 0);
+        }
+        case NodeKind::TemplateParamDecl:
+          return impl.declaredTypeOf(d, nullptr, 0);
+        case NodeKind::NamespaceDecl:
+          return unknown(Why::Unsupported);
+        default:
+          (void)e;
+          return unknown(Why::Unsupported);
+      }
+    }
+
+    const Ty* resolveName(NameExpr* e)
     {
       if (e->name.empty())
-        return;
+        return unknown(Why::Unsupported);
       Lookup l = impl.lookupQualified(e->name, scope, &locals, 0);
       e->resolved = l.decl;
+      for (const NamePart& part : e->name.parts)
+        for (Node* arg : part.templateArgs)
+          walkNode(arg);
       switch (l.found)
       {
         case Found::No:
           ++stats.namesUnresolved;
           countUnresolved(e->name, e->token);
-          break;
+          if (e->name.parts.size() == 1)
+            if (const Ty* b = impl.builtinByName(e->name.parts[0].symbol))
+              return b; // `uint32_t(x)`
+          return unknown(Why::Name);
         case Found::Local: ++stats.namesLocal; break;
         case Found::Member: ++stats.namesMember; break;
         case Found::Global: ++stats.namesGlobal; break;
         case Found::Dependent: ++stats.namesDependent; break;
       }
-      for (const NamePart& part : e->name.parts)
+      if (l.found == Found::Dependent)
+        return l.decl ? impl.declaredTypeOf(l.decl, nullptr, 0) : types.unknown();
+      // Members of the current class template keep their dependent types; members reached
+      // through a qualified name on an instantiation get substituted.
+      if (e->name.parts.size() > 1 && l.found == Found::Member && l.foundIn && l.foundIn->owner &&
+          !l.foundIn->owner->templateParams.empty())
+      {
+        // Qualifier like `Vector<int>::npos`: substitute from the qualifier type when it is an instantiation.
+        QualifiedName qualifier = e->name;
+        qualifier.parts.count -= 1;
+        NamedType tmp{};
+        tmp.kind = NodeKind::NamedType;
+        tmp.name = qualifier;
+        const Ty* q = typeOf(&tmp);
+        if (q->kind == TyKind::Class && !q->args.empty())
+        {
+          Subst s = impl.substFor(q);
+          return impl.declaredTypeOf(l.decl, &s, 0);
+        }
+      }
+      return typeOfResolvedName(l, e->name.last(), e);
+    }
+
+    // --- member access through the object's type ---
+
+    struct MemberResult
+    {
+      const Ty* type = nullptr;
+      Decl* decl = nullptr;
+      const std::vector<Entry>* overloads = nullptr;
+      Subst subst;
+      Why why = Why::None;
+    };
+
+    // Follows operator-> on class types for `a->b`.
+    const Ty* objectForArrow(const Ty* t, int depth = 0)
+    {
+      t = types.stripRef(t);
+      if (!t || depth > 4)
+        return t;
+      if (t->kind == TyKind::Pointer)
+        return t->inner;
+      if (t->kind == TyKind::Class)
+      {
+        MemberResult arrow = memberOf(t, impl.opSymbols[uint32_t(P::Arrow)], nullptr, 0, false);
+        if (arrow.type && arrow.type->kind == TyKind::Function)
+          return objectForArrow(arrow.type->inner, depth + 1);
+        return types.unknown();
+      }
+      return t;
+    }
+
+    // Looks a member up in the class of `objectTy` (after stripping references and const).
+    MemberResult memberOf(const Ty* objectTy, uint32_t symbol, const QualifiedName* name, uint32_t token, bool countMissing = true)
+    {
+      MemberResult r;
+      const Ty* t = types.stripRef(objectTy);
+      if (!t || !t->isKnown())
+      {
+        r.why = Why::Base;
+        return r;
+      }
+      if (t->kind == TyKind::Param || (t->kind == TyKind::Class && types.isDependent(t) && !t->decl))
+      {
+        r.type = types.param(t->decl);
+        return r;
+      }
+      if (t->kind != TyKind::Class && t->kind != TyKind::Enum)
+      {
+        r.why = Why::Base;
+        return r;
+      }
+      Scope* cls = t->decl ? t->decl->ownScope : nullptr;
+      if (!cls)
+      {
+        // Only a forward declaration was seen.
+        Entry e{t->decl, nullptr};
+        cls = impl.scopeOfEntry(e, 0);
+        if (!cls)
+        {
+          r.why = Why::Base;
+          return r;
+        }
+      }
+      Lookup l;
+      if (name && name->parts.size() > 1)
+      {
+        // `obj.Base::member`
+        l = impl.lookupQualified(*name, cls, nullptr, 0);
+      }
+      else if (!impl.lookupInScope(cls, symbol, l, 0))
+      {
+        if (types.isDependent(t))
+        {
+          r.type = types.unknown();
+          r.why = Why::None; // Member of a dependent base: cannot know yet.
+          if (countMissing)
+            ++stats.membersDependent;
+          return r;
+        }
+        if (hasUnknownBase(cls, 0))
+        {
+          // A base class outside the corpus (std::vector...) may declare it.
+          r.why = Why::Base;
+          if (countMissing)
+          {
+            ++stats.membersUnknownBase;
+            ++stats.unknownBaseMembers[symbol];
+          }
+          return r;
+        }
+        r.why = Why::Member;
+        if (countMissing)
+        {
+          ++stats.membersNotFound;
+          ++stats.missingMembers[symbol];
+          stats.missingMembersFirst.emplace(symbol, ResolveStats::Where{stats.fileIndex, token});
+        }
+        return r;
+      }
+      if (l.found == Found::No || !l.decl)
+      {
+        r.why = Why::Member;
+        return r;
+      }
+      r.decl = l.decl;
+      r.overloads = l.overloads;
+      r.subst = impl.substFor(t);
+      if (l.found == Found::Dependent)
+      {
+        r.type = types.param(l.decl);
+        return r;
+      }
+      const Ty* declared = impl.declaredTypeOf(l.decl, &r.subst, 0);
+      if (impl.containsAuto(declared))
+      {
+        auto* v = l.decl->kind == NodeKind::VariableDecl ? static_cast<VariableDecl*>(l.decl) : nullptr;
+        declared = v && v->init && v->init->ty ? impl.deduceAuto(declared, v->init->ty) : types.unknown();
+        if (!declared->isKnown())
+          r.why = Why::Auto;
+      }
+      r.type = declared;
+      return r;
+    }
+
+    // True if the class or one of its bases has a base type that could not be resolved.
+    bool hasUnknownBase(Scope* cls, int depth)
+    {
+      if (!cls || depth > 16 || cls->baseTypes.empty())
+        return false;
+      impl.ensureBases(cls, 0);
+      if (cls->baseScopes.size() < cls->baseTypes.size())
+        return true;
+      for (Scope* b : cls->baseScopes)
+        if (hasUnknownBase(b, depth + 1))
+          return true;
+      return false;
+    }
+
+    const Ty* typeOfMember(MemberExpr* m)
+    {
+      const Ty* base = walkExpr(m->base);
+      for (const NamePart& part : m->member.parts)
         for (Node* arg : part.templateArgs)
           walkNode(arg);
+      if (m->member.empty())
+        return unknown(Why::Unsupported);
+      const NamePart& last = m->member.last();
+      uint32_t symbol = last.special == 2 && last.opToken < uint32_t(P::Count) ? impl.opSymbols[last.opToken] : last.symbol;
+      if (symbol == UINT32_MAX)
+      {
+        if (last.special == 1)
+        {
+          // obj.~Foo()
+          ++stats.membersBound;
+          return types.function(types.voidType(), {}, false);
+        }
+        return unknown(Why::Unsupported);
+      }
+      const Ty* object = base;
+      if (m->op == P::Arrow || m->op == P::SafeArrow)
+        object = objectForArrow(base);
+      if (!object || !object->isKnown())
+      {
+        ++stats.membersUnknownBase;
+        ++stats.unknownBaseMembers[symbol];
+        return unknown(Why::Base);
+      }
+      MemberResult r = memberOf(object, symbol, &m->member, m->token);
+      m->resolved = r.decl;
+      if (r.decl)
+      {
+        if (r.type && types.isDependent(r.type))
+          ++stats.membersDependent;
+        else
+          ++stats.membersBound;
+      }
+      else if (r.why == Why::Base)
+        ++stats.membersUnknownBase;
+      if (r.why != Why::None)
+        return unknown(r.why);
+      if (r.type && r.type->kind == TyKind::Function && last.special == 0)
+      {
+        // `obj.method` used as a value is only meaningful in a call, which handles overloads.
+      }
+      return r.type ? r.type : types.unknown();
     }
+
+    // --- calls ---
+
+    // Picks a function among overloads by argument count. Returns null if none is viable.
+    FunctionDecl* pickOverload(Decl* primary, const std::vector<Entry>* overloads, size_t argCount, bool& ambiguous)
+    {
+      auto viable = [&](Decl* d) -> bool
+      {
+        if (!d || d->kind != NodeKind::FunctionDecl)
+          return false;
+        auto* f = static_cast<FunctionDecl*>(d);
+        size_t required = 0, total = f->params.size();
+        bool variadic = (f->flags & DF_Variadic) != 0;
+        for (Decl* p : f->params)
+        {
+          auto* param = static_cast<ParamDecl*>(p);
+          if (param->isPack)
+            variadic = true;
+          else if (!param->defaultValue)
+            ++required;
+        }
+        if (variadic)
+          return argCount + 1 >= required; // A pack may be empty.
+        return argCount >= required && argCount <= total;
+      };
+      std::vector<FunctionDecl*> hits;
+      if (overloads)
+      {
+        for (const Entry& e : *overloads)
+          if (viable(e.decl))
+            hits.push_back(static_cast<FunctionDecl*>(e.decl));
+      }
+      else if (viable(primary))
+        hits.push_back(static_cast<FunctionDecl*>(primary));
+      ambiguous = hits.size() > 1;
+      if (hits.empty())
+        return nullptr;
+      // Prefer a non-template exact arity match.
+      for (FunctionDecl* f : hits)
+        if (f->templateParams.empty() && f->params.size() == argCount)
+          return f;
+      for (FunctionDecl* f : hits)
+        if (f->templateParams.empty())
+          return f;
+      return hits[0];
+    }
+
+    // Return type of calling `f` with the given arguments, deducing its template parameters.
+    const Ty* returnTypeOfCall(FunctionDecl* f, const Subst* classSubst, const Span<Expr*>& args, const NamePart* namePart)
+    {
+      if (f->body == nullptr && f->returnType == nullptr && !(f->flags & (DF_Constructor | DF_Destructor | DF_Conversion)))
+        return unknown(Why::Unsupported);
+      bool autoReturn = false;
+      if (f->returnType && f->returnType->kind == NodeKind::AutoType && !f->trailingReturn)
+        autoReturn = true;
+      if (autoReturn)
+      {
+        if (const Ty* cached = f->cachedType.load(std::memory_order_acquire))
+          if (cached->kind == TyKind::Function && cached->inner->kind != TyKind::Auto)
+            return classSubst ? impl.substitute(cached->inner, *classSubst) : cached->inner;
+        return unknown(Why::AutoReturn);
+      }
+      Subst subst = classSubst ? *classSubst : Subst{};
+      const Ty* fnTy = impl.declaredTypeOf(f, classSubst, 0);
+      if (!f->templateParams.empty())
+      {
+        // Explicit template arguments first, then deduction from the arguments.
+        if (namePart)
+          for (size_t i = 0; i < namePart->templateArgs.size() && i < f->templateParams.size(); ++i)
+          {
+            Node* arg = namePart->templateArgs[i];
+            if (uint8_t(arg->kind) <= uint8_t(NodeKind::PackType))
+              subst.pairs.push_back({f->templateParams[i], typeOf(static_cast<Type*>(arg))});
+          }
+        for (size_t i = 0; i < fnTy->args.size() && i < args.size(); ++i)
+          if (args[i]->ty)
+            impl.deduce(fnTy->args[i], args[i]->ty, subst);
+        const Ty* result = impl.substitute(fnTy->inner, subst);
+        if (impl.dependsOn(result, f->templateParams))
+          return unknown(Why::Deduction);
+        return result;
+      }
+      return fnTy->inner;
+    }
+
+    const Ty* typeOfCall(CallExpr* c)
+    {
+      for (Expr* a : c->args)
+        walkExpr(a);
+      Expr* callee = c->callee;
+      bool ambiguous = false;
+      if (callee->kind == NodeKind::NameExpr)
+      {
+        auto* n = static_cast<NameExpr*>(callee);
+        Lookup l = impl.lookupQualified(n->name, scope, &locals, 0);
+        n->resolved = l.decl;
+        for (const NamePart& part : n->name.parts)
+          for (Node* arg : part.templateArgs)
+            walkNode(arg);
+        switch (l.found)
+        {
+          case Found::No:
+            ++stats.namesUnresolved;
+            countUnresolved(n->name, n->token);
+            if (n->name.parts.size() == 1)
+              if (const Ty* b = impl.builtinByName(n->name.parts[0].symbol))
+              {
+                record(n, b);
+                return b;
+              }
+            record(n, unknown(Why::Name));
+            return types.unknown();
+          case Found::Local: ++stats.namesLocal; break;
+          case Found::Member: ++stats.namesMember; break;
+          case Found::Global: ++stats.namesGlobal; break;
+          case Found::Dependent: ++stats.namesDependent; break;
+        }
+        if (l.found == Found::Dependent)
+        {
+          record(n, types.param(l.decl));
+          return types.param(l.decl);
+        }
+        Decl* d = l.decl;
+        if (d && d->kind == NodeKind::FunctionDecl)
+        {
+          FunctionDecl* f = pickOverload(d, l.overloads, c->args.size(), ambiguous);
+          if (!f)
+          {
+            record(n, types.unknown());
+            return unknown(Why::Overload);
+          }
+          if (ambiguous)
+            ++stats.callsAmbiguousArity;
+          ++stats.callsResolved;
+          n->resolved = f;
+          const Ty* fnTy = impl.declaredTypeOf(f, nullptr, 0);
+          record(n, fnTy);
+          return returnTypeOfCall(f, nullptr, c->args, &n->name.last());
+        }
+        // Constructor call, functional cast, callable variable...
+        const Ty* t = typeOfResolvedName(l, n->name.last(), n);
+        record(n, t);
+        if (d && (d->kind == NodeKind::ClassDecl || d->kind == NodeKind::EnumDecl || d->kind == NodeKind::UsingAliasDecl))
+        {
+          ++stats.callsResolved;
+          return t;
+        }
+        return callResultOfValue(t, c);
+      }
+      if (callee->kind == NodeKind::MemberExpr)
+      {
+        auto* m = static_cast<MemberExpr*>(callee);
+        const Ty* base = walkExpr(m->base);
+        for (const NamePart& part : m->member.parts)
+          for (Node* arg : part.templateArgs)
+            walkNode(arg);
+        const Ty* object = (m->op == P::Arrow || m->op == P::SafeArrow) ? objectForArrow(base) : base;
+        if (m->member.empty())
+        {
+          record(m, types.unknown());
+          return unknown(Why::Unsupported);
+        }
+        const NamePart& last = m->member.last();
+        if (!object || !object->isKnown())
+        {
+          ++stats.membersUnknownBase;
+          if (last.symbol != UINT32_MAX)
+            ++stats.unknownBaseMembers[last.symbol];
+          record(m, types.unknown());
+          return unknown(Why::Base);
+        }
+        if (last.special == 1)
+        {
+          ++stats.membersBound;
+          record(m, types.function(types.voidType(), {}, false));
+          return types.voidType();
+        }
+        uint32_t symbol = last.special == 2 && last.opToken < uint32_t(P::Count) ? impl.opSymbols[last.opToken] : last.symbol;
+        if (symbol == UINT32_MAX)
+        {
+          record(m, types.unknown());
+          return unknown(Why::Unsupported);
+        }
+        MemberResult r = memberOf(object, symbol, &m->member, m->token);
+        m->resolved = r.decl;
+        if (!r.decl)
+        {
+          if (r.why == Why::Base)
+            ++stats.membersUnknownBase;
+          record(m, types.unknown());
+          return r.why == Why::None ? types.unknown() : unknown(r.why);
+        }
+        if (r.decl->kind == NodeKind::FunctionDecl)
+        {
+          FunctionDecl* f = pickOverload(r.decl, r.overloads, c->args.size(), ambiguous);
+          if (!f)
+          {
+            ++stats.membersBound;
+            record(m, types.unknown());
+            return unknown(Why::Overload);
+          }
+          if (ambiguous)
+            ++stats.callsAmbiguousArity;
+          ++stats.callsResolved;
+          m->resolved = f;
+          const Ty* fnTy = impl.declaredTypeOf(f, &r.subst, 0);
+          record(m, fnTy);
+          if (types.isDependent(fnTy))
+            ++stats.membersDependent;
+          else
+            ++stats.membersBound;
+          return returnTypeOfCall(f, &r.subst, c->args, &last);
+        }
+        if (r.type && types.isDependent(r.type))
+          ++stats.membersDependent;
+        else
+          ++stats.membersBound;
+        record(m, r.type ? r.type : types.unknown());
+        if (r.why != Why::None)
+          return unknown(r.why);
+        return callResultOfValue(r.type, c);
+      }
+      const Ty* t = walkExpr(callee);
+      return callResultOfValue(t, c);
+    }
+
+    // Result of calling a value of type t: function pointers, lambdas, functors.
+    const Ty* callResultOfValue(const Ty* t, CallExpr* c)
+    {
+      t = types.stripRef(t);
+      if (!t || !t->isKnown())
+        return types.unknown();
+      if (t->kind == TyKind::Function)
+        return t->inner;
+      if (t->kind == TyKind::Pointer && t->inner->kind == TyKind::Function)
+        return t->inner->inner;
+      if (t->kind == TyKind::Lambda)
+        return t->inner ? t->inner : unknown(Why::AutoReturn);
+      if (t->kind == TyKind::Class)
+      {
+        MemberResult r = memberOf(t, impl.opSymbols[uint32_t(P::LParen)], nullptr, c->token, false);
+        if (r.decl && r.decl->kind == NodeKind::FunctionDecl)
+        {
+          bool ambiguous;
+          if (FunctionDecl* f = pickOverload(r.decl, r.overloads, c->args.size(), ambiguous))
+            return returnTypeOfCall(f, &r.subst, c->args, nullptr);
+          return unknown(Why::Overload);
+        }
+        return r.why == Why::Member ? unknown(Why::Member) : types.unknown();
+      }
+      if (t->kind == TyKind::Param)
+        return t;
+      return unknown(Why::Unsupported);
+    }
+
+    // --- operators ---
+
+    const Ty* promote(const Ty* t)
+    {
+      t = types.unqualified(types.stripRef(t));
+      switch (t->kind)
+      {
+        case TyKind::Bool: case TyKind::Char: return types.intType(32);
+        case TyKind::Int: return t->bits < 32 ? types.intType(32) : t;
+        case TyKind::Enum: return types.intType(32);
+        default: return t;
+      }
+    }
+
+    const Ty* arithmetic(const Ty* a, const Ty* b)
+    {
+      a = promote(a);
+      b = promote(b);
+      if (a->kind == TyKind::Float || b->kind == TyKind::Float)
+      {
+        uint8_t bits = std::max<uint8_t>(a->kind == TyKind::Float ? a->bits : 0, b->kind == TyKind::Float ? b->bits : 0);
+        return types.floatType(bits);
+      }
+      if (a->kind != TyKind::Int || b->kind != TyKind::Int)
+        return a->kind == TyKind::Int ? a : b;
+      if (a->bits != b->bits)
+        return a->bits > b->bits ? a : b;
+      return types.intType(a->bits, a->isUnsigned || b->isUnsigned);
+    }
+
+    // Overloaded operator lookup: member of the left operand's class, then free functions in
+    // the class's namespace and the current scope chain.
+    const Ty* overloadedOperator(P op, const Ty* lhs, const Ty* rhs, uint32_t token, size_t arity)
+    {
+      uint32_t symbol = impl.opSymbols[uint32_t(op)];
+      const Ty* l = types.stripRef(lhs);
+      if (l && l->kind == TyKind::Class)
+      {
+        MemberResult r = memberOf(l, symbol, nullptr, token, false);
+        if (r.decl && r.decl->kind == NodeKind::FunctionDecl)
+        {
+          bool ambiguous;
+          Span<Expr*> none;
+          if (FunctionDecl* f = pickOverload(r.decl, r.overloads, arity - 1, ambiguous))
+            return returnTypeOfCall(f, &r.subst, none, nullptr);
+        }
+      }
+      // Free function: look in the namespaces of both operand classes and the current scope.
+      std::vector<Scope*> places;
+      for (const Ty* t : {l, types.stripRef(rhs)})
+        if (t && t->kind == TyKind::Class && t->decl)
+          places.push_back(impl.lexicalScopeOf(t->decl));
+      places.push_back(scope);
+      for (Scope* place : places)
+      {
+        for (Scope* s = place; s; s = s->parent)
+        {
+          Lookup look;
+          if (!impl.lookupInScope(s, symbol, look, 0))
+            continue;
+          if (look.decl && look.decl->kind == NodeKind::FunctionDecl)
+          {
+            bool ambiguous;
+            Span<Expr*> none;
+            if (FunctionDecl* f = pickOverload(look.decl, look.overloads, arity, ambiguous))
+              return returnTypeOfCall(f, nullptr, none, nullptr);
+          }
+          break;
+        }
+      }
+      // Operators every class has or that always yield bool.
+      switch (op)
+      {
+        case P::Assign: return lhs;                       // implicit copy/move assignment
+        case P::AndAnd: case P::OrOr: case P::Bang: return types.boolType();
+        case P::EqEq: case P::NotEq: case P::Less: case P::Greater: case P::LessEq: case P::GreaterEq:
+          return l && l->kind == TyKind::Enum ? types.boolType() : unknown(Why::Operator);
+        default: return unknown(Why::Operator);
+      }
+    }
+
+    const Ty* typeOfBinary(BinaryExpr* b)
+    {
+      const Ty* l = walkExpr(b->lhs);
+      const Ty* r = walkExpr(b->rhs);
+      if (b->isKeyword)
+      {
+        switch (Kw(b->op))
+        {
+          case Kw::and_: case Kw::or_: case Kw::not_eq_: return types.boolType();
+          default: return arithmetic(l, r);
+        }
+      }
+      P op = P(b->op);
+      if (op == P::Comma)
+        return r;
+      const Ty* ls = types.stripRef(l);
+      const Ty* rs = types.stripRef(r);
+      if (!ls || !rs)
+        return types.unknown();
+      if (ls->kind == TyKind::Class || rs->kind == TyKind::Class)
+      {
+        if (!ls->isKnown() || !rs->isKnown())
+          return types.unknown();
+        if (types.isDependent(ls) || types.isDependent(rs))
+          return types.param(ls->kind == TyKind::Param ? ls->decl : rs->decl);
+        return overloadedOperator(op, l, r, b->token, 2);
+      }
+      if (!ls->isKnown() || !rs->isKnown())
+      {
+        // Comparisons and logic have a known result regardless of the operands.
+        switch (op)
+        {
+          case P::EqEq: case P::NotEq: case P::Less: case P::Greater: case P::LessEq: case P::GreaterEq:
+          case P::AndAnd: case P::OrOr:
+            return types.boolType();
+          default:
+            if (op == P::Assign || op == P::PlusAssign || op == P::MinusAssign || op == P::StarAssign ||
+                op == P::SlashAssign || op == P::PercentAssign || op == P::AmpAssign || op == P::PipeAssign ||
+                op == P::CaretAssign || op == P::ShlAssign || op == P::ShrAssign)
+              return ls->isKnown() ? l : types.unknown();
+            return types.unknown();
+        }
+      }
+      if (ls->kind == TyKind::Param || rs->kind == TyKind::Param)
+        return ls->kind == TyKind::Param ? ls : rs;
+      switch (op)
+      {
+        case P::Assign: case P::PlusAssign: case P::MinusAssign: case P::StarAssign: case P::SlashAssign:
+        case P::PercentAssign: case P::AmpAssign: case P::PipeAssign: case P::CaretAssign: case P::ShlAssign:
+        case P::ShrAssign:
+          return l;
+        case P::EqEq: case P::NotEq: case P::Less: case P::Greater: case P::LessEq: case P::GreaterEq:
+        case P::AndAnd: case P::OrOr:
+          return types.boolType();
+        case P::Spaceship:
+          return types.intType();
+        case P::Shl: case P::Shr:
+          return promote(l);
+        case P::Plus: case P::Minus:
+        {
+          bool lp = ls->kind == TyKind::Pointer || ls->kind == TyKind::Array;
+          bool rp = rs->kind == TyKind::Pointer || rs->kind == TyKind::Array;
+          if (lp && rp)
+            return types.ptrdiffType();
+          if (lp)
+            return types.decay(ls);
+          if (rp)
+            return types.decay(rs);
+          return arithmetic(l, r);
+        }
+        case P::Star: case P::Slash: case P::Percent: case P::Amp: case P::Pipe: case P::Caret:
+          return arithmetic(l, r);
+        case P::DotStar: case P::ArrowStar:
+          return rs->kind == TyKind::MemberPointer ? rs->inner : types.unknown();
+        default:
+          return unknown(Why::Unsupported);
+      }
+    }
+
+    const Ty* typeOfUnary(UnaryExpr* u)
+    {
+      const Ty* t = walkExpr(u->operand);
+      const Ty* s = types.stripRef(t);
+      if (u->isKeyword)
+        return Kw(u->op) == Kw::not_ ? types.boolType() : promote(t);
+      P op = P(u->op);
+      if (op == P::Ellipsis)
+        return t;
+      if (!s || !s->isKnown())
+        return op == P::Bang ? types.boolType() : types.unknown();
+      if (s->kind == TyKind::Param)
+        return op == P::Bang ? types.boolType() : op == P::Amp ? types.pointer(s) : s;
+      if (s->kind == TyKind::Class)
+      {
+        if (op == P::Amp)
+          return types.pointer(s);
+        if (types.isDependent(s))
+          return types.unknown();
+        return overloadedOperator(op, t, nullptr, u->token, 1);
+      }
+      switch (op)
+      {
+        case P::Star:
+          if (s->kind == TyKind::Pointer || s->kind == TyKind::Array)
+            return types.lref(s->inner);
+          return unknown(Why::Operator);
+        case P::Amp: return types.pointer(s);
+        case P::Bang: return types.boolType();
+        case P::Minus: case P::Plus: case P::Tilde: return promote(t);
+        case P::PlusPlus: case P::MinusMinus: return u->postfix ? types.unqualified(s) : t;
+        default: return unknown(Why::Unsupported);
+      }
+    }
+
+    // --- literals ---
+
+    const Ty* typeOfLiteral(LiteralExpr* l)
+    {
+      switch (l->literalKind)
+      {
+        case TokenKind::Keyword:
+          return l->keyword == Kw::nullptr_ ? types.nullptrType() : types.boolType();
+        case TokenKind::Char:
+        {
+          std::string_view s = spelling(l->token);
+          if (s.starts_with("u8")) return types.charType(8, true);
+          if (s.starts_with("u")) return types.charType(16, true);
+          if (s.starts_with("U")) return types.charType(32, true);
+          if (s.starts_with("L")) return types.charType(16, true);
+          return types.charType(8, false);
+        }
+        case TokenKind::String:
+        {
+          std::string_view s = spelling(l->token);
+          const Ty* ch = types.charType(8, false);
+          if (s.starts_with("u8")) ch = types.charType(8, true);
+          else if (s.starts_with("u")) ch = types.charType(16, true);
+          else if (s.starts_with("U")) ch = types.charType(32, true);
+          else if (s.starts_with("L")) ch = types.charType(16, true);
+          return types.pointer(types.qualified(ch, true, false));
+        }
+        case TokenKind::Number:
+        {
+          std::string_view s = spelling(l->token);
+          bool hex = s.size() > 1 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X');
+          bool isFloat = false;
+          bool isUnsigned = false;
+          int longs = 0;
+          bool f32 = false;
+          for (size_t i = hex ? 2 : 0; i < s.size(); ++i)
+          {
+            char c = s[i];
+            if (c == '.' || (!hex && (c == 'e' || c == 'E')) || (hex && (c == 'p' || c == 'P')))
+              isFloat = true;
+          }
+          size_t end = s.size();
+          while (end > 0)
+          {
+            char c = s[end - 1];
+            if (c == 'u' || c == 'U') { isUnsigned = true; --end; }
+            else if (c == 'l' || c == 'L') { ++longs; --end; }
+            else if ((c == 'f' || c == 'F') && !hex) { f32 = true; isFloat = true; --end; }
+            else if (c == 'z' || c == 'Z') { --end; }
+            else break;
+          }
+          if (isFloat)
+            return types.floatType(f32 ? 32 : 64);
+          return types.intType(longs >= 2 ? 64 : 32, isUnsigned);
+        }
+        default:
+          return types.unknown();
+      }
+    }
+
+    // --- element type for range-for ---
+
+    const Ty* elementTypeOf(const Ty* range)
+    {
+      const Ty* t = types.stripRef(range);
+      if (!t || !t->isKnown())
+        return types.unknown();
+      if (t->kind == TyKind::Array || t->kind == TyKind::Pointer)
+        return types.lref(t->inner);
+      if (t->kind == TyKind::Class)
+      {
+        if (types.isDependent(t))
+          return types.unknown();
+        MemberResult begin = memberOf(t, impl.symBegin, nullptr, 0, false);
+        const Ty* iterator = nullptr;
+        if (begin.decl && begin.decl->kind == NodeKind::FunctionDecl)
+        {
+          bool ambiguous;
+          Span<Expr*> none;
+          if (FunctionDecl* f = pickOverload(begin.decl, begin.overloads, 0, ambiguous))
+            iterator = returnTypeOfCall(f, &begin.subst, none, nullptr);
+        }
+        if (!iterator || !iterator->isKnown())
+          return types.unknown();
+        const Ty* it = types.stripRef(iterator);
+        if (it->kind == TyKind::Pointer)
+          return types.lref(it->inner);
+        if (it->kind == TyKind::Class && !types.isDependent(it))
+        {
+          MemberResult deref = memberOf(it, impl.opSymbols[uint32_t(P::Star)], nullptr, 0, false);
+          if (deref.decl && deref.decl->kind == NodeKind::FunctionDecl)
+          {
+            bool ambiguous;
+            Span<Expr*> none;
+            if (FunctionDecl* f = pickOverload(deref.decl, deref.overloads, 0, ambiguous))
+              return returnTypeOfCall(f, &deref.subst, none, nullptr);
+          }
+        }
+        return types.unknown();
+      }
+      return types.unknown();
+    }
+
+    // --- generic walking ---
 
     void walkNode(Node* n)
     {
       if (!n)
         return;
-      switch (n->kind)
-      {
-        case NodeKind::NamedType: case NodeKind::PointerType: case NodeKind::LRefType: case NodeKind::RRefType:
-        case NodeKind::ConstType: case NodeKind::ArrayType: case NodeKind::FunctionType: case NodeKind::DecltypeType:
-        case NodeKind::AutoType: case NodeKind::BuiltinType: case NodeKind::MemberPointerType: case NodeKind::PackType:
-          walkType(static_cast<Type*>(n));
-          break;
-        default:
-          if (uint8_t(n->kind) >= uint8_t(NodeKind::NameExpr))
-            walkExpr(static_cast<Expr*>(n));
-          else if (uint8_t(n->kind) >= uint8_t(NodeKind::BlockStmt))
-            walkStmt(static_cast<Stmt*>(n));
-          else
-            walkDecl(static_cast<Decl*>(n));
-      }
+      if (uint8_t(n->kind) <= uint8_t(NodeKind::PackType))
+        walkType(static_cast<Type*>(n));
+      else if (uint8_t(n->kind) >= uint8_t(NodeKind::NameExpr))
+        walkExpr(static_cast<Expr*>(n));
+      else if (uint8_t(n->kind) >= uint8_t(NodeKind::BlockStmt))
+        walkStmt(static_cast<Stmt*>(n));
+      else
+        walkDecl(static_cast<Decl*>(n));
     }
 
     void walkType(Type* t)
@@ -770,6 +2220,12 @@ struct GlobalScope::Impl
       return l.scope ? l.scope : scope;
     }
 
+    const Ty* computeThisType()
+    {
+      Decl* cls = enclosingClassDecl(scope);
+      return cls ? types.pointer(impl.selfType(cls)) : nullptr;
+    }
+
     void walkDecls(Span<Decl*> decls)
     {
       for (Decl* d : decls)
@@ -799,18 +2255,17 @@ struct GlobalScope::Impl
         {
           auto* c = static_cast<ClassDecl*>(d);
           Scope* saved = scope;
-          Scope* semantic = c->ownScope;
-          if (!semantic && c->name.parts.size() > 1)
-            semantic = nullptr;
-          // Base classes are resolved in the enclosing scope (plus template parameters).
+          const Ty* savedThis = thisType;
           for (const ClassDecl::Base& b : c->bases)
             walkType(b.type);
           if (c->ownScope)
             scope = c->ownScope;
           else if (c->name.parts.size() > 1)
             scope = semanticScopeFor(c->name);
+          thisType = computeThisType();
           walkDecls(c->members);
           scope = saved;
+          thisType = savedThis;
           break;
         }
         case NodeKind::EnumDecl:
@@ -831,9 +2286,13 @@ struct GlobalScope::Impl
         {
           auto* f = static_cast<FunctionDecl*>(d);
           Scope* saved = scope;
+          const Ty* savedThis = thisType;
           walkType(f->returnType);
           if (f->name.parts.size() > 1)
+          {
             scope = semanticScopeFor(f->name);
+            thisType = computeThisType();
+          }
           for (const NamePart& part : f->name.parts)
           {
             for (Node* arg : part.templateArgs)
@@ -858,8 +2317,27 @@ struct GlobalScope::Impl
             for (Expr* a : init.args)
               walkExpr(a);
           }
+          bool autoReturn = f->returnType && f->returnType->kind == NodeKind::AutoType && !f->trailingReturn;
+          if (autoReturn)
+            returnFrames.push_back(nullptr);
+          if (f->flags & DF_Static)
+            thisType = nullptr;
           walkStmt(f->body);
+          if (autoReturn)
+          {
+            const Ty* deduced = returnFrames.back();
+            returnFrames.pop_back();
+            if (deduced && deduced->isKnown() && !types.isDependent(deduced))
+            {
+              // Cache the deduced signature for callers in other files.
+              const Ty* fnTy = impl.declaredTypeOf(f, nullptr, 0);
+              std::vector<const Ty*> params(fnTy->args.begin(), fnTy->args.end());
+              f->cachedType.store(types.function(types.decay(deduced), Span<const Ty*>{params.data(), uint32_t(params.size())}, fnTy->variadic),
+                                  std::memory_order_release);
+            }
+          }
           scope = saved;
+          thisType = savedThis;
           break;
         }
         case NodeKind::VariableDecl:
@@ -872,6 +2350,16 @@ struct GlobalScope::Impl
             scope = semanticScopeFor(v->name);
           walkExpr(v->init);
           scope = saved;
+          // Deduce `auto` now that the initializer is typed, and cache it on the declaration.
+          const Ty* declared = impl.declaredTypeOf(v, nullptr, 0);
+          if (impl.containsAuto(declared))
+          {
+            const Ty* deduced = v->init && v->init->ty ? impl.deduceAuto(declared, v->init->ty) : types.unknown();
+            if (deduced->isKnown())
+              v->cachedType.store(deduced, std::memory_order_release);
+            else
+              ++stats.unknownAuto;
+          }
           break;
         }
         case NodeKind::ParamDecl: walkParam(static_cast<ParamDecl*>(d)); break;
@@ -993,9 +2481,6 @@ struct GlobalScope::Impl
           size_t mark = locals.mark();
           walkStmt(i->init);
           walkNode(i->cond);
-          if (i->cond && i->cond->kind == NodeKind::DeclStmt)
-          {
-          }
           walkStmt(i->then);
           walkStmt(i->else_);
           locals.pop(mark);
@@ -1016,8 +2501,20 @@ struct GlobalScope::Impl
         {
           auto* f = static_cast<RangeForStmt*>(s);
           size_t mark = locals.mark();
-          walkExpr(f->range);
-          walkLocalDecl(f->var);
+          const Ty* range = walkExpr(f->range);
+          auto* v = static_cast<VariableDecl*>(f->var);
+          walkType(v->type);
+          const Ty* declared = impl.declaredTypeOf(v, nullptr, 0);
+          if (impl.containsAuto(declared))
+          {
+            const Ty* element = elementTypeOf(range);
+            const Ty* deduced = element->isKnown() ? impl.deduceAuto(declared, element) : types.unknown();
+            if (deduced->isKnown())
+              v->cachedType.store(deduced, std::memory_order_release);
+            else
+              ++stats.unknownAuto;
+          }
+          declareLocal(v);
           walkStmt(f->body);
           locals.pop(mark);
           break;
@@ -1049,7 +2546,13 @@ struct GlobalScope::Impl
           walkExpr(static_cast<CaseStmt*>(s)->value);
           walkExpr(static_cast<CaseStmt*>(s)->rangeEnd);
           break;
-        case NodeKind::ReturnStmt: walkExpr(static_cast<ReturnStmt*>(s)->value); break;
+        case NodeKind::ReturnStmt:
+        {
+          const Ty* t = walkExpr(static_cast<ReturnStmt*>(s)->value);
+          if (!returnFrames.empty() && !returnFrames.back() && t && t->isKnown())
+            returnFrames.back() = t;
+          break;
+        }
         case NodeKind::TryStmt:
         {
           auto* t = static_cast<TryStmt*>(s);
@@ -1074,108 +2577,160 @@ struct GlobalScope::Impl
         walkExpr(e);
     }
 
-    void walkExpr(Expr* e)
+    // Resolves names in and computes the type of an expression.
+    const Ty* walkExpr(Expr* e)
     {
       if (!e)
-        return;
+        return nullptr;
       switch (e->kind)
       {
-        case NodeKind::NameExpr: resolveName(static_cast<NameExpr*>(e)); break;
-        case NodeKind::CallExpr:
-          walkExpr(static_cast<CallExpr*>(e)->callee);
-          walkExprs(static_cast<CallExpr*>(e)->args);
-          break;
+        case NodeKind::NameExpr: return record(e, resolveName(static_cast<NameExpr*>(e)));
+        case NodeKind::LiteralExpr: return record(e, typeOfLiteral(static_cast<LiteralExpr*>(e)));
+        case NodeKind::ThisExpr: return record(e, thisType ? thisType : unknown(Why::Unsupported));
+        case NodeKind::CallExpr: return record(e, typeOfCall(static_cast<CallExpr*>(e)));
         case NodeKind::IndexExpr:
-          walkExpr(static_cast<IndexExpr*>(e)->base);
-          walkExprs(static_cast<IndexExpr*>(e)->args);
-          break;
-        case NodeKind::MemberExpr:
         {
-          auto* m = static_cast<MemberExpr*>(e);
-          walkExpr(m->base);
-          if (m->base && m->base->kind == NodeKind::ThisExpr && !m->member.empty())
+          auto* i = static_cast<IndexExpr*>(e);
+          const Ty* base = walkExpr(i->base);
+          walkExprs(i->args);
+          const Ty* b = types.stripRef(base);
+          if (!b || !b->isKnown())
+            return record(e, types.unknown());
+          if (b->kind == TyKind::Pointer || b->kind == TyKind::Array)
+            return record(e, types.lref(b->inner));
+          if (b->kind == TyKind::Param)
+            return record(e, b);
+          if (b->kind == TyKind::Class)
           {
-            // `this->x`: resolvable in the class scope without type checking.
-            Lookup l = impl.lookupQualified(m->member, scope, nullptr, 0);
-            if (l.found == Found::No)
+            if (types.isDependent(b))
+              return record(e, types.unknown());
+            MemberResult r = memberOf(b, impl.opSymbols[uint32_t(P::LBracket)], nullptr, i->token, false);
+            if (r.decl && r.decl->kind == NodeKind::FunctionDecl)
             {
-              ++stats.namesUnresolved;
-              countUnresolved(m->member, m->token);
+              bool ambiguous;
+              if (FunctionDecl* f = pickOverload(r.decl, r.overloads, i->args.size(), ambiguous))
+                return record(e, returnTypeOfCall(f, &r.subst, i->args, nullptr));
             }
-            else if (l.found == Found::Dependent)
-              ++stats.namesDependent;
-            else
-              ++stats.namesMember;
+            return record(e, unknown(Why::Operator));
           }
-          else
-            ++stats.membersDeferred;
-          for (const NamePart& part : m->member.parts)
-            for (Node* arg : part.templateArgs)
-              walkNode(arg);
-          break;
+          return record(e, unknown(Why::Operator));
         }
-        case NodeKind::UnaryExpr: walkExpr(static_cast<UnaryExpr*>(e)->operand); break;
-        case NodeKind::BinaryExpr:
-          walkExpr(static_cast<BinaryExpr*>(e)->lhs);
-          walkExpr(static_cast<BinaryExpr*>(e)->rhs);
-          break;
+        case NodeKind::MemberExpr: return record(e, typeOfMember(static_cast<MemberExpr*>(e)));
+        case NodeKind::UnaryExpr: return record(e, typeOfUnary(static_cast<UnaryExpr*>(e)));
+        case NodeKind::BinaryExpr: return record(e, typeOfBinary(static_cast<BinaryExpr*>(e)));
         case NodeKind::ConditionalExpr:
-          walkExpr(static_cast<ConditionalExpr*>(e)->cond);
-          walkExpr(static_cast<ConditionalExpr*>(e)->then);
-          walkExpr(static_cast<ConditionalExpr*>(e)->else_);
-          break;
+        {
+          auto* c = static_cast<ConditionalExpr*>(e);
+          const Ty* cond = walkExpr(c->cond);
+          const Ty* then = walkExpr(c->then);
+          const Ty* other = walkExpr(c->else_);
+          if (!c->then)
+            return record(e, cond); // Elvis
+          const Ty* a = types.stripRef(then);
+          const Ty* b = types.stripRef(other);
+          if (!a || !b || !a->isKnown())
+            return record(e, b && b->isKnown() ? other : types.unknown());
+          if (!b->isKnown())
+            return record(e, then);
+          if (a->kind == TyKind::Nullptr)
+            return record(e, other);
+          if (b->kind == TyKind::Nullptr)
+            return record(e, then);
+          if (a->isArithmetic() && b->isArithmetic() && a != b)
+            return record(e, arithmetic(a, b));
+          return record(e, then);
+        }
         case NodeKind::CastExpr:
-          walkType(static_cast<CastExpr*>(e)->type);
-          walkExpr(static_cast<CastExpr*>(e)->operand);
-          break;
+        {
+          auto* c = static_cast<CastExpr*>(e);
+          walkType(c->type);
+          walkExpr(c->operand);
+          return record(e, typeOf(c->type));
+        }
         case NodeKind::NamedCastExpr:
-          walkType(static_cast<NamedCastExpr*>(e)->type);
-          walkExpr(static_cast<NamedCastExpr*>(e)->operand);
-          break;
+        {
+          auto* c = static_cast<NamedCastExpr*>(e);
+          walkType(c->type);
+          walkExpr(c->operand);
+          return record(e, typeOf(c->type));
+        }
         case NodeKind::SizeofExpr:
           walkType(static_cast<SizeofExpr*>(e)->type);
           walkExpr(static_cast<SizeofExpr*>(e)->operand);
-          break;
+          return record(e, types.sizeType());
         case NodeKind::NewExpr:
         {
           auto* n = static_cast<NewExpr*>(e);
           walkExprs(n->placement);
           walkType(n->type);
           walkExprs(n->args);
-          break;
+          const Ty* t = typeOf(n->type);
+          if (t->kind == TyKind::Array)
+            t = t->inner;
+          return record(e, t->isKnown() ? types.pointer(t) : t);
         }
-        case NodeKind::DeleteExpr: walkExpr(static_cast<DeleteExpr*>(e)->operand); break;
+        case NodeKind::DeleteExpr:
+          walkExpr(static_cast<DeleteExpr*>(e)->operand);
+          return record(e, types.voidType());
         case NodeKind::LambdaExpr:
         {
           auto* l = static_cast<LambdaExpr*>(e);
           size_t mark = locals.mark();
           pushTemplateParams(l->templateParams);
+          std::vector<const Ty*> params;
           for (Decl* p : l->params)
+          {
             walkParam(static_cast<ParamDecl*>(p));
+            params.push_back(impl.declaredTypeOf(p, nullptr, 0));
+          }
           walkType(l->returnType);
+          const Ty* result = nullptr;
+          if (l->returnType)
+            result = typeOf(l->returnType);
+          returnFrames.push_back(nullptr);
           walkStmt(l->body);
+          const Ty* deduced = returnFrames.back();
+          returnFrames.pop_back();
+          if (!result)
+            result = deduced ? types.decay(deduced) : types.voidType();
           locals.pop(mark);
-          break;
+          return record(e, types.lambda(result, Span<const Ty*>{params.data(), uint32_t(params.size())}));
         }
-        case NodeKind::BraceInitExpr: walkExprs(static_cast<BraceInitExpr*>(e)->args); break;
-        case NodeKind::ThrowExpr: walkExpr(static_cast<ThrowExpr*>(e)->operand); break;
+        case NodeKind::BraceInitExpr:
+          walkExprs(static_cast<BraceInitExpr*>(e)->args);
+          return record(e, unknown(Why::Unsupported));
+        case NodeKind::ThrowExpr:
+          walkExpr(static_cast<ThrowExpr*>(e)->operand);
+          return record(e, types.voidType());
         case NodeKind::FunctionalCastExpr:
-          walkType(static_cast<FunctionalCastExpr*>(e)->type);
-          walkExprs(static_cast<FunctionalCastExpr*>(e)->args);
-          break;
-        case NodeKind::TypeidExpr: walkNode(static_cast<TypeidExpr*>(e)->operand); break;
+        {
+          auto* c = static_cast<FunctionalCastExpr*>(e);
+          walkType(c->type);
+          walkExprs(c->args);
+          const Ty* t = typeOf(c->type);
+          if (t->kind == TyKind::Auto && c->args.size() == 1 && c->args[0]->ty)
+            t = types.decay(c->args[0]->ty); // auto(x)
+          return record(e, t);
+        }
+        case NodeKind::TypeidExpr:
+          walkNode(static_cast<TypeidExpr*>(e)->operand);
+          return record(e, unknown(Why::Unsupported));
         case NodeKind::FoldExpr:
           walkExpr(static_cast<FoldExpr*>(e)->lhs);
           walkExpr(static_cast<FoldExpr*>(e)->rhs);
-          break;
-        case NodeKind::ParenExpr: walkExpr(static_cast<ParenExpr*>(e)->inner); break;
-        default: break;
+          return record(e, unknown(Why::Unsupported));
+        case NodeKind::RequiresExpr:
+          return record(e, types.boolType());
+        case NodeKind::ParenExpr:
+          return record(e, walkExpr(static_cast<ParenExpr*>(e)->inner));
+        default:
+          return record(e, unknown(Why::Unsupported));
       }
     }
   };
 };
 
-GlobalScope::GlobalScope() : impl(new Impl) {}
+GlobalScope::GlobalScope(SymbolTable& symbols) : impl(new Impl(symbols)) {}
 GlobalScope::~GlobalScope() { delete impl; }
 
 void GlobalScope::indexFile(ParsedFile& file)
@@ -1215,16 +2770,12 @@ void GlobalScope::finishIndex()
   }
 }
 
-void GlobalScope::resolveFile(ParsedFile& file, const SymbolTable& symbols, ResolveStats& stats)
+void GlobalScope::resolveFile(ParsedFile& file, const std::vector<Token>& tokens, std::string_view text, ResolveStats& stats)
 {
-  if (impl->symStd == UINT32_MAX)
-  {
-    // Interning is thread-safe and idempotent.
-    impl->symStd = const_cast<SymbolTable&>(symbols).intern("std");
-  }
-  Impl::Walker walker(*impl, stats, symbols);
+  Impl::Walker walker(*impl, stats, tokens, text);
   walker.walkDecls(file.decls);
 }
 
 size_t GlobalScope::scopeCount() const { return impl->scopes.load(); }
 size_t GlobalScope::entryCount() const { return impl->entries.load(); }
+size_t GlobalScope::typeCount() const { return impl->types.size(); }

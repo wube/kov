@@ -92,8 +92,9 @@ one-line change in a widely used header.
 1. **Speed-test prototype** (done, see [prototype-results.md](prototype-results.md)): parallel
    lexer + parser + order-independent name resolution, benchmarked on Factorio. Whole front end
    in 0.32 s for 1.33 M lines on 32 threads. No code generation.
-2. **Type checker on top of the resolver** (current, started 2026-10-23). Staged so that each
-   stage is measurable on Factorio:
+2. **Type checker on top of the resolver** (stages 1-4 done 2026-10-23, see
+   [prototype-results.md](prototype-results.md)). Staged so that each stage is measurable on
+   Factorio:
    1. Canonical types: interned, hash-consed in one thread-safe table, so that two threads that
       build the same type get the same pointer (the type-level form of "generate each
       instantiation once").

@@ -138,7 +138,7 @@ namespace
                   std::vector<SourceFile>& files, std::vector<LexResult>& lexed)
   {
     using Clock = std::chrono::steady_clock;
-    GlobalScope global;
+    GlobalScope global(symbols);
     auto start = Clock::now();
     parallelFor(parsed.size(), options.threads, [&](size_t i) { global.indexFile(*parsed[i]); });
     double indexTime = seconds(Clock::now() - start);
@@ -154,7 +154,7 @@ namespace
       stats[i].fileIndex = uint32_t(i);
     for (size_t i = 0; i < stats.size(); ++i)
       stats[i].fileIndex = uint32_t(i);
-    parallelFor(parsed.size(), options.threads, [&](size_t i) { global.resolveFile(*parsed[i], symbols, stats[i]); });
+    parallelFor(parsed.size(), options.threads, [&](size_t i) { global.resolveFile(*parsed[i], lexed[i].tokens, files[i].text, stats[i]); });
     double resolveTime = seconds(Clock::now() - start);
     ResolveStats total;
     for (const ResolveStats& s : stats)
@@ -170,9 +170,45 @@ namespace
            (unsigned long long)names, 100.0 * total.namesLocal / std::max<uint64_t>(1, names),
            100.0 * total.namesMember / std::max<uint64_t>(1, names), 100.0 * total.namesGlobal / std::max<uint64_t>(1, names),
            100.0 * total.namesDependent / std::max<uint64_t>(1, names), 100.0 * total.namesUnresolved / std::max<uint64_t>(1, names));
-    printf("  member accesses deferred to type checking: %llu\n", (unsigned long long)total.membersDeferred);
-    printf("  unresolved: %llu std::, %llu macro-like, %llu other\n", (unsigned long long)total.qualifiedUnresolvedStd,
-           (unsigned long long)total.unresolvedMacroLike, (unsigned long long)project);
+    printf("  unresolved: %llu std::, %llu macro-like, %llu other; %llu fixed-width integer names typed as builtins\n",
+           (unsigned long long)total.qualifiedUnresolvedStd, (unsigned long long)total.unresolvedMacroLike,
+           (unsigned long long)project, (unsigned long long)total.typesBuiltinByName);
+    uint64_t members = total.membersBound + total.membersDependent + total.membersUnknownBase + total.membersNotFound;
+    uint64_t exprs = total.exprsTyped + total.exprsDependent + total.exprsUnknown;
+    printf("check:   %zu distinct types\n", global.typeCount());
+    printf("  member accesses: %llu  (%.1f%% bound to a declaration, %.1f%% dependent, %.1f%% object type unknown, %.1f%% no such member)\n",
+           (unsigned long long)members, 100.0 * total.membersBound / std::max<uint64_t>(1, members),
+           100.0 * total.membersDependent / std::max<uint64_t>(1, members), 100.0 * total.membersUnknownBase / std::max<uint64_t>(1, members),
+           100.0 * total.membersNotFound / std::max<uint64_t>(1, members));
+    printf("  expressions: %llu  (%.1f%% typed, %.1f%% dependent on template parameters, %.1f%% unknown)\n",
+           (unsigned long long)exprs, 100.0 * total.exprsTyped / std::max<uint64_t>(1, exprs),
+           100.0 * total.exprsDependent / std::max<uint64_t>(1, exprs), 100.0 * total.exprsUnknown / std::max<uint64_t>(1, exprs));
+    printf("  unknown because: name %llu, object type %llu, member %llu, overload %llu, deduction %llu, auto return %llu, "
+           "auto %llu, operator %llu, unsupported construct %llu\n",
+           (unsigned long long)total.unknownName, (unsigned long long)total.unknownBase, (unsigned long long)total.unknownMember,
+           (unsigned long long)total.unknownOverload, (unsigned long long)total.unknownDeduction, (unsigned long long)total.unknownAutoReturn,
+           (unsigned long long)total.unknownAuto, (unsigned long long)total.unknownOperator, (unsigned long long)total.unknownUnsupported);
+    printf("  calls resolved to a function: %llu (%llu with several arity matches)\n", (unsigned long long)total.callsResolved,
+           (unsigned long long)total.callsAmbiguousArity);
+    std::vector<std::pair<uint32_t, uint32_t>> missing(total.missingMembers.begin(), total.missingMembers.end());
+    std::sort(missing.begin(), missing.end(), [](auto& a, auto& b) { return a.second > b.second; });
+    if (!missing.empty() && options.showUnresolved > 0)
+      printf("  most common members not found in a known class:\n");
+    for (size_t i = 0; i < missing.size() && int(i) < options.showUnresolved / 2; ++i)
+    {
+      ResolveStats::Where w = total.missingMembersFirst[missing[i].first];
+      const Token& t = lexed[w.file].tokens[std::min<size_t>(w.token, lexed[w.file].tokens.size() - 1)];
+      printf("    %6u  %-28.*s first at %s:%u\n", missing[i].second, int(symbols.name(missing[i].first).size()),
+             symbols.name(missing[i].first).data(), files[w.file].path.string().c_str(), lineOf(files[w.file].text, t.offset));
+    }
+    std::vector<std::pair<uint32_t, uint32_t>> unknownBase(total.unknownBaseMembers.begin(), total.unknownBaseMembers.end());
+    std::sort(unknownBase.begin(), unknownBase.end(), [](auto& a, auto& b) { return a.second > b.second; });
+    if (!unknownBase.empty() && options.showUnresolved > 0)
+      printf("  most common members accessed on an object of unknown type:\n");
+    for (size_t i = 0; i < unknownBase.size() && int(i) < options.showUnresolved / 2; ++i)
+      printf("    %6u  %.*s\n", unknownBase[i].second, int(symbols.name(unknownBase[i].first).size()), symbols.name(unknownBase[i].first).data());
+    if (options.showUnresolved > 0)
+      printf("  most common unresolved names:\n");
     std::vector<std::pair<uint32_t, uint32_t>> top(total.unresolvedSymbols.begin(), total.unresolvedSymbols.end());
     std::sort(top.begin(), top.end(), [](auto& a, auto& b) { return a.second > b.second; });
     for (size_t i = 0; i < top.size() && int(i) < options.showUnresolved; ++i)

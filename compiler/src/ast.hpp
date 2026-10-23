@@ -2,6 +2,7 @@
 // AST for the Kov subset (tolerant of C++ so the Factorio corpus can be used as a benchmark).
 // Nodes live in a per-file arena and are never freed individually.
 #include "lexer.hpp"
+#include <atomic>
 #include <cstddef>
 #include <memory>
 #include <string_view>
@@ -167,6 +168,7 @@ enum DeclFlags : uint32_t
 enum class Access : uint8_t { Default, Public, Protected, Private };
 
 struct Scope;
+struct Ty;
 struct Decl : Node
 {
   uint32_t flags = 0;
@@ -175,6 +177,7 @@ struct Decl : Node
   bool isTemplate = false;    // `template<...>` was present (possibly empty for specializations).
   Decl* parent = nullptr;     // Lexically enclosing declaration, set by the parser.
   Scope* ownScope = nullptr;  // Set by the resolver for namespaces, classes and enums.
+  std::atomic<const Ty*> cachedType{nullptr}; // Declared type, filled lazily by the type checker (non-dependent only).
 };
 
 struct NamespaceDecl : Decl { uint32_t name = UINT32_MAX; Span<Decl*> decls; bool isInline = false; QualifiedName nested; };
@@ -259,13 +262,13 @@ struct MacroStmt : Stmt { uint32_t name; };
 
 // --- Expressions ---
 
-struct Expr : Node {};
+struct Expr : Node { const Ty* ty = nullptr; }; // ty: filled by the type checker.
 struct NameExpr : Expr { QualifiedName name; Decl* resolved = nullptr; };
 struct LiteralExpr : Expr { TokenKind literalKind; Kw keyword; }; // keyword for true/false/nullptr
 struct ThisExpr : Expr {};
 struct CallExpr : Expr { Expr* callee; Span<Expr*> args; };
 struct IndexExpr : Expr { Expr* base; Span<Expr*> args; };
-struct MemberExpr : Expr { Expr* base; QualifiedName member; P op; };
+struct MemberExpr : Expr { Expr* base; QualifiedName member; P op; Decl* resolved = nullptr; };
 struct UnaryExpr : Expr { Expr* operand; uint32_t op; bool isKeyword; bool postfix; };
 struct BinaryExpr : Expr { Expr* lhs; Expr* rhs; uint32_t op; bool isKeyword; };
 struct ConditionalExpr : Expr { Expr* cond; Expr* then; Expr* else_; }; // then == null for Elvis.
