@@ -32,7 +32,9 @@ This file records decisions that have been made. When a decision changes, update
 - **Persistent compiler.** It stays running with the program model in memory, recompiles
   precisely what changed, and serves IDE queries.
 - Macros: global macros (command line / declared global, cannot be `#undef`ed) and
-  file-local macros.
+  file-local macros. The Factorio survey ([macro-survey.md](macro-survey.md), 2026-10-23) found no
+  use for either once the features listed there exist; the proposal is typed `config` constants
+  instead of global macros and no preprocessor at all.
 
 Expected limit: once headers and duplicate instantiations are gone, LLVM optimization
 dominates release builds. The big wins are debug builds and incremental rebuilds; release
@@ -132,10 +134,13 @@ qualified Kov names with parameter types, quoted, so there is no mangling scheme
   most-vexing-parse, declaration statements recognisable from their first tokens). The prototype
   parser uses heuristics that work on 99.2% of Factorio files; the resolver can flag misparses
   later, but a real compiler should not have to guess.
-- **Macros.** Everything the prototype could not parse or resolve in Factorio comes from macros
-  (`CALL_ON_EVERY_*` code generation, assert macros, enum wrappers). Kov needs a replacement for
-  the code-generation uses (compile-time reflection / `accumulate`-style features) before the
-  converter can drop them.
+- **Macros.** Surveyed in [macro-survey.md](macro-survey.md) (2026-10-23): Factorio's 611 macros
+  and 22,647 expansions fall into eleven cases, none of which needs textual substitution. Proposed
+  (not yet reviewed by kovarex), by payoff: tests and `check` in the compiler; built-in `assert`,
+  an implicit caller location and `conditional(config.x)` functions that compile to nothing;
+  compile-time reflection over members and enumerators with `nameof`; `if constexpr` and
+  `for constexpr` at every scope over typed `config` constants and type lists; typed unions; real
+  enums; unnamed scoped locals `_`; attributes for the few real compiler modifiers.
 
 ## Roadmap
 1. **Speed-test prototype** (done, see [prototype-results.md](prototype-results.md)): parallel
