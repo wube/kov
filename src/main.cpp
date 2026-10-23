@@ -1,5 +1,6 @@
 // kovc: the Kov compiler. Currently the speed-test prototype: parallel lexing of a file tree.
 #include "lexer.hpp"
+#include "parser.hpp"
 #include "source.hpp"
 #include <atomic>
 #include <chrono>
@@ -16,6 +17,8 @@ namespace
     std::vector<std::string> extensions = {".cpp", ".hpp", ".h", ".kov"};
     unsigned threads = std::thread::hardware_concurrency();
     bool dumpTokens = false;
+    bool parse = true;
+    int showErrors = 20;
     int repeat = 1;
   };
 
@@ -59,6 +62,56 @@ namespace
       t.join();
   }
 
+  double seconds(std::chrono::steady_clock::duration d);
+
+  uint32_t lineOf(const std::string& text, uint32_t offset)
+  {
+    uint32_t line = 1;
+    for (uint32_t i = 0; i < offset && i < text.size(); ++i)
+      if (text[i] == '\n')
+        ++line;
+    return line;
+  }
+
+  void runParse(std::vector<SourceFile>& files, std::vector<LexResult>& lexed, SymbolTable& symbols, const Options& options)
+  {
+    using Clock = std::chrono::steady_clock;
+    std::vector<std::unique_ptr<ParsedFile>> parsed(files.size());
+    auto start = Clock::now();
+    parallelFor(files.size(), options.threads, [&](size_t i)
+    {
+      parsed[i] = std::make_unique<ParsedFile>();
+      parseFile(lexed[i].tokens, files[i].text, symbols, *parsed[i]);
+    });
+    double parseTime = seconds(Clock::now() - start);
+    uint64_t decls = 0, bodies = 0, nodes = 0, errors = 0, filesWithErrors = 0, arenaBytes = 0, lines = 0;
+    for (size_t i = 0; i < files.size(); ++i)
+    {
+      decls += parsed[i]->declCount;
+      bodies += parsed[i]->functionBodies;
+      nodes += parsed[i]->nodeCount;
+      errors += parsed[i]->diagnostics.size();
+      filesWithErrors += !parsed[i]->diagnostics.empty();
+      arenaBytes += parsed[i]->arena.bytesAllocated();
+      lines += lexed[i].lineCount;
+    }
+    printf("parse:   %.3f s  (%.1f M lines/s)\n", parseTime, lines / 1e6 / parseTime);
+    printf("  decls: %llu, function bodies: %llu, nodes: %llu, AST memory: %.1f MB\n", (unsigned long long)decls,
+           (unsigned long long)bodies, (unsigned long long)nodes, arenaBytes / 1e6);
+    printf("  parse errors: %llu in %llu files (%.2f%% of files clean)\n", (unsigned long long)errors,
+           (unsigned long long)filesWithErrors, 100.0 * (files.size() - filesWithErrors) / std::max<size_t>(1, files.size()));
+    int shown = 0;
+    for (size_t i = 0; i < files.size() && shown < options.showErrors; ++i)
+      for (const Diagnostic& d : parsed[i]->diagnostics)
+      {
+        if (shown++ >= options.showErrors)
+          break;
+        const Token& t = lexed[i].tokens[std::min<size_t>(d.token, lexed[i].tokens.size() - 1)];
+        printf("  %s:%u: %s (at '%.*s')\n", files[i].path.string().c_str(), lineOf(files[i].text, t.offset), d.message,
+               int(std::min<uint32_t>(t.length, 30)), files[i].text.data() + t.offset);
+      }
+  }
+
   double seconds(std::chrono::steady_clock::duration d)
   {
     return std::chrono::duration<double>(d).count();
@@ -91,6 +144,10 @@ int main(int argc, char** argv)
       options.repeat = atoi(argv[++i]);
     else if (arg == "--dump")
       options.dumpTokens = true;
+    else if (arg == "--lex-only")
+      options.parse = false;
+    else if (arg == "--errors" && i + 1 < argc)
+      options.showErrors = atoi(argv[++i]);
     else if (arg[0] == '-')
     {
       usage();
@@ -178,6 +235,8 @@ int main(int argc, char** argv)
               printf("  error in %s at offset %u: '%.*s'\n", files[i].path.string().c_str(), t.offset,
                      int(std::min<uint32_t>(t.length, 40)), files[i].text.data() + t.offset);
       }
+      if (options.parse)
+        runParse(files, results, symbols, options);
       if (options.dumpTokens)
         for (size_t i = 0; i < files.size(); ++i)
         {

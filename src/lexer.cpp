@@ -10,33 +10,22 @@
 
 // --- Keywords and punctuators -----------------------------------------------------------
 
-// C++ keywords plus the Kov additions. Order defines the id.
 static constexpr std::string_view keywords[] = {
-  "alignas", "alignof", "and", "and_eq", "asm", "auto", "bitand", "bitor", "bool", "break",
-  "case", "catch", "char", "char8_t", "char16_t", "char32_t", "class", "compl", "concept",
-  "const", "consteval", "constexpr", "constinit", "const_cast", "continue", "co_await",
-  "co_return", "co_yield", "decltype", "default", "delete", "do", "double", "dynamic_cast",
-  "else", "enum", "explicit", "export", "extern", "false", "float", "for", "friend", "goto",
-  "if", "inline", "int", "long", "mutable", "namespace", "new", "noexcept", "not", "not_eq",
-  "nullptr", "operator", "or", "or_eq", "private", "protected", "public", "register",
-  "reinterpret_cast", "requires", "return", "short", "signed", "sizeof", "static",
-  "static_assert", "static_cast", "struct", "switch", "template", "this", "thread_local",
-  "throw", "true", "try", "typedef", "typeid", "typename", "union", "unsigned", "using",
-  "virtual", "void", "volatile", "wchar_t", "while", "xor", "xor_eq",
-  // Kov
-  "implicit", "fallthrough", "both_const", "class_const", "accumulate", "override", "final",
+#define X(name) #name,
+  KOV_KEYWORDS(X)
+#undef X
 };
+static_assert(std::size(keywords) == size_t(Kw::Count));
 
-// Longest first within each starting character so max munch works by first match.
 static constexpr std::string_view punctuators[] = {
-  "<=>", "<<=", ">>=", "->*", "...", "::", "->", "++", "--", "<<", ">>", "<=", ">=", "==", "!=",
-  "&&", "||", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "##", ".*", "?->", "?:",
-  "{", "}", "[", "]", "(", ")", ";", ":", "?", ".", "+", "-", "*", "/", "%", "^", "&", "|",
-  "~", "!", "=", "<", ">", ",", "#",
+#define X(name, spelling) spelling,
+  KOV_PUNCTUATORS(X)
+#undef X
 };
+static_assert(std::size(punctuators) == size_t(P::Count));
 
-std::string_view keywordSpelling(uint32_t id) { return keywords[id]; }
-std::string_view punctuatorSpelling(uint32_t id) { return punctuators[id]; }
+std::string_view keywordSpelling(Kw id) { return keywords[uint32_t(id)]; }
+std::string_view punctuatorSpelling(P id) { return punctuators[uint32_t(id)]; }
 
 namespace
 {
@@ -417,6 +406,8 @@ namespace
     void run()
     {
       result.tokens.reserve(size_t(end - begin) / 5);
+      if (end - begin >= 3 && uint8_t(p[0]) == 0xEF && uint8_t(p[1]) == 0xBB && uint8_t(p[2]) == 0xBF)
+        p += 3; // UTF-8 byte order mark
       bool lineStart = true;
       for (;;)
       {
