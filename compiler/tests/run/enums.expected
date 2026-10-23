@@ -1,0 +1,9 @@
+5 values of Direction
+North true South
+East false West
+South true North
+West false East
+None false None
+e West false
+3 yes! not yes
+8

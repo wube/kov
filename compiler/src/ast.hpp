@@ -93,7 +93,7 @@ struct Span
   X(GotoStmt) X(LabelStmt) X(TryStmt) X(EmptyStmt) X(ErrorStmt) X(FallthroughStmt) X(AsmStmt) X(MacroStmt) \
   /* expressions */ \
   X(NameExpr) X(LiteralExpr) X(ThisExpr) X(CallExpr) X(IndexExpr) X(MemberExpr) X(UnaryExpr) \
-  X(BinaryExpr) X(ConditionalExpr) X(CastExpr) X(NamedCastExpr) X(SizeofExpr) X(CallerExpr) X(NewExpr) \
+  X(BinaryExpr) X(ConditionalExpr) X(CastExpr) X(NamedCastExpr) X(SizeofExpr) X(CallerExpr) X(NameofExpr) X(NewExpr) \
   X(DeleteExpr) X(LambdaExpr) X(BraceInitExpr) X(ThrowExpr) X(FunctionalCastExpr) X(TypeidExpr) \
   X(FoldExpr) X(RequiresExpr) X(ErrorExpr) X(ParenExpr)
 
@@ -173,6 +173,7 @@ struct Scope;
 struct Ty;
 struct ParsedFile;
 constexpr uint8_t ATTR_NoInline = 1, ATTR_ForceInline = 2, ATTR_VectorCall = 4; // Decl::attributes, from [[...]]
+constexpr uint8_t BUILTIN_EnumCount = 1, BUILTIN_EnumValues = 2, BUILTIN_EnumStr = 3; // Decl::builtin: generated enum members
 
 struct Decl : Node
 {
@@ -185,6 +186,7 @@ struct Decl : Node
   Scope* ownScope = nullptr;  // Set by the resolver for namespaces, classes and enums.
   std::atomic<const Ty*> cachedType{nullptr}; // Declared type, filled lazily by the type checker (non-dependent only).
   uint8_t attributes = 0;     // ATTR_* bits.
+  uint8_t builtin = 0;        // BUILTIN_*: a member the compiler generates (no body/initializer in the AST).
 };
 
 struct LambdaExpr;
@@ -212,6 +214,7 @@ struct EnumDecl : Decl
   Type* underlying = nullptr;
   Span<Decl*> enumerators;
   Span<Decl*> members; // Kov: methods inside enums.
+  bool isKov = false;  // Kov enum (values in their own brace block): count, values, str(), exhaustive switch.
 };
 struct ParamDecl : Decl { Type* type; uint32_t name = UINT32_MAX; Expr* defaultValue = nullptr; bool isPack = false; };
 struct FunctionDecl : Decl
@@ -297,6 +300,7 @@ struct CastExpr : Expr { Type* type; Expr* operand; };
 struct NamedCastExpr : Expr { Kw castKind; Type* type; Expr* operand; };
 struct SizeofExpr : Expr { Kw sizeofKind; Type* type = nullptr; Expr* operand = nullptr; bool isPack = false; };
 struct CallerExpr : Expr {}; // `caller` as a default argument: the compiler fills in the call site.
+struct NameofExpr : Expr { Expr* operand; }; // nameof(x): the last name of x as a string literal.
 struct NewExpr : Expr { Type* type; Span<Expr*> placement; Span<Expr*> args; bool braced = false; bool global = false; };
 struct DeleteExpr : Expr { Expr* operand; bool isArray; bool global; };
 struct LambdaCapture

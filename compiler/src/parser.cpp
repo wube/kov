@@ -37,6 +37,10 @@ namespace
       kwConditional = symbols.intern("conditional");
       kwUnderscore = symbols.intern("_");
       kwConfig = symbols.intern("config");
+      kwNameof = symbols.intern("nameof");
+      kwCount = symbols.intern("count");
+      kwValues = symbols.intern("values");
+      kwStr = symbols.intern("str");
       kwImplicit = symbols.intern("implicit");
       kwFallthrough = symbols.intern("fallthrough");
       kwBothConst = symbols.intern("both_const");
@@ -44,7 +48,7 @@ namespace
       kwAccumulate = symbols.intern("accumulate");
     }
     uint32_t kwImplicit, kwFallthrough, kwBothConst, kwClassConst, kwAccumulate, kwImport, kwAssert, kwReleaseAssert, kwCaller,
-             kwConditional, kwUnderscore, kwConfig;
+             kwConditional, kwUnderscore, kwConfig, kwNameof, kwCount, kwValues, kwStr;
     uint8_t pendingAttributes = 0;   // [[noinline]] and friends seen before the current declaration.
     Expr* pendingCondition = nullptr; // conditional(expr) seen in the current specifiers.
 
@@ -974,6 +978,64 @@ namespace
 
     // Parses one declaration (possibly producing several Decl nodes, e.g. `int a, b;`) and pushes
     // the results onto scratch.
+    // Generated members of a Kov enum: `static const int count`, `static const E values[]` and
+    // `const char* str() const` (unless written by hand). Their bodies and initializers come from
+    // the compiler (Decl::builtin), not from the AST.
+    void addEnumBuiltins(EnumDecl* e, uint32_t start, size_t mark)
+    {
+      bool hasStr = false;
+      for (size_t i = mark; i < scratch.size(); ++i)
+      {
+        Node* n = scratch[i];
+        if (n->kind == NodeKind::FunctionDecl)
+        {
+          auto* f = static_cast<FunctionDecl*>(n);
+          if (f->name.parts.size() == 1 && f->name.parts[0].symbol == kwStr)
+            hasStr = true;
+        }
+      }
+      NamePart part;
+      VariableDecl* count = decl<VariableDecl>(start);
+      count->flags |= DF_Static | DF_Const;
+      count->builtin = BUILTIN_EnumCount;
+      BuiltinType* intType = node<BuiltinType>(start);
+      intType->keyword = Kw::int_;
+      ConstType* constInt = node<ConstType>(start);
+      constInt->inner = intType;
+      count->type = constInt;
+      part.symbol = kwCount;
+      count->name.parts = makeSpanOf(std::vector<NamePart>{part});
+      pushDecl(count);
+      VariableDecl* values = decl<VariableDecl>(start);
+      values->flags |= DF_Static | DF_Const;
+      values->builtin = BUILTIN_EnumValues;
+      NamedType* self = node<NamedType>(start);
+      self->name = e->name;
+      ArrayType* array = node<ArrayType>(start);
+      array->element = self;
+      array->size = nullptr;
+      values->type = array;
+      part.symbol = kwValues;
+      values->name.parts = makeSpanOf(std::vector<NamePart>{part});
+      pushDecl(values);
+      if (!hasStr)
+      {
+        FunctionDecl* str = decl<FunctionDecl>(start);
+        str->flags |= DF_Const;
+        str->builtin = BUILTIN_EnumStr;
+        BuiltinType* ch = node<BuiltinType>(start);
+        ch->keyword = Kw::char_;
+        ConstType* constChar = node<ConstType>(start);
+        constChar->inner = ch;
+        PointerType* pointer = node<PointerType>(start);
+        pointer->pointee = constChar;
+        str->returnType = pointer;
+        part.symbol = kwStr;
+        str->name.parts = makeSpanOf(std::vector<NamePart>{part});
+        pushDecl(str);
+      }
+    }
+
     // --- build configuration ---
 
     // Evaluates a condition made of literals, config constants (`config::name`) and the operators
@@ -2308,6 +2370,31 @@ namespace
       while (!at(P::RBrace) && !at(TokenKind::End))
       {
         skipAttributes();
+        if (at(P::LBrace))
+        {
+          // Kov enum: the values in their own block, then members.
+          e->isKov = true;
+          advance();
+          while (!at(P::RBrace) && !at(TokenKind::End))
+          {
+            skipAttributes();
+            if (!atIdent())
+            {
+              error("expected an enumerator");
+              break;
+            }
+            EnumeratorDecl* en = decl<EnumeratorDecl>(pos);
+            en->name = tok().id;
+            advance();
+            if (accept(P::Assign))
+              en->value = parseAssignmentNoBrace();
+            enumerators.push_back(en);
+            if (!accept(P::Comma))
+              break;
+          }
+          expect(P::RBrace, "expected '}' after the enumerators");
+          continue;
+        }
         if (atIdent() && (at(P::Comma, 1) || at(P::RBrace, 1) || at(P::Assign, 1) || at(P::LBracket, 1)))
         {
           EnumeratorDecl* en = decl<EnumeratorDecl>(pos);
@@ -2340,6 +2427,8 @@ namespace
         if (inRecovery)
           break;
       }
+      if (e->isKov)
+        addEnumBuiltins(e, start, mark);
       e->members = makeSpan<Decl*>(mark);
       e->enumerators = makeSpanOf(enumerators);
       currentParent = savedParent;
@@ -3402,6 +3491,15 @@ namespace
     Expr* parsePrimary()
     {
       uint32_t start = pos;
+      if (atIdent(kwNameof) && at(P::LParen, 1))
+      {
+        NameofExpr* n = node<NameofExpr>(start);
+        advance();
+        advance();
+        n->operand = parseExpression();
+        expect(P::RParen, "expected ')' after nameof");
+        return n;
+      }
       switch (tok().getKind())
       {
         case TokenKind::Number:
@@ -3786,6 +3884,7 @@ namespace
   template<> constexpr NodeKind Parser::nodeKindOf<ImportDecl>() { return NodeKind::ImportDecl; }
   template<> constexpr NodeKind Parser::nodeKindOf<AssertStmt>() { return NodeKind::AssertStmt; }
   template<> constexpr NodeKind Parser::nodeKindOf<CallerExpr>() { return NodeKind::CallerExpr; }
+  template<> constexpr NodeKind Parser::nodeKindOf<NameofExpr>() { return NodeKind::NameofExpr; }
   template<> constexpr NodeKind Parser::nodeKindOf<BlockStmt>() { return NodeKind::BlockStmt; }
   template<> constexpr NodeKind Parser::nodeKindOf<ExprStmt>() { return NodeKind::ExprStmt; }
   template<> constexpr NodeKind Parser::nodeKindOf<DeclStmt>() { return NodeKind::DeclStmt; }

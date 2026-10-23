@@ -897,9 +897,17 @@ struct GlobalScope::Impl
   static Decl* enclosingClassDecl(Scope* s)
   {
     for (; s; s = s->parent)
-      if (s->kind == ScopeKind::Class)
+      if (s->kind == ScopeKind::Class || s->kind == ScopeKind::Enum)
         return s->owner;
     return nullptr;
+  }
+
+  static size_t enumeratorCount(Decl* e)
+  {
+    size_t n = 0;
+    for (Decl* d : static_cast<EnumDecl*>(e)->enumerators)
+      n += d->kind == NodeKind::EnumeratorDecl;
+    return n;
   }
 
   // Type of a class or enum declaration as written inside it: template parameters stay dependent.
@@ -1146,6 +1154,8 @@ struct GlobalScope::Impl
       case NodeKind::VariableDecl:
       {
         auto* v = static_cast<VariableDecl*>(d);
+        if (v->builtin == BUILTIN_EnumValues && v->parent && v->parent->kind == NodeKind::EnumDecl)
+          return types.array(types.enumType(v->parent), uint32_t(enumeratorCount(v->parent))); // E::values
         const Ty* t = convertType(v->type, ctx, depth + 1);
         if (types.isDependent(t) && containsAuto(t))
           return t; // Deduced from the initializer by the walker when it reaches the declaration.
@@ -2896,7 +2906,11 @@ struct GlobalScope::Impl
     const Ty* computeThisType()
     {
       Decl* cls = enclosingClassDecl(scope);
-      return cls ? types.pointer(impl.selfType(cls)) : nullptr;
+      if (!cls)
+        return nullptr;
+      if (cls->kind == NodeKind::EnumDecl)
+        return types.lref(types.enumType(cls)); // in an enum's methods, `this` is the value
+      return types.pointer(impl.selfType(cls));
     }
 
     void walkDecls(Span<Decl*> decls)
@@ -2947,13 +2961,18 @@ struct GlobalScope::Impl
           auto* e = static_cast<EnumDecl*>(d);
           walkType(e->underlying);
           Scope* saved = scope;
+          const Ty* savedThis = thisType;
           if (e->ownScope)
+          {
             scope = e->ownScope;
+            thisType = computeThisType(); // the enum's methods see `this` as the value
+          }
           for (Decl* en : e->enumerators)
             if (en->kind == NodeKind::EnumeratorDecl)
               walkExpr(static_cast<EnumeratorDecl*>(en)->value);
           walkDecls(e->members);
           scope = saved;
+          thisType = savedThis;
           break;
         }
         case NodeKind::FunctionDecl:
@@ -3265,6 +3284,9 @@ struct GlobalScope::Impl
       {
         case NodeKind::NameExpr: return record(e, resolveName(static_cast<NameExpr*>(e)));
         case NodeKind::CallerExpr: return record(e, types.unknown()); // typed by the parameter it defaults
+        case NodeKind::NameofExpr:
+          walkExpr(static_cast<NameofExpr*>(e)->operand);
+          return record(e, types.pointer(types.qualified(types.charType(), true, false)));
         case NodeKind::LiteralExpr: return record(e, typeOfLiteral(static_cast<LiteralExpr*>(e)));
         case NodeKind::ThisExpr: return record(e, thisType ? thisType : unknown(Why::Unsupported));
         case NodeKind::CallExpr: return record(e, typeOfCall(static_cast<CallExpr*>(e)));
@@ -3493,7 +3515,7 @@ Decl* GlobalScope::owningClass(Decl* d)
 {
   if (!d)
     return nullptr;
-  if (d->parent && d->parent->kind == NodeKind::ClassDecl)
+  if (d->parent && (d->parent->kind == NodeKind::ClassDecl || d->parent->kind == NodeKind::EnumDecl))
     return d->parent;
   if (d->kind == NodeKind::FunctionDecl)
   {

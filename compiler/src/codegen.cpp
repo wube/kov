@@ -1,4 +1,5 @@
 #include "codegen.hpp"
+#include <set>
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -1144,6 +1145,7 @@ namespace
         case NodeKind::CaseStmt: visit(static_cast<CaseStmt*>(n)->value); break;
         case NodeKind::ReturnStmt: visit(static_cast<ReturnStmt*>(n)->value); break;
         case NodeKind::AssertStmt: visit(static_cast<AssertStmt*>(n)->cond); break;
+        case NodeKind::NameofExpr: visit(static_cast<NameofExpr*>(n)->operand); break;
         default: break;
       }
     }
@@ -1589,6 +1591,11 @@ namespace
       if (declaredNames[name])
         return name;
       declaredNames[name] = true;
+      if (f->builtin == BUILTIN_EnumStr)
+      {
+        emitEnumStr(f, name);
+        return name;
+      }
       ArgsScope scope(*this, &args);
       Signature s = signatureOf(f);
       std::string params;
@@ -1598,6 +1605,32 @@ namespace
         params += params.empty() ? "..." : ", ...";
       decls += "declare " + s.returnType + " " + name + "(" + params + ")\n";
       return name;
+    }
+
+    static size_t enumeratorCount(Decl* e)
+    {
+      size_t n = 0;
+      for (Decl* d : static_cast<EnumDecl*>(e)->enumerators)
+        n += d->kind == NodeKind::EnumeratorDecl;
+      return n;
+    }
+
+    // The generated `const char* str() const` of a Kov enum: a switch over the enumerators.
+    void emitEnumStr(FunctionDecl* f, const std::string& name)
+    {
+      auto* e = static_cast<EnumDecl*>(f->parent);
+      std::string k = llType(enumUnderlying(e), f), cases, blocks;
+      int i = 0;
+      for (Decl* d : e->enumerators)
+        if (d->kind == NodeKind::EnumeratorDecl)
+        {
+          auto* en = static_cast<EnumeratorDecl*>(d);
+          std::string l = "e" + std::to_string(i++);
+          cases += "    " + k + " " + std::to_string(enumeratorValue(en)) + ", label %" + l + "\n";
+          blocks += l + ":\n  ret ptr " + cStringConstant(sym(en->name)) + "\n";
+        }
+      body += "define ptr " + name + "(ptr %this) {\nentry:\n  %v = load " + k + ", ptr %this\n  switch " + k + " %v, label %other [\n" + cases +
+              "  ]\n" + blocks + "other:\n  ret ptr " + cStringConstant("?") + "\n}\n";
     }
 
     // Template arguments for calling f on an object of classTy, with the call's deduced arguments.
@@ -1857,6 +1890,8 @@ namespace
           if (d->kind == NodeKind::VariableDecl)
           {
             auto* v = static_cast<VariableDecl*>(d);
+            if (v->builtin == BUILTIN_EnumCount && v->parent)
+              return int64_t(enumeratorCount(v->parent));
             const Ty* t = declType(v);
             if (t && t->isConst && v->init && !locals.count(d))
             {
@@ -2456,6 +2491,17 @@ namespace
         unsupported(at, "a global of unknown type");
       std::string name = "@\"" + global.qualifiedName(v) + "\"";
       globals[v] = name;
+      if (v->builtin == BUILTIN_EnumValues && v->parent)
+      {
+        // E::values: a constant array of the enumerators in declaration order.
+        auto* e = static_cast<EnumDecl*>(v->parent);
+        std::string element = llType(enumUnderlying(e), at), elements;
+        for (Decl* d : e->enumerators)
+          if (d->kind == NodeKind::EnumeratorDecl)
+            elements += std::string(elements.empty() ? "" : ", ") + element + " " + std::to_string(enumeratorValue(static_cast<EnumeratorDecl*>(d)));
+        decls += name + " = internal constant " + llType(t, at) + " [" + elements + "]\n";
+        return name;
+      }
       std::string init = "zeroinitializer";
       const Ty* st = types.stripRef(t);
       ParsedFile* saved = currentFile;
@@ -2702,8 +2748,8 @@ namespace
             if (!currentClassTy)
               unsupported(c, "a method call outside a method");
             thisArg = thisPointer(c);
-            classTy = currentClassTy;
-            if (classDef(owner, c) != classDef(currentClassTy->decl, c))
+            classTy = isClass(currentClassTy) ? currentClassTy : nullptr;
+            if (owner->kind == NodeKind::ClassDecl && classTy && classDef(owner, c) != classDef(currentClassTy->decl, c))
             {
               // Inherited method: find the base subobject of the right class.
               const Ty* base = baseInstantiation(currentClassTy, owner, c);
@@ -2786,23 +2832,41 @@ namespace
             else
             {
               Value o = rvalue(m->base);
-              if (!isClass(o.ty))
-                unsupported(c, "a method call on a non-class object");
-              thisArg = o.text;
-              objectTy = o.ty;
-            }
-            objectTy = canonicalClass(objectTy, c);
-            Decl* owner = global.owningClass(f);
-            if (owner && classDef(owner, c) != static_cast<ClassDecl*>(objectTy->decl))
-            {
-              const Ty* base = baseInstantiation(objectTy, owner, c);
-              std::string addr;
-              if (base && baseAddress(objectTy, base, thisArg, addr, c))
+              if (isClass(o.ty))
               {
-                thisArg = addr;
-                objectTy = base;
+                thisArg = o.text;
+                objectTy = o.ty;
+              }
+              else if (o.ty && types.stripRef(o.ty)->kind == TyKind::Enum)
+              {
+                // A method of an enum: `this` is the value, passed by its address.
+                const Ty* et = types.stripRef(o.ty);
+                std::string slot = "%v" + std::to_string(temp++);
+                allocas += "  " + slot + " = alloca " + llType(et, c) + "\n";
+                fn += "  store " + llType(et, c) + " " + o.text + ", ptr " + slot + "\n";
+                thisArg = slot;
+                objectTy = et;
+              }
+              else
+                unsupported(c, "a method call on a non-class object");
+            }
+            if (isClass(objectTy))
+            {
+              objectTy = canonicalClass(objectTy, c);
+              Decl* owner = global.owningClass(f);
+              if (owner && classDef(owner, c) != static_cast<ClassDecl*>(objectTy->decl))
+              {
+                const Ty* base = baseInstantiation(objectTy, owner, c);
+                std::string addr;
+                if (base && baseAddress(objectTy, base, thisArg, addr, c))
+                {
+                  thisArg = addr;
+                  objectTy = base;
+                }
               }
             }
+            else
+              objectTy = nullptr; // an enum: no class arguments, no bases
           }
           else if (m->base)
           {
@@ -2937,7 +3001,18 @@ namespace
           std::string addr = lvalue(e);
           return load(addr, e->ty ? e->ty : (d ? declType(d) : nullptr), e);
         }
-        case NodeKind::ThisExpr: return {thisPointer(e), e->ty};
+        case NodeKind::ThisExpr:
+        {
+          std::string p = thisPointer(e);
+          const Ty* t = types.stripRef(e->ty);
+          if (t && t->kind == TyKind::Enum)
+          {
+            std::string r = newTemp(); // in an enum's methods `this` is the value
+            fn += "  " + r + " = load " + llType(t, e) + ", ptr " + p + "\n";
+            return {r, t};
+          }
+          return {p, e->ty};
+        }
         case NodeKind::ParenExpr: return rvalue(static_cast<ParenExpr*>(e)->inner);
         case NodeKind::MemberExpr:
         {
@@ -2961,6 +3036,18 @@ namespace
           return load(r, base.ty->inner, e);
         }
         case NodeKind::CallExpr: return callRvalue(callValue(static_cast<CallExpr*>(e), ""), e);
+        case NodeKind::NameofExpr:
+        {
+          Expr* o = static_cast<NameofExpr*>(e)->operand;
+          std::string text;
+          if (o->kind == NodeKind::NameExpr)
+            text = sym(static_cast<NameExpr*>(o)->name.last().symbol);
+          else if (o->kind == NodeKind::MemberExpr)
+            text = sym(static_cast<MemberExpr*>(o)->member.last().symbol);
+          else
+            text = std::string(spelling(o->token));
+          return {cStringConstant(text), e->ty};
+        }
         case NodeKind::CastExpr:
           return convert(rvalue(static_cast<CastExpr*>(e)->operand), e->ty, e);
         case NodeKind::NamedCastExpr:
@@ -3730,8 +3817,40 @@ namespace
           labels.push_back(defaultL);
         }
       }
-      fn += "  switch " + llType(ct, sw) + " " + cond.text + ", label %" + (defaultL.empty() ? endL : defaultL) + " [\n" + cases + "  ]\n";
+      std::string invalidL;
+      const Ty* condTy = types.stripRef(static_cast<Expr*>(sw->cond)->ty); // before the conversion to the underlying type
+      if (condTy && condTy->kind == TyKind::Enum && defaultL.empty())
+      {
+        Decl* def = global.definitionOf(condTy->decl);
+        auto* e = def && def->kind == NodeKind::EnumDecl ? static_cast<EnumDecl*>(def) : nullptr;
+        if (e && e->isKov)
+        {
+          // A Kov enum: every value needs a case, and a value outside them aborts.
+          std::set<int64_t> covered;
+          for (Stmt* st : body->stmts)
+            if (st->kind == NodeKind::CaseStmt)
+              if (auto v = evalConst(static_cast<CaseStmt*>(st)->value))
+                covered.insert(*v);
+          std::string missing;
+          for (Decl* d : e->enumerators)
+            if (d->kind == NodeKind::EnumeratorDecl && !covered.count(enumeratorValue(static_cast<EnumeratorDecl*>(d))))
+              missing += (missing.empty() ? "" : ", ") + sym(static_cast<EnumeratorDecl*>(d)->name);
+          if (!missing.empty())
+            error(sw, "switch on " + global.qualifiedName(e) + " does not handle " + missing);
+          invalidL = newLabel("switch.invalid");
+        }
+      }
+      fn += "  switch " + llType(ct, sw) + " " + cond.text + ", label %" + (invalidL.empty() ? (defaultL.empty() ? endL : defaultL) : invalidL) + " [\n" + cases + "  ]\n";
       blockTerminated = true;
+      if (!invalidL.empty())
+      {
+        startBlock(invalidL);
+        auto [line, column] = lineColumnOf(sw->token);
+        fn += "  call void @kov_assert_failed(ptr " + cStringConstant(currentFile->path) + ", i32 " + std::to_string(line) + ", i32 " +
+              std::to_string(column) + ", ptr " + cStringConstant("invalid value in switch on " + global.qualifiedName(condTy->decl)) + ")\n  unreachable\n";
+        usesAssert = true;
+        blockTerminated = true;
+      }
       loops.push_back({endL, "", scopes.size()});
       pushScope();
       size_t next = 0;
@@ -3768,7 +3887,7 @@ namespace
       currentClassTy = classTy;
       if (!currentClassTy)
         if (Decl* cls = global.owningClass(f))
-          currentClassTy = canonicalClass(types.classType(cls, {}), f);
+          currentClassTy = cls->kind == NodeKind::EnumDecl ? types.enumType(cls) : canonicalClass(types.classType(cls, {}), f);
       const Ty* ft = declType(f);
       if (!ft || ft->kind != TyKind::Function)
       {
@@ -3899,6 +4018,7 @@ namespace
             if (static_cast<ClassDecl*>(d)->templateParams.empty())
               collectFunctions(static_cast<ClassDecl*>(d)->members, out);
             break;
+          case NodeKind::EnumDecl: collectFunctions(static_cast<EnumDecl*>(d)->members, out); break;
           case NodeKind::FunctionDecl:
           {
             auto* f = static_cast<FunctionDecl*>(d);

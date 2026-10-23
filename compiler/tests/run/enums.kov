@@ -1,0 +1,40 @@
+// Real enums: values in their own block, methods with `this` as the value, generated count,
+// values and str(), exhaustive switch, and nameof.
+
+enum class Direction : uint8_t
+{
+  { North, East, South, West, None }
+  bool isVertical() const { return this == North || this == South; }
+  Direction opposite() const
+  {
+    switch (this)
+    {
+      case North: return South;
+      case East: return West;
+      case South: return North;
+      case West: return East;
+      case None: return None;
+    }
+  }
+};
+
+enum class Answer
+{
+  { No = 0, Yes = 1, Maybe = 7 }
+  const char* str() const { return this == Yes ? "yes!" : "not yes"; }
+};
+
+int main()
+{
+  println("{} values of {}", Direction::count, nameof(Direction));
+  for (Direction d : Direction::values)
+    println("{} {} {}", d.str(), d.isVertical(), d.opposite().str());
+  Direction e = Direction::East;
+  println("{} {} {}", nameof(e), nameof(Direction::West), e.opposite().isVertical());
+  println("{} {} {}", Answer::count, Answer::Yes.str(), Answer::Maybe.str());
+  int sum = 0;
+  for (Answer a : Answer::values)
+    sum += (int)a;
+  println("{}", sum);
+  return 0;
+}

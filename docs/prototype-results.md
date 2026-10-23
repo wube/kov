@@ -365,6 +365,19 @@ with their structs and constants, `Vector<T>` of structs and of `String`, refere
 pointers to members through `this->`, `switch` on characters, 64-bit arithmetic, `static`
 methods, default member initializers, recursion over directories, `main(argc, argv)`.
 
+## Real enums and nameof (2026-10-24)
+
+Design.md section 8.4 as far as it goes without `Optional`: the values in their own brace block,
+methods in which `this` is the value, generated `count`, `values` and `str()` (a hand-written
+`str()` wins), `switch` on such an enum that must name every value (compile error: `switch on
+Light does not handle Amber`) and aborts on a value outside them (`e2.kov:5:3: assertion failed:
+invalid value in switch on Light`, through the same `kov_assert_failed`), and `nameof(x)`.
+`enums.kov` covers them; 15 run-tests pass. In the compiler: the parser synthesises the three
+generated members with `Decl::builtin` markers, the resolver types `this` in enum scopes as a
+reference to the enum and gives `values` the array type `E[count]`, codegen folds `count`, emits
+`values` as a constant array and `str()` as a switch, and passes the enum value by address as
+`this`. Factorio unchanged (0.075 s parse, 99.27% clean, 0.081 s resolve).
+
 ## Lessons
 
 - **Windows memory allocation serialises parallel work.** The first parser version allocated and
