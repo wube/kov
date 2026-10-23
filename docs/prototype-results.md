@@ -92,10 +92,27 @@ thousands of times; kovc reads every line once. This is exactly the cost Kov's m
 What the comparison does *not* show: clang also type-checks every expression and instantiates
 every template, which kovc does not do yet. That work is proportional to the amount of code,
 not to the number of translation units, so it is expected to cost seconds, not minutes, when
-done once. The practical reference point is Factorio's real build, which already hides most of
-the header cost with unity builds (100 files per unit) and a PCH: a full rebuild with tests is
-2-4 minutes including code generation and linking (kovarex's recollection; exact measurements
-pending). The front end measured here is 0.3 s.
+done once.
+
+### Comparison with the real Factorio build
+
+The practical reference point is Factorio's real build, which already hides most of the header
+cost with unity builds (100 files per unit), a PCH and FASTBuild. Measured on this same machine by
+the Factorio build setup thread (Debug x64, MSVC 14.44; see its baseline write-up in `docs/`):
+
+| Factorio build (MSVC, Debug x64, FASTBuild) | time |
+|---|---|
+| clean rebuild, 919 objects | 62 s |
+| unit tests, `--fork`, 9,012 passing | 59 s |
+| one-line edit in an ordinary header, rebuild + link | 16 s (about 10 s of it linking) |
+| one-line edit in a header included by `Common.hpp` (the PCH) | 55 s |
+
+Against that, the prototype front end processes the whole code base in 0.32 s, and it does so
+from scratch each time; the design's persistent compiler would re-resolve only what an edit
+touches. The missing pieces before this becomes a like-for-like number are type checking,
+template instantiation and code generation, where the Kov design wins by generating each
+instantiation once and by never linking; the Factorio numbers above say that linking alone is
+10 of the 16 seconds of an incremental build today.
 
 ## Lessons
 
