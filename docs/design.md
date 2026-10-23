@@ -75,6 +75,39 @@ including tests is about 2-4 minutes with unity builds (100 files/unit), PCH and
 A 10x win means ~12-24 s for a full build. The key metric is also the rebuild time after a
 one-line change in a widely used header.
 
+## Kov v0: the first runnable subset (proposed 2026-10-23, not yet reviewed by kovarex)
+
+The smallest language that is still Kov, as the target of the first code generator:
+
+- **Files and scope.** No `#include`; the project is the set of files given to the compiler.
+  Every top-level declaration is visible in every file, in any order. Namespaces as in C++.
+- **Grammar parseable without name lookup.** Three rules replace C++'s dependence on knowing
+  what a name is:
+  1. A statement that starts with a (qualified) name followed by `*`, `&`, `&&` chains and then
+     an identifier is a declaration (`Foo* p;`); as an expression it would be useless anyway.
+  2. `Type name(args)` is a declaration; `Type(args)` is an expression (no most vexing parse).
+  3. `name<...>` is a template-id in type positions always, and in expression positions only
+     when the closing `>` is followed by `(`, `::`, `{`, `.` or `->`. `a < b > c` without
+     parentheses is a compile error.
+  No `typename` or `template` disambiguators (as in the proposal).
+- **Types.** `bool`, `i8/i16/i32/i64`, `u8/u16/u32/u64`, `f32/f64`, `char` (UTF-8 code unit),
+  pointers, references, arrays, `const`. `int` is an alias of `i32`, `size_t`/`usize` of `u64`.
+- **Declarations.** Functions, `struct`/`class` with methods, bases, constructors and
+  destructors, `enum class` with methods, `using` aliases, global and local variables, `auto`.
+  Simple templates (type parameters, full specialisation, `if constexpr`).
+- **Statements and expressions.** The C++ set, with the proposal's rules: required `this->`,
+  explicit by default, no implicit fallthrough, exhaustive `switch`, `?->` and `?:`.
+- **C interop.** `extern "C"` declarations of functions and structs; those are the only
+  externally linked names (nothing is mangled across Kov code, since everything is one program).
+- **Not in v0:** exceptions, RTTI, virtual inheritance, `both_const`/`class_const`, typed
+  unions, `accumulate`, coroutines.
+
+**Backend plan.** The compiler writes textual LLVM IR for the whole program and runs the
+bundled clang on it (`clang -O2 program.ll`). This needs no LLVM development libraries on the
+machine (only the clang binaries exist here) and keeps every codegen decision in Kov's own
+code; moving to the LLVM C++ API in-process is a later optimisation. Names in IR are the
+qualified Kov names with parameter types, quoted, so there is no mangling scheme to design.
+
 ## Open questions
 - **Syntax must be parseable without name lookup.** C++ needs to know whether a name is a type
   or a template to parse `a * b;` or `f < a > (b)`. In the index-then-resolve model the parser

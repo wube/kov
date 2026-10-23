@@ -1,0 +1,38 @@
+// First Kov program: C interop, functions, control flow, structs with methods.
+// Expected output (see hello.expected): three lines.
+extern "C" int printf(const char* format, ...);
+
+int fib(int n)
+{
+  if (n < 2)
+    return n;
+  return fib(n - 1) + fib(n - 2);
+}
+
+struct Point
+{
+  int x;
+  int y;
+  int manhattan() const { return this->x + this->y; }
+  void move(int dx, int dy)
+  {
+    this->x += dx;
+    this->y += dy;
+  }
+};
+
+int main()
+{
+  printf("fib(20) = %d\n", fib(20));
+  Point p;
+  p.x = 3;
+  p.y = 4;
+  p.move(1, 2);
+  printf("point %d %d -> %d\n", p.x, p.y, p.manhattan());
+  int sum = 0;
+  for (int i = 0; i < 10; ++i)
+    if (i % 2 == 0)
+      sum += i;
+  printf("sum %d\n", sum);
+  return 0;
+}
