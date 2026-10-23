@@ -97,8 +97,8 @@ done once.
 ### Comparison with the real Factorio build
 
 The practical reference point is Factorio's real build, which already hides most of the header
-cost with unity builds (100 files per unit), a PCH and FASTBuild. Measured on this same machine by
-the Factorio build setup thread (Debug x64, MSVC 14.44; see its baseline write-up in `docs/`):
+cost with unity builds (100 files per unit), a PCH and FASTBuild. Measured on this same machine
+(Debug x64, MSVC 14.44; setup and method in [factorio-build-baseline.md](factorio-build-baseline.md)):
 
 | Factorio build (MSVC, Debug x64, FASTBuild) | time |
 |---|---|
