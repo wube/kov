@@ -28,6 +28,13 @@ namespace
     std::vector<std::pair<Decl*, uint32_t>> bases; // base class definition -> field index
     std::vector<Decl*> fieldDecls;           // data members in layout order
     std::optional<bool> needsDestruction;
+    // Virtual functions: a polymorphic class has a vtable pointer at offset 0 (its own, or the
+    // one of its first base). Slots are shared with the base and extended in declaration order.
+    bool polymorphic = false;
+    std::vector<std::string> vtableKeys;      // name(param types) [const], "~" for the destructor
+    std::vector<FunctionDecl*> vtable;        // implementation per slot (null for pure virtual)
+    std::vector<const Ty*> vtableOwners;      // class type each implementation belongs to
+    std::string vtableName;                   // @"vtable.Class"
   };
 
   struct Emitter
@@ -257,6 +264,8 @@ namespace
         unsupported(at, "the class template " + global.qualifiedName(c) + " used without all its arguments");
       StructInfo& info = structs[key];
       info.name = "%struct." + std::to_string(structs.size());
+      // Bases first (resolved before deciding on the vtable pointer).
+      std::vector<const Ty*> baseKeys;
       for (const ClassDecl::Base& b : c->bases)
       {
         const Ty* bt = global.typeOfAstIn(b.type, c, args);
@@ -264,9 +273,64 @@ namespace
           unsupported(c, "a base class that is not a known class");
         const Ty* baseKey = canonicalClass(bt, c);
         structFor(baseKey, c);
+        baseKeys.push_back(baseKey);
+      }
+      // Virtual methods of this class: declared virtual/override, or matching an inherited slot.
+      bool primaryPolymorphic = !baseKeys.empty() && structs[baseKeys[0]].polymorphic;
+      for (size_t i = 1; i < baseKeys.size(); ++i)
+        if (structs[baseKeys[i]].polymorphic)
+          unsupported(c, "a polymorphic base class that is not the first base");
+      std::vector<std::string> keys;
+      std::vector<FunctionDecl*> impls;
+      std::vector<const Ty*> owners;
+      if (primaryPolymorphic)
+      {
+        keys = structs[baseKeys[0]].vtableKeys;
+        impls = structs[baseKeys[0]].vtable;
+        owners = structs[baseKeys[0]].vtableOwners;
+      }
+      {
+        ArgsScope scope(*this, &args);
+        for (Decl* m : c->members)
+        {
+          if (m->kind != NodeKind::FunctionDecl || (m->flags & (DF_Static | DF_Constructor)) || !m->templateParams.empty())
+            continue;
+          auto* f = static_cast<FunctionDecl*>(m);
+          std::string k = methodKey(f);
+          size_t slot = keys.size();
+          for (size_t i = 0; i < keys.size(); ++i)
+            if (keys[i] == k)
+              slot = i;
+          bool isVirtual = (f->flags & (DF_Virtual | DF_Override)) || slot < keys.size();
+          if (!isVirtual)
+            continue;
+          if (slot == keys.size())
+          {
+            keys.push_back(k);
+            impls.push_back(f);
+            owners.push_back(key);
+          }
+          else
+          {
+            impls[slot] = f;
+            owners[slot] = key;
+          }
+        }
+      }
+      if (!keys.empty())
+      {
+        info.polymorphic = true;
+        if (!primaryPolymorphic)
+          info.fieldTypes.push_back(types.pointer(types.voidType())); // own vtable pointer at offset 0
+      }
+      for (const Ty* baseKey : baseKeys)
+      {
         info.bases.push_back({baseKey->decl, uint32_t(info.fieldTypes.size())});
         info.fieldTypes.push_back(baseKey);
       }
+      info.vtableKeys = keys;
+      info.vtable = impls;
+      info.vtableOwners = owners;
       for (Decl* m : c->members)
       {
         if (m->kind != NodeKind::VariableDecl || (m->flags & (DF_Static | DF_Typedef)))
@@ -284,7 +348,69 @@ namespace
       line += " }\n";
       decls += line;
       ++result.structs;
+      if (structs[key].polymorphic)
+      {
+        std::string vt = "@\"vtable." + types.toString(key, &symbols) + "\"";
+        structs[key].vtableName = vt;
+        std::vector<FunctionDecl*> impls2 = structs[key].vtable;
+        std::vector<const Ty*> owners2 = structs[key].vtableOwners;
+        std::string entries;
+        for (size_t i = 0; i < impls2.size(); ++i)
+        {
+          FunctionDecl* f = impls2[i];
+          std::string entry = "ptr null";
+          if (f && !(f->flags & DF_Pure))
+            entry = "ptr " + useFunction(f, global.classArgsOf(owners2[i]), owners2[i]);
+          entries += (i ? ", " : "") + entry;
+        }
+        decls += vt + " = constant [" + std::to_string(impls2.size()) + " x ptr] [" + entries + "]\n";
+      }
       return structs[key];
+    }
+
+    // Identity of a method for override matching: name, parameter types and constness.
+    std::string methodKey(FunctionDecl* f)
+    {
+      if (f->flags & DF_Destructor)
+        return "~";
+      std::string full = global.qualifiedName(f);
+      size_t pos = full.rfind("::");
+      std::string k = pos == std::string::npos ? full : full.substr(pos + 2);
+      const Ty* ft = declType(f);
+      k += "(";
+      for (size_t i = 0; ft && ft->kind == TyKind::Function && i < ft->args.size(); ++i)
+        k += (i ? ", " : "") + types.toString(ft->args[i], &symbols);
+      k += ")";
+      if (f->flags & DF_Const)
+        k += " const";
+      return k;
+    }
+
+    // Slot of f in the vtable of classTy, or -1 if f is not virtual there.
+    int slotOf(const Ty* classTy, FunctionDecl* f, Node* at)
+    {
+      StructInfo& info = structFor(classTy, at);
+      if (!info.polymorphic)
+        return -1;
+      TemplateArgs args = global.classArgsOf(canonicalClass(classTy, at));
+      ArgsScope scope(*this, &args);
+      std::string k = methodKey(f);
+      for (size_t i = 0; i < info.vtableKeys.size(); ++i)
+        if (info.vtableKeys[i] == k)
+          return int(i);
+      return -1;
+    }
+
+    // Loads the function pointer of a vtable slot from the object at addr.
+    std::string loadSlot(const std::string& addr, int slot)
+    {
+      std::string vptr = newTemp();
+      fn += "  " + vptr + " = load ptr, ptr " + addr + "\n";
+      std::string entry = newTemp();
+      fn += "  " + entry + " = getelementptr inbounds ptr, ptr " + vptr + ", i64 " + std::to_string(slot) + "\n";
+      std::string fp = newTemp();
+      fn += "  " + fp + " = load ptr, ptr " + entry + "\n";
+      return fp;
     }
 
     std::string gep(const std::string& structName, const std::string& addr, uint32_t index)
@@ -370,7 +496,7 @@ namespace
 
     // Destroys the object at addr: user destructor if any (it destroys members itself), else
     // members and bases that need it, in reverse order.
-    void destroy(const std::string& addr, const Ty* t, Node* at)
+    void destroy(const std::string& addr, const Ty* t, Node* at, bool dynamic = false)
     {
       t = types.stripRef(t);
       if (t->kind == TyKind::Array)
@@ -388,6 +514,17 @@ namespace
       if (!isClass(t) || !needsDestruction(t, at))
         return;
       ClassDecl* c = classDef(t->decl, at);
+      if (dynamic)
+      {
+        StructInfo& info = structFor(t, at);
+        for (size_t i = 0; i < info.vtableKeys.size(); ++i)
+          if (info.vtableKeys[i] == "~")
+          {
+            std::string fp = loadSlot(addr, int(i));
+            fn += "  call void " + fp + "(ptr " + addr + ")\n";
+            return;
+          }
+      }
       if (FunctionDecl* dtor = findDestructor(c))
       {
         TemplateArgs args = global.classArgsOf(canonicalClass(t, at));
@@ -462,6 +599,8 @@ namespace
         else
           initializeMembers(baseAddr, bt, {}, at);
       }
+      if (info.polymorphic)
+        fn += "  store ptr " + info.vtableName + ", ptr " + addr + "\n";
       for (Decl* d : info.fieldDecls)
       {
         auto* v = static_cast<VariableDecl*>(d);
@@ -796,9 +935,9 @@ namespace
 
     // Emits a call. thisArg/sret may be empty. For class returns the result is the sret address.
     Value callFunction(FunctionDecl* f, const TemplateArgs& args, const Ty* classTy, const std::string& thisArg,
-                       const std::string& sret, Span<Expr*> callArgs, Node* at)
+                       const std::string& sret, Span<Expr*> callArgs, Node* at, const std::string& indirect = "")
     {
-      std::string name = useFunction(f, args, classTy);
+      std::string name = indirect.empty() ? useFunction(f, args, classTy) : indirect;
       Signature s;
       const Ty* ret;
       {
@@ -875,7 +1014,7 @@ namespace
         }
         argText += std::string(argText.empty() ? "" : ", ") + text;
       }
-      std::string sig = s.variadic ? signatureText(s) + " " : s.returnType + " ";
+      std::string sig = (s.variadic || !indirect.empty()) ? signatureText(s) + " " : s.returnType + " ";
       if (s.returnType == "void")
       {
         fn += "  call " + sig + name + "(" + argText + ")\n";
@@ -1740,7 +1879,11 @@ namespace
               }
             }
           }
-          return callFunction(f, calleeArgs(f, classTy, c, c), classTy, thisArg, sret, c->args, c);
+          std::string indirect;
+          if (classTy && n->name.parts.size() == 1 && !thisArg.empty())
+            if (int slot = slotOf(classTy, f, c); slot >= 0)
+              indirect = loadSlot(thisArg, slot);
+          return callFunction(f, calleeArgs(f, classTy, c, c), classTy, thisArg, sret, c->args, c, indirect);
         }
         if (!d || d->kind == NodeKind::ClassDecl || d->kind == NodeKind::EnumDecl || d->kind == NodeKind::UsingAliasDecl)
         {
@@ -1832,7 +1975,11 @@ namespace
             if (isClass(bt))
               objectTy = canonicalClass(bt, c);
           }
-          return callFunction(f, calleeArgs(f, objectTy, c, c), objectTy, thisArg, sret, c->args, c);
+          std::string indirect;
+          if (objectTy && !thisArg.empty() && m->member.parts.size() == 1)
+            if (int slot = slotOf(objectTy, f, c); slot >= 0)
+              indirect = loadSlot(thisArg, slot);
+          return callFunction(f, calleeArgs(f, objectTy, c, c), objectTy, thisArg, sret, c->args, c, indirect);
         }
       }
       // Call through a function pointer.
@@ -2073,7 +2220,7 @@ namespace
           if (p.ty->kind != TyKind::Pointer)
             unsupported(e, "delete of a non-pointer");
           if (isClass(p.ty->inner))
-            destroy(p.text, p.ty->inner, e);
+            destroy(p.text, p.ty->inner, e, true);
           ensureMalloc();
           fn += "  call void @free(ptr " + p.text + ")\n";
           return {"", types.voidType()};

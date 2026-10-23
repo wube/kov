@@ -189,8 +189,8 @@ methods and single inheritance, enums, the arithmetic types, pointers, reference
 globals, `new`/`delete`, all control flow including `switch`, `extern "C"` functions.
 
 Tests: `compiler\tests\run_tests.cmd` compiles every `tests/run/*.kov`, runs it and compares the
-output with the `.expected` file. Seven programs so far (hello, control, types, structs,
-objects, templates, strings).
+output with the `.expected` file. Eight programs so far (hello, control, types, structs,
+objects, templates, strings, virtual).
 
 Object model (added the same day): constructors with member initializers and default member
 initializers, destructors, destruction at scope exit in reverse order including the scopes left
@@ -230,9 +230,17 @@ ones (mostly identical signatures from macro-generated code); the resolve+check 
 0.086 s on 32 threads with ranking instead of 0.032 s, which is worth optimising later by
 caching each class's conversion constructors.
 
+Virtual functions (same day): a polymorphic class carries a vtable pointer at offset 0 (its own,
+or its first base's), slots are inherited and extended in declaration order, overrides are
+matched by name, parameter types and constness (`override` or an inherited slot), constructors
+store the vtable pointer after the bases are built, pure virtual slots are null, and `delete`
+through a base pointer dispatches to the virtual destructor. `virtual.kov` covers dispatch
+through pointers and references, a virtual destructor, a pure virtual method and a non-virtual
+method calling a virtual one. A polymorphic base must be the first base (no secondary vtables).
+
 Not in v0 and reported as "codegen does not support X yet": lambdas, unions, exceptions,
-virtual functions, arrays of objects with constructors, globals with constructors, more than
-four template parameters per function, class-typed iterators in range-for. IR names are the
+multiple polymorphic bases, arrays of objects with constructors, globals with constructors,
+more than four template parameters per function, class-typed iterators in range-for. IR names are the
 qualified Kov names with parameter types in quotes (`@"Point::move(int32, int32)"`), so there is
 no mangling scheme.
 

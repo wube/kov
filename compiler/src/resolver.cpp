@@ -1518,6 +1518,7 @@ struct GlobalScope::Impl
   {
     std::vector<Candidate> viable;
     bool objectConst = objectTy && types.stripRef(objectTy)->isConst;
+    bool single = candidates.size() == 1; // One candidate: arity decides, no ranking needed.
     for (FunctionDecl* f : candidates)
     {
       size_t required = 0, total = f->params.size();
@@ -1534,11 +1535,16 @@ struct GlobalScope::Impl
         continue;
       Candidate c{f, {}, 0};
       bool constMethod = (f->flags & DF_Const) != 0;
-      if (objectTy && !(f->flags & DF_Static))
+      if (objectTy && !(f->flags & DF_Static) && !single)
       {
         if (objectConst && !constMethod)
           continue;
         c.thisRank = (!objectConst && constMethod) ? 1 : 0;
+      }
+      if (single)
+      {
+        ambiguous = false;
+        return f;
       }
       const Ty* ft = declaredTypeOf(f, classSubst, 0);
       Subst deduced = classSubst ? *classSubst : Subst{};

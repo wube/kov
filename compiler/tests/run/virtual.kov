@@ -1,0 +1,55 @@
+// Virtual functions: dispatch through base pointers and references, overriding, a virtual
+// destructor used through delete, pure virtual methods, and a derived class adding fields.
+extern "C" int printf(const char* format, ...);
+
+static int destroyed = 0;
+
+struct Shape
+{
+  int id;
+  Shape(int id) : id(id) {}
+  virtual ~Shape() { destroyed += 1; }
+  virtual int area() const = 0;
+  virtual const char* name() const { return "shape"; }
+  int describe() const { return this->area() * 10 + this->id; }
+};
+
+struct Square : Shape
+{
+  int side;
+  Square(int id, int side) : Shape(id), side(side) {}
+  ~Square() override { destroyed += 100; }
+  int area() const override { return this->side * this->side; }
+  const char* name() const override { return "square"; }
+};
+
+struct Rect : Shape
+{
+  int w;
+  int h;
+  Rect(int id, int w, int h) : Shape(id), w(w), h(h) {}
+  int area() const override { return this->w * this->h; }
+};
+
+int total(const Shape& s)
+{
+  return s.area() + s.describe();
+}
+
+int main()
+{
+  Square sq(1, 3);
+  Rect rc(2, 2, 5);
+  Shape* shapes[2];
+  shapes[0] = &sq;
+  shapes[1] = &rc;
+  int sum = 0;
+  for (int i = 0; i < 2; ++i)
+    sum += shapes[i]->area();
+  printf("%d %s %s %d %d\n", sum, shapes[0]->name(), shapes[1]->name(), total(sq), total(rc));
+  Shape* heap = new Square(3, 4);
+  printf("%d %d\n", heap->describe(), destroyed);
+  delete heap;
+  printf("%d\n", destroyed);
+  return 0;
+}
