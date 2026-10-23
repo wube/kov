@@ -75,10 +75,23 @@ including tests is about 2-4 minutes with unity builds (100 files/unit), PCH and
 A 10x win means ~12-24 s for a full build. The key metric is also the rebuild time after a
 one-line change in a widely used header.
 
+## Open questions
+- **Syntax must be parseable without name lookup.** C++ needs to know whether a name is a type
+  or a template to parse `a * b;` or `f < a > (b)`. In the index-then-resolve model the parser
+  runs before any name is known, so Kov should make these cases unambiguous by grammar
+  (candidates: a different template-argument bracket or a required disambiguation, no
+  most-vexing-parse, declaration statements recognisable from their first tokens). The prototype
+  parser uses heuristics that work on 99.2% of Factorio files; the resolver can flag misparses
+  later, but a real compiler should not have to guess.
+- **Macros.** Everything the prototype could not parse or resolve in Factorio comes from macros
+  (`CALL_ON_EVERY_*` code generation, assert macros, enum wrappers). Kov needs a replacement for
+  the code-generation uses (compile-time reflection / `accumulate`-style features) before the
+  converter can drop them.
+
 ## Roadmap
-1. **Speed-test prototype** (current): parallel lexer + parser + order-independent name
-   resolution for a Kov subset, benchmarked against `clang -fsyntax-only` and the existing
-   Factorio build. No code generation.
+1. **Speed-test prototype** (done, see [prototype-results.md](prototype-results.md)): parallel
+   lexer + parser + order-independent name resolution, benchmarked on Factorio. Whole front end
+   in 0.32 s for 1.33 M lines on 32 threads. No code generation.
 2. Compiler that runs real Kov programs via LLVM.
 3. Standard library, C import, converter from Factorio-style C++ to Kov.
 4. Persistent compiler + IDE integration.

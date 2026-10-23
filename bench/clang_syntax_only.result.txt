@@ -1,0 +1,51 @@
+
+file                                                          seconds   ok
+----                                                          -------   --
+src\Entity\EntityHeaterData.cpp                             2.2354123 True
+src\Graphics\RectangleDrawOrder.cpp                         1.1477041 True
+src\Map\HiddenTilesContainer.cpp                            0.6501506 True
+src\Trigger\StreamAttackParameters.cpp                       1.343282 True
+src\Equipment\RoboportEquipmentSpecification.cpp            0.4767013 True
+src\GameController\GameControllerUtil.cpp                    0.571551 True
+src\Blueprint\DeconstructionRecord.cpp                      1.6333457 True
+src\Map\DeduceEffectiveTileContext.cpp                       1.394679 True
+src\Gui\Style\SpeechBubbleStyle.cpp                         0.4395638 True
+src\Info\TimeStatistics.cpp                                 0.7838375 True
+src\Fluid\PipeConnectionDefinition.cpp                      1.0838562 True
+src\ID\IDToValueMultiMappingConnector.cpp                   0.5787729 True
+src\CircuitNetwork\VirtualSignalPrototype.cpp               0.5635416 True
+src\Item\Item.cpp                                           2.0975465 True
+src\Rail\RailNaturalIterator.cpp                            0.7988423 True
+src\Graphics\BuildingRenderer.cpp                            2.948886 True
+src\Trigger\TriggerItem.cpp                                 1.6382166 True
+src\Graphics\CyclicFramePosition.cpp                        0.5328185 True
+src\CircuitNetwork\Behaviors\AccumulatorControlBehavior.cpp 0.8958762 True
+src\Graphics\DrawHandle.cpp                                 0.8945304 True
+src\Belt\SplitterStructureAnimation.cpp                     0.4881824 True
+src\Gui\BlueprintParametersIDItemGui.cpp                    1.1797551 True
+src\Script\LuaTechnology.cpp                                1.0449833 True
+src\Map\PollutionSettings.cpp                                0.509404 True
+src\Space\Procession\Layers\PodMovementProcessionLayer.cpp  0.4272279 True
+src\LatencyOneTimeEffect.cpp                                0.4410377 True
+src\Net\ClientMultiplayerState.cpp                          1.7016652 True
+src\Item\MiningTool.cpp                                     0.4793107 True
+src\Script\LuaCustomEventPrototype.cpp                      1.7602252 True
+src\Item\CursorStackChangeGuard.cpp                         0.5738419 True
+src\Undo\RemovedEntityUndoAction.cpp                        2.2221403 True
+src\Script\LuaModSettingPrototype.cpp                       0.5944419 True
+src\Script\LuaGuiElement.cpp                                2.3645532 True
+src\AI\PathfindingCollisionMask.cpp                         0.5161318 True
+src\Net\ServerRouter.cpp                                    1.9771609 True
+src\Logistics\LogisticSupplyChestDistribution.cpp           1.4392548 True
+src\Achievement\TrainPathAchievementPrototype.cpp           1.1899162 True
+src\Util\TaskManager.cpp                                    0.7023844 True
+src\Space\Procession\ProcessionSet.cpp                      0.5600206 True
+src\Script\Extra\ScriptPosition.cpp                         0.8965914 True
+
+
+
+files sampled: 40, compiled OK: 40
+mean clang-cl /Zs time per .cpp: 1.09 s (single process, no PCH)
+all 3230 .cpp files sequentially (extrapolated): 3,535 s
+all 3230 .cpp files on 32 cores (extrapolated, ideal scaling): 110 s
+sample of 40 files with 40 parallel clang processes: 4.63 s wall
