@@ -969,7 +969,11 @@ namespace
     // --- declarations ---
 
     template<typename T>
-    void pushDecl(T* d) { scratch.push_back(d); }
+    void pushDecl(T* d)
+    {
+      d->endToken = pos;
+      scratch.push_back(d);
+    }
 
     Decl* lastPushedDecl(size_t mark) const
     {

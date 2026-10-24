@@ -1,6 +1,7 @@
 // kovc: the Kov compiler. Currently the speed-test prototype: parallel lexing of a file tree.
 #include "lexer.hpp"
 #include "codegen.hpp"
+#include "convert.hpp"
 #include "parser.hpp"
 #include "resolver.hpp"
 #include "source.hpp"
@@ -50,6 +51,7 @@ namespace
     ConfigValues configValues;     // --config name=value, --release; becomes the `config` namespace
     bool debug = true;             // config::debug
     unsigned modules = 0;          // --modules N: IR modules compiled in parallel (0: 2 per thread, 1: one module)
+    std::string convertDir;        // --convert DIR: write the inputs as Kov sources there
     int repeat = 1;
   };
 
@@ -72,7 +74,8 @@ namespace
             "  --cinclude D  directory searched by imported C headers (repeatable)\n"
             "  --config N=V  build configuration constant config::N (bool, integer, enumerator or string)\n"
             "  --release     the same as --config debug=false\n"
-            "  --modules N   split the program into N IR modules compiled in parallel (default: two per thread)\n");
+            "  --modules N   split the program into N IR modules compiled in parallel (default: two per thread)\n"
+            "  --convert D   rewrite the C++ inputs as Kov sources under D (see docs/path-to-factorio.md)\n");
   }
 
   struct FileStats
@@ -584,6 +587,15 @@ namespace
     std::sort(top.begin(), top.end(), [](auto& a, auto& b) { return a.second > b.second; });
     if (!options.emitLLVM.empty() || !options.exe.empty())
       runCodegen(parsed, global, symbols, options);
+    if (!options.convertDir.empty())
+    {
+      std::vector<ConvertInput> inputs;
+      for (size_t i = 0; i < parsed.size(); ++i)
+        inputs.push_back({files[i].path, files[i].text, &lexed[i].tokens, parsed[i].get()});
+      std::vector<std::filesystem::path> roots(options.roots.begin(), options.roots.end());
+      std::string summary = convertToKov(inputs, global, symbols, roots, options.convertDir);
+      report("convert: %s\n%s", options.convertDir.c_str(), summary.c_str());
+    }
     for (size_t i = 0; i < top.size() && int(i) < options.showUnresolved; ++i)
     {
       ResolveStats::Where w = total.unresolvedFirst[top[i].first];
@@ -668,6 +680,8 @@ int main(int argc, char** argv)
       options.configValues["debug"] = parseConfigValue("false");
     else if (arg == "--modules" && i + 1 < argc)
       options.modules = unsigned(atoi(argv[++i]));
+    else if (arg == "--convert" && i + 1 < argc)
+      options.convertDir = argv[++i];
     else if (arg[0] == '-')
     {
       usage();
@@ -684,7 +698,8 @@ int main(int argc, char** argv)
   if (options.threads == 0)
     options.threads = 1;
   quietOutput = options.quiet;
-  if ((!options.exe.empty() || !options.emitLLVM.empty()) && !options.noStd)
+  // The standard library joins the program for code generation, and whenever --std names it.
+  if ((!options.exe.empty() || !options.emitLLVM.empty() || !options.stdDir.empty()) && !options.noStd)
   {
     std::error_code ec;
     std::filesystem::path stdPath = options.stdDir.empty()

@@ -46,6 +46,26 @@ hard each site is.
 Not needed for a Windows build: Metal, the Switch and Linux paths, PCH and unity-build
 machinery, FASTBuild.
 
+## The converter, first run (2026-10-24)
+
+`kovc --convert OUT <dirs>` rewrites the parsed and resolved C++ into Kov: preprocessor lines
+evaluated for Windows/MSVC/debug (`#include` of C headers becomes `extern "C" import`, the rest
+goes), constant macros become `const auto`, other macros stay as `// TODO(kov)` comments,
+forward declarations go, converting constructors get `implicit`, members get `this->`, a case
+that falls through gets `fallthrough;`, `typename`/`template` disambiguators go, and `std::`
+names map to the library's spelling (`std::string` to `String`, `std::vector` to `Vector`, 150
+names). A header and its source of the same stem merge into one `.kov` file; `CONVERSION.md` in
+the output lists what was done and what is left per file.
+
+On `libraries/CommonUtil` (29 files, 4,140 lines): 21 Kov files, 1,008 `std::` names renamed,
+109 forward declarations removed, 26 macros turned into constants, 4 kept as comments. kovc
+parses the result 100% clean and types 88% of its expressions with the current library; the
+unresolved rest is the library worklist, in order: `Pair` (350 uses), `StringView` (38),
+`forward`/`move`, `min`/`max`, the type traits (`isArray`, `isSame`, `RemoveConst`...),
+`WString`, `npos`, `RuntimeError`, `Set`, `Deque`, `Chrono`, and `String` methods (`begin`,
+`end`, `push_back`, `erase`, `resize`, `find_first_not_of`, `replace`), then `va_list` and the
+`trio_*` printf functions behind `ssprintf`.
+
 ## The order that gets to a running game
 
 1. Decide exceptions and RTTI; implement them (they shape what the converter emits).

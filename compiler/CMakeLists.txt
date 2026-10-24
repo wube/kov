@@ -11,6 +11,7 @@ endif()
 
 add_executable(kovc
   src/main.cpp
+  src/convert.cpp
   src/lexer.cpp
   src/parser.cpp
   src/resolver.cpp

@@ -186,6 +186,7 @@ struct Decl : Node
   Scope* ownScope = nullptr;  // Set by the resolver for namespaces, classes and enums.
   std::atomic<const Ty*> cachedType{nullptr}; // Declared type, filled lazily by the type checker (non-dependent only).
   uint8_t attributes = 0;     // ATTR_* bits.
+  uint32_t endToken = 0;      // One past the declaration's last token (set when the parser finishes it).
   uint8_t builtin = 0;        // BUILTIN_*: a member the compiler generates (no body/initializer in the AST).
 };
 
