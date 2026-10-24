@@ -1,0 +1,26 @@
+// Hand-written replacement for TimeUtil.hpp: std::chrono becomes the library's Clock, Duration
+// and TimePoint (stdlib/core/Time.kov). The converter drops the converted CpuTimer for this one.
+namespace TimeUtil
+{
+  class CpuTimer
+  {
+  public:
+    CpuTimer()
+      : startTime(Clock::now())
+    {}
+
+    double getSecondsPassed() const { return this->elapsed().seconds(); }
+    double getMilliSecondsPassed() const { return this->elapsed().milliseconds(); }
+    double getMicroSecondsPassed() const { return this->elapsed().microseconds(); }
+    int64_t getNanoSecondsPassedAsInteger() const { return this->elapsed().count(); }
+
+    Duration elapsed() const { return Clock::now() - this->startTime; }
+
+    TimePoint getStartTime() const { return this->startTime; }
+
+    void reset() { this->startTime = Clock::now(); }
+
+  private:
+    TimePoint startTime;
+  };
+}

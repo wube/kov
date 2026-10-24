@@ -1,0 +1,78 @@
+// Kov standard library: a monotonic clock. A Duration counts nanoseconds, a TimePoint is a
+// reading of the clock; both are plain integers underneath. The clock is QueryPerformanceCounter.
+extern "C" int QueryPerformanceCounter(int64_t* count);
+extern "C" int QueryPerformanceFrequency(int64_t* frequency);
+
+struct Duration
+{
+  int64_t nanoseconds = 0;
+
+  Duration() {}
+  explicit Duration(int64_t nanoseconds) : nanoseconds(nanoseconds) {}
+
+  int64_t count() const { return this->nanoseconds; }
+  double seconds() const { return (double)this->nanoseconds / 1e9; }
+  double milliseconds() const { return (double)this->nanoseconds / 1e6; }
+  double microseconds() const { return (double)this->nanoseconds / 1e3; }
+
+  Duration operator+(Duration other) const { return Duration(this->nanoseconds + other.nanoseconds); }
+  Duration operator-(Duration other) const { return Duration(this->nanoseconds - other.nanoseconds); }
+  Duration& operator+=(Duration other)
+  {
+    this->nanoseconds += other.nanoseconds;
+    return *this;
+  }
+  Duration& operator-=(Duration other)
+  {
+    this->nanoseconds -= other.nanoseconds;
+    return *this;
+  }
+  bool operator==(Duration other) const { return this->nanoseconds == other.nanoseconds; }
+  bool operator!=(Duration other) const { return this->nanoseconds != other.nanoseconds; }
+  bool operator<(Duration other) const { return this->nanoseconds < other.nanoseconds; }
+  bool operator<=(Duration other) const { return this->nanoseconds <= other.nanoseconds; }
+  bool operator>(Duration other) const { return this->nanoseconds > other.nanoseconds; }
+  bool operator>=(Duration other) const { return this->nanoseconds >= other.nanoseconds; }
+};
+
+Duration nanoseconds(int64_t count) { return Duration(count); }
+Duration microseconds(int64_t count) { return Duration(count * 1000); }
+Duration milliseconds(int64_t count) { return Duration(count * 1000000); }
+Duration seconds(int64_t count) { return Duration(count * 1000000000); }
+Duration seconds(double count) { return Duration((int64_t)(count * 1e9)); }
+
+struct TimePoint
+{
+  int64_t nanoseconds = 0;
+
+  TimePoint() {}
+  explicit TimePoint(int64_t nanoseconds) : nanoseconds(nanoseconds) {}
+
+  Duration time_since_epoch() const { return Duration(this->nanoseconds); }
+  Duration operator-(TimePoint other) const { return Duration(this->nanoseconds - other.nanoseconds); }
+  TimePoint operator+(Duration d) const { return TimePoint(this->nanoseconds + d.nanoseconds); }
+  TimePoint operator-(Duration d) const { return TimePoint(this->nanoseconds - d.nanoseconds); }
+  bool operator==(TimePoint other) const { return this->nanoseconds == other.nanoseconds; }
+  bool operator!=(TimePoint other) const { return this->nanoseconds != other.nanoseconds; }
+  bool operator<(TimePoint other) const { return this->nanoseconds < other.nanoseconds; }
+  bool operator<=(TimePoint other) const { return this->nanoseconds <= other.nanoseconds; }
+  bool operator>(TimePoint other) const { return this->nanoseconds > other.nanoseconds; }
+  bool operator>=(TimePoint other) const { return this->nanoseconds >= other.nanoseconds; }
+};
+
+int64_t clockFrequency = 0; // counts per second, read once
+
+struct Clock
+{
+  static TimePoint now()
+  {
+    if (clockFrequency == 0)
+      QueryPerformanceFrequency(&clockFrequency);
+    int64_t counter = 0;
+    QueryPerformanceCounter(&counter);
+    // Split to keep the multiplication within 64 bits for long uptimes.
+    int64_t whole = counter / clockFrequency;
+    int64_t rest = counter % clockFrequency;
+    return TimePoint(whole * 1000000000 + rest * 1000000000 / clockFrequency);
+  }
+};

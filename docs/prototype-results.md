@@ -460,6 +460,24 @@ Two things cost most of the day and are worth knowing before touching this again
   with a vectored exception handler printing every exception code: `0xE0000001`, then
   `0x80000003`.
 
+## CommonUtil runs (2026-10-25)
+
+The converted `libraries/CommonUtil` (21 Kov files, 4 of them with hand-written parts) compiles
+with no code generation complaints, links, and `programs/factorio/tests/smoke.kov` runs against
+it with the expected output: `programs/factorio/convert.cmd` does the whole cycle. The front end
+numbers on the Factorio corpus did not move (99.27% of files parse, 76.8% of expressions typed).
+The road there is in docs/path-to-factorio.md; two findings belong here:
+
+- **The parser split `>=` as a template close**, so `index < 0 || index >= this->length` became
+  the assignment `index<0 || index> = this->length`, in the library's own `String::erase` among
+  others. Only `>>` may be split (C++11's rule). Found by running converted code, not by
+  compiling it: compile-time statistics cannot see a miscompile. The smoke test is now part of
+  the conversion check for that reason.
+- **Lenient conversions hide bugs.** A pointer passed where an integer parameter was expected
+  was converted with `ptrtoint` and the call picked an unrelated overload (`erase(begin, it)`
+  became `erase(int, int)` with addresses). Code generation now refuses pointer-to-integer and
+  integer-to-pointer argument conversions, as C++ does.
+
 ## Lessons
 
 - **Windows memory allocation serialises parallel work.** The first parser version allocated and

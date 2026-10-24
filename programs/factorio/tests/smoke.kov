@@ -1,0 +1,64 @@
+// A smoke test of the converted CommonUtil: compiled together with programs/factorio/kov by
+// convert.cmd and run; the output is compared with smoke.expected. It exercises what the
+// converter and the hand-written overrides produced, end to end through kovc.
+extern "C" int printf(const char* format, ...);
+
+int main()
+{
+  // StringUtil: trimming, case, search, splitting, formatting
+  String s = "  hello world  ";
+  StringUtil::trim(s);
+  printf("[%s]\n", s.c_str());
+  String lines = "\n\nabc\n\n";
+  StringUtil::trimBeginingAndEndingNewlines(lines);
+  printf("[%s]\n", lines.c_str());
+  printf("%s %s\n", StringUtil::toUpperCopy(String("abc")).c_str(), StringUtil::toLowerCopy(StringView("DeF")).c_str());
+  printf("%d %d %d\n", StringUtil::startsWith(StringView("prefix_rest"), StringView("prefix")) ? 1 : 0,
+         StringUtil::endsWith(StringView("prefix_rest"), StringView("rest")) ? 1 : 0,
+         StringUtil::contains(StringView("prefix_rest"), StringView("fix_")) ? 1 : 0);
+  Vector<String> parts = StringUtil::splitBySingleDelimiter(String(","), StringView("a,bc,,def"));
+  printf("%d:", parts.size());
+  for (int i = 0; i < parts.size(); ++i)
+    printf(" [%s]", parts[i].c_str());
+  printf("\n");
+  Pair<StringView, StringView> first = StringUtil::splitFirst(StringView("="), StringView("key=value=more"));
+  printf("[%s] [%s]\n", toString(first.first).c_str(), toString(first.second).c_str());
+  printf("%s\n", ssprintf("%d-%s-%.2f", 42, "x", 3.14159).c_str());
+  printf("%s\n", StringUtil::hexDump(String("AB"), String(" ")).c_str());
+  String replaced = "one two two";
+  StringUtil::replace_all(replaced, StringView("two"), StringView("2"));
+  printf("%s\n", replaced.c_str());
+
+  // Numbers
+  printf("%d %d\n", StringUtil::strtoint<int>(String("123"), true), StringUtil::strtoint<int>(String("-7"), true));
+  printf("%.2f\n", StringUtil::strtodouble(String("2.5"), true));
+  printf("%s %s\n", StringUtil::boolToString(true).c_str(), StringUtil::numberToString(1.5).c_str());
+  try
+  {
+    StringUtil::strtoint<int>(String("12x"), true);
+    printf("no throw\n");
+  }
+  catch (const Exception& e)
+  {
+    printf("caught: %s\n", e.what());
+  }
+
+  // UTF-8 <-> UTF-16 through the Windows API (the hand-written override)
+  WString wide = StringUtil::widen(String("h\xC3\xA9llo"));
+  printf("%d %d\n", wide.size(), (int)wide[1]);
+  String narrow = StringUtil::narrow(wide);
+  printf("%s %d\n", narrow.c_str(), narrow.size());
+
+  // Math: the fast approximations and fdlibm's pow, through bitCast instead of unions
+  printf("%.3f %.3f %.3f\n", Math::log2(8.0f), Math::exp2f(3.0f), Math::powPrecise(2.0, 0.5));
+  printf("%.3f %.3f %d\n", Math::atan2(1.0, 1.0), Math::log2Precise(1024.0), Math::powi(2, 10));
+  printf("%d %d\n", Math::isNaN(0.0 / 0.0) ? 1 : 0, Math::isNaN(1.0) ? 1 : 0);
+
+  // LowercaseString and the timer
+  LowercaseString lower("HeLLo");
+  printf("%s %s\n", lower.c_str(), lower.getLowercase().c_str());
+  TimeUtil::CpuTimer timer;
+  double seconds = timer.getSecondsPassed();
+  printf("%s\n", seconds >= 0.0 && seconds < 1.0 ? "timer ok" : "timer bad");
+  return 0;
+}

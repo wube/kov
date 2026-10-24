@@ -1,0 +1,20 @@
+[hello world]
+[abc]
+ABC def
+1 1 1
+4: [a] [bc] [] [def]
+[key] [value=more]
+42-x-3.14
+41 42
+one 2 2
+123 -7
+2.50
+true 1.5
+caught: Failed to fully parse string to int: '12x'
+5 233
+héllo 6
+3.000 8.000 1.414
+0.785 10.000 1024
+1 0
+HeLLo hello
+timer ok

@@ -1,26 +1,51 @@
 // Kov standard library: Optional<T>, a value that may be absent. The value is stored inline and
 // default-constructed while absent (a later version will avoid that with raw storage).
+struct NullOpt {};
+const NullOpt nullopt;
+
 template<typename T>
 struct Optional
 {
-  T value;
+  T stored;
   bool present = false;
 
   Optional() {}
-  Optional(const T& v) : value(v), present(true) {}
+  implicit Optional(NullOpt) {}
+  implicit Optional(const T& v) : stored(v), present(true) {}
+
+  Optional<T>& operator=(NullOpt)
+  {
+    this->present = false;
+    return *this;
+  }
+  Optional<T>& operator=(const T& v)
+  {
+    this->stored = v;
+    this->present = true;
+    return *this;
+  }
 
   bool hasValue() const { return this->present; }
-  T& get() { return this->value; }
-  const T& get() const { return this->value; }
+  bool has_value() const { return this->present; }
+  explicit operator bool() const { return this->present; }
+  bool operator!() const { return !this->present; }
+  T& get() { return this->stored; }
+  const T& get() const { return this->stored; }
+  T& value() { return this->stored; }
+  const T& value() const { return this->stored; }
+  T& operator*() { return this->stored; }
+  const T& operator*() const { return this->stored; }
+  T* operator->() { return &this->stored; }
+  const T* operator->() const { return &this->stored; }
   T valueOr(const T& fallback) const
   {
     if (this->present)
-      return this->value;
+      return this->stored;
     return fallback;
   }
   void set(const T& v)
   {
-    this->value = v;
+    this->stored = v;
     this->present = true;
   }
   void reset() { this->present = false; }

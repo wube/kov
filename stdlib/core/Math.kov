@@ -12,3 +12,10 @@ bool signbit(double value) { return value < 0.0 || (value == 0.0 && 1.0 / value 
 // math.h defines these through compiler builtins, which the importer cannot bring over.
 const float INFINITY = 1e39f;
 const double HUGE_VAL = 1e309;
+const double NAN = 0.0 / 0.0; // computed at startup: the compiler folds integers only
+
+// abs for the floating-point types (the C runtime's abs takes an int; std::abs on a double
+// converts to `::abs` and finds these).
+float abs(float value) { return value < 0 ? -value : value; }
+double abs(double value) { return value < 0 ? -value : value; }
+long long abs(long long value) { return value < 0 ? -value : value; }

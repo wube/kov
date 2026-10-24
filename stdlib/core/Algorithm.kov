@@ -138,6 +138,19 @@ T* lowerBound(T* first, T* last, const V& value)
   }
   return first;
 }
+template<typename T, typename V, typename Less>
+T* lowerBound(T* first, T* last, const V& value, Less less)
+{
+  while (first < last)
+  {
+    T* middle = first + (last - first) / 2;
+    if (less(*middle, value))
+      first = middle + 1;
+    else
+      last = middle;
+  }
+  return first;
+}
 
 template<typename T, typename V>
 T* upperBound(T* first, T* last, const V& value)
@@ -215,19 +228,20 @@ void sort(T* first, T* last, F less)
 template<typename T>
 struct Span
 {
-  T* data = nullptr;
+  T* items = nullptr;
   int length = 0;
 
   Span() {}
-  Span(T* data, int length) : data(data), length(length) {}
-  implicit Span(Vector<T>& values) : data(values.data), length(values.length) {}
+  Span(T* items, int length) : items(items), length(length) {}
+  implicit Span(Vector<T>& values) : items(values.items), length(values.length) {}
 
   int size() const { return this->length; }
   bool empty() const { return this->length == 0; }
-  T& operator[](int index) { return this->data[index]; }
-  T* begin() { return this->data; }
-  T* end() { return this->data + this->length; }
-  T& front() { return this->data[0]; }
-  T& back() { return this->data[this->length - 1]; }
-  Span<T> subspan(int start, int count) const { return Span<T>(this->data + start, count); }
+  T* data() const { return this->items; }
+  T& operator[](int index) const { return this->items[index]; }
+  T* begin() const { return this->items; }
+  T* end() const { return this->items + this->length; }
+  T& front() const { return this->items[0]; }
+  T& back() const { return this->items[this->length - 1]; }
+  Span<T> subspan(int start, int count) const { return Span<T>(this->items + start, count); }
 };

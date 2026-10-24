@@ -2,23 +2,24 @@
 // bytes and is not zero-terminated; copy it into a String to keep it.
 struct StringView
 {
-  const char* data = nullptr;
+  const char* chars = nullptr;
   int length = 0;
 
   static const int npos = -1;
 
   StringView() {}
-  implicit StringView(const char* text) : data(text), length(text ? (int)strlen(text) : 0) {}
-  StringView(const char* text, int count) : data(text), length(count) {}
-  implicit StringView(const String& text) : data(text.data), length(text.length) {}
+  implicit StringView(const char* text) : chars(text), length(text ? (int)strlen(text) : 0) {}
+  StringView(const char* text, int count) : chars(text), length(count) {}
+  implicit StringView(const String& text) : chars(text.chars), length(text.length) {}
 
   int size() const { return this->length; }
+  const char* data() const { return this->chars; }
   bool empty() const { return this->length == 0; }
-  char operator[](int index) const { return this->data[index]; }
-  const char* begin() const { return this->data; }
-  const char* end() const { return this->data + this->length; }
-  char front() const { return this->data[0]; }
-  char back() const { return this->data[this->length - 1]; }
+  char operator[](int index) const { return this->chars[index]; }
+  const char* begin() const { return this->chars; }
+  const char* end() const { return this->chars + this->length; }
+  char front() const { return this->chars[0]; }
+  char back() const { return this->chars[this->length - 1]; }
 
   StringView substr(int start, int count) const
   {
@@ -26,14 +27,14 @@ struct StringView
       start = this->length;
     if (count < 0 || start + count > this->length)
       count = this->length - start;
-    return StringView(this->data + start, count);
+    return StringView(this->chars + start, count);
   }
   StringView substr(int start) const { return this->substr(start, -1); }
 
   int find(char c) const
   {
     for (int i = 0; i < this->length; ++i)
-      if (this->data[i] == c)
+      if (this->chars[i] == c)
         return i;
     return -1;
   }
@@ -42,31 +43,52 @@ struct StringView
     if (needle.length == 0)
       return 0;
     for (int i = 0; i + needle.length <= this->length; ++i)
-      if (memcmp(this->data + i, needle.data, needle.length) == 0)
+      if (memcmp(this->chars + i, needle.chars, needle.length) == 0)
         return i;
     return -1;
   }
   int rfind(char c) const
   {
     for (int i = this->length; i-- > 0;)
-      if (this->data[i] == c)
+      if (this->chars[i] == c)
         return i;
     return -1;
   }
   bool startsWith(StringView prefix) const
   {
-    return prefix.length <= this->length && memcmp(this->data, prefix.data, prefix.length) == 0;
+    return prefix.length <= this->length && memcmp(this->chars, prefix.chars, prefix.length) == 0;
   }
   bool endsWith(StringView suffix) const
   {
-    return suffix.length <= this->length && memcmp(this->data + this->length - suffix.length, suffix.data, suffix.length) == 0;
+    return suffix.length <= this->length && memcmp(this->chars + this->length - suffix.length, suffix.chars, suffix.length) == 0;
   }
-  void removePrefix(int count) { this->data += count; this->length -= count; }
+  void removePrefix(int count) { this->chars += count; this->length -= count; }
   void remove_prefix(int count) { this->removePrefix(count); }
   void remove_suffix(int count) { this->length -= count; }
   bool starts_with(StringView prefix) const { return this->startsWith(prefix); }
   bool ends_with(StringView suffix) const { return this->endsWith(suffix); }
   int find_first_of(char c) const { return this->find(c); }
+  int find_first_of(char c, int from) const { return this->find(c, from); }
+  int find_first_of(StringView set, int from) const
+  {
+    int i = this->substr(from).find_first_of(set);
+    return i < 0 ? -1 : i + from;
+  }
+  int find(char c, int from) const
+  {
+    for (int i = from; i < this->length; ++i)
+      if (this->chars[i] == c)
+        return i;
+    return -1;
+  }
+  int find_first_of(StringView set) const
+  {
+    for (int i = 0; i < this->length; ++i)
+      for (int k = 0; k < set.length; ++k)
+        if (this->chars[i] == set.chars[k])
+          return i;
+    return -1;
+  }
   int find(StringView needle, int from) const
   {
     StringView rest = this->substr(from);
@@ -77,7 +99,7 @@ struct StringView
   {
     for (int i = 0; i < this->length; ++i)
       for (int k = 0; set[k] != 0; ++k)
-        if (this->data[i] == set[k])
+        if (this->chars[i] == set[k])
           return i;
     return -1;
   }
@@ -87,7 +109,7 @@ struct StringView
     {
       bool inSet = false;
       for (int k = 0; set[k] != 0; ++k)
-        if (this->data[i] == set[k])
+        if (this->chars[i] == set[k])
           inSet = true;
       if (!inSet)
         return i;
@@ -98,20 +120,20 @@ struct StringView
 
   bool operator==(StringView other) const
   {
-    return this->length == other.length && (this->length == 0 || memcmp(this->data, other.data, this->length) == 0);
+    return this->length == other.length && (this->length == 0 || memcmp(this->chars, other.chars, this->length) == 0);
   }
   bool operator!=(StringView other) const { return !(*this == other); }
   bool operator<(StringView other) const
   {
     int common = this->length < other.length ? this->length : other.length;
-    int c = common == 0 ? 0 : memcmp(this->data, other.data, common);
+    int c = common == 0 ? 0 : memcmp(this->chars, other.chars, common);
     return c != 0 ? c < 0 : this->length < other.length;
   }
 
   String toString() const
   {
     String result;
-    result.append(this->data, this->length);
+    result.append(this->chars, this->length);
     return result;
   }
 };
@@ -121,6 +143,6 @@ size_t hashOf(StringView text)
 {
   size_t h = 14695981039346656037ull;
   for (int i = 0; i < text.length; ++i)
-    h = (h ^ (size_t)(uint8_t)text.data[i]) * 1099511628211ull;
+    h = (h ^ (size_t)(uint8_t)text.chars[i]) * 1099511628211ull;
   return h;
 }

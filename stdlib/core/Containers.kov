@@ -21,7 +21,7 @@ struct Set
     while (low < high)
     {
       int middle = (low + high) / 2;
-      if (this->values.data[middle] < value)
+      if (this->values.items[middle] < value)
         low = middle + 1;
       else
         high = middle;
@@ -31,24 +31,24 @@ struct Set
   bool contains(const T& value) const
   {
     int i = this->lowerBound(value);
-    return i < this->values.size() && !(value < this->values.data[i]);
+    return i < this->values.size() && !(value < this->values.items[i]);
   }
   // True when the value was new.
   bool insert(const T& value)
   {
     int i = this->lowerBound(value);
-    if (i < this->values.size() && !(value < this->values.data[i]))
+    if (i < this->values.size() && !(value < this->values.items[i]))
       return false;
     this->values.push_back(value);
     for (int k = this->values.size() - 1; k > i; --k)
-      this->values.data[k] = this->values.data[k - 1];
-    this->values.data[i] = value;
+      this->values.items[k] = this->values.items[k - 1];
+    this->values.items[i] = value;
     return true;
   }
   bool erase(const T& value)
   {
     int i = this->lowerBound(value);
-    if (i >= this->values.size() || value < this->values.data[i])
+    if (i >= this->values.size() || value < this->values.items[i])
       return false;
     this->values.erase(i);
     return true;
@@ -64,9 +64,9 @@ struct Deque
 
   int size() const { return this->values.size() - this->head; }
   bool empty() const { return this->size() == 0; }
-  T& front() { return this->values.data[this->head]; }
+  T& front() { return this->values.items[this->head]; }
   T& back() { return this->values.back(); }
-  T& operator[](int index) { return this->values.data[this->head + index]; }
+  T& operator[](int index) { return this->values.items[this->head + index]; }
   T* begin() { return this->values.begin() + this->head; }
   T* end() { return this->values.end(); }
 
@@ -80,7 +80,7 @@ struct Deque
       // Slide the live values down so that the dead prefix does not grow forever.
       int live = this->values.size() - this->head;
       for (int i = 0; i < live; ++i)
-        this->values.data[i] = this->values.data[this->head + i];
+        this->values.items[i] = this->values.items[this->head + i];
       while (this->values.size() > live)
         this->values.pop_back();
       this->head = 0;
@@ -91,13 +91,13 @@ struct Deque
     if (this->head > 0)
     {
       --this->head;
-      this->values.data[this->head] = value;
+      this->values.items[this->head] = value;
       return;
     }
     this->values.push_back(value);
     for (int k = this->values.size() - 1; k > 0; --k)
-      this->values.data[k] = this->values.data[k - 1];
-    this->values.data[0] = value;
+      this->values.items[k] = this->values.items[k - 1];
+    this->values.items[0] = value;
   }
   void clear()
   {

@@ -3,19 +3,19 @@
 //
 struct String
 {
-  char* data = nullptr; // nullptr while empty
+  char* chars = nullptr; // nullptr while empty
   int length = 0;
   int capacity = 0;
 
   String() {}
   implicit String(const char* text) { this->append(text); }
-  implicit String(StringView text) { this->append(text.data, text.length); }
+  implicit String(StringView text) { this->append(text.chars, text.length); }
   String(const char* text, int count) { this->append(text, count); }
-  String(const String& other) { this->append(other.data, other.length); }
+  String(const String& other) { this->append(other.chars, other.length); }
   ~String()
   {
-    if (this->data)
-      free(this->data);
+    if (this->chars)
+      free(this->chars);
   }
 
   String& operator=(const String& other)
@@ -23,9 +23,9 @@ struct String
     if (this == &other)
       return *this;
     this->length = 0;
-    this->append(other.data, other.length);
-    if (this->data)
-      this->data[this->length] = 0;
+    this->append(other.chars, other.length);
+    if (this->chars)
+      this->chars[this->length] = 0;
     return *this;
   }
 
@@ -33,32 +33,36 @@ struct String
 
   int size() const { return this->length; }
   bool empty() const { return this->length == 0; }
-  const char* c_str() const { return this->data ? this->data : ""; }
-  char operator[](int index) const { return this->data[index]; }
-  char& operator[](int index) { return this->data[index]; }
-  char* begin() { return this->data; }
-  char* end() { return this->data + this->length; }
-  char back() const { return this->data[this->length - 1]; }
-  char front() const { return this->data[0]; }
+  const char* c_str() const { return this->chars ? this->chars : ""; }
+  char* data() { return this->chars; }
+  const char* data() const { return this->chars; }
+  char operator[](int index) const { return this->chars[index]; }
+  char& operator[](int index) { return this->chars[index]; }
+  char* begin() { return this->chars; }
+  char* end() { return this->chars + this->length; }
+  char& back() { return this->chars[this->length - 1]; }
+  const char& back() const { return this->chars[this->length - 1]; }
+  char& front() { return this->chars[0]; }
+  const char& front() const { return this->chars[0]; }
 
   void push_back(char c) { this->append(c); }
   void pop_back()
   {
     if (this->length > 0)
-      this->data[--this->length] = 0;
+      this->chars[--this->length] = 0;
   }
   void resize(int newLength, char fill)
   {
     if (newLength < this->length)
     {
       this->length = newLength;
-      this->data[this->length] = 0;
+      this->chars[this->length] = 0;
       return;
     }
     this->reserve(newLength);
     while (this->length < newLength)
-      this->data[this->length++] = fill;
-    this->data[this->length] = 0;
+      this->chars[this->length++] = fill;
+    this->chars[this->length] = 0;
   }
   void resize(int newLength) { this->resize(newLength, 0); }
   // Removes count bytes at index (to the end when count is negative).
@@ -68,21 +72,24 @@ struct String
       return;
     if (count < 0 || index + count > this->length)
       count = this->length - index;
-    memmove(this->data + index, this->data + index + count, this->length - index - count + 1);
+    memmove(this->chars + index, this->chars + index + count, this->length - index - count + 1);
     this->length -= count;
   }
   void erase(int index) { this->erase(index, -1); }
+  // The range [first, last) of this string's characters (begin()/end() and what find functions return).
+  void erase(char* first, char* last) { this->erase(int(first - this->chars), int(last - first)); }
+  void erase(char* at) { this->erase(int(at - this->chars), 1); }
   void insert(int index, const char* text, int count)
   {
     if (index > this->length)
       index = this->length;
     this->reserve(this->length + count);
-    memmove(this->data + index + count, this->data + index, this->length - index + 1);
-    memcpy(this->data + index, text, count);
+    memmove(this->chars + index + count, this->chars + index, this->length - index + 1);
+    memcpy(this->chars + index, text, count);
     this->length += count;
   }
   void insert(int index, const char* text) { this->insert(index, text, (int)strlen(text)); }
-  void insert(int index, const String& text) { this->insert(index, text.data, text.length); }
+  void insert(int index, const String& text) { this->insert(index, text.chars, text.length); }
   // Replaces count bytes at index with text.
   void replace(int index, int count, const char* text)
   {
@@ -98,7 +105,7 @@ struct String
   {
     int n = (int)strlen(needle);
     for (int i = from; i + n <= this->length; ++i)
-      if (memcmp(this->data + i, needle, n) == 0)
+      if (memcmp(this->chars + i, needle, n) == 0)
         return i;
     return -1;
   }
@@ -108,14 +115,14 @@ struct String
   int find(char c, int from) const
   {
     for (int i = from; i < this->length; ++i)
-      if (this->data[i] == c)
+      if (this->chars[i] == c)
         return i;
     return -1;
   }
   int rfind(char c) const
   {
     for (int i = this->length; i-- > 0;)
-      if (this->data[i] == c)
+      if (this->chars[i] == c)
         return i;
     return -1;
   }
@@ -127,40 +134,57 @@ struct String
     return false;
   }
   int find_first_of(char c) const { return this->find(c); }
+  int find_first_of(char c, int from) const { return this->find(c, from); }
+  int find_first_of(StringView set, int from) const
+  {
+    for (int i = from; i < this->length; ++i)
+      for (int k = 0; k < set.length; ++k)
+        if (this->chars[i] == set.chars[k])
+          return i;
+    return -1;
+  }
   int find_first_of(const String& set) const { return this->find_first_of(set.c_str()); }
+  int find_first_of(StringView set) const
+  {
+    for (int i = 0; i < this->length; ++i)
+      for (int k = 0; k < set.length; ++k)
+        if (this->chars[i] == set.chars[k])
+          return i;
+    return -1;
+  }
   int find_first_not_of(const String& set) const { return this->find_first_not_of(set.c_str()); }
   int find_last_not_of(const String& set) const { return this->find_last_not_of(set.c_str()); }
   int find_first_of(const char* set) const
   {
     for (int i = 0; i < this->length; ++i)
-      if (String::oneOf(this->data[i], set))
+      if (String::oneOf(this->chars[i], set))
         return i;
     return -1;
   }
   int find_first_not_of(const char* set) const
   {
     for (int i = 0; i < this->length; ++i)
-      if (!String::oneOf(this->data[i], set))
+      if (!String::oneOf(this->chars[i], set))
         return i;
     return -1;
   }
   int find_last_not_of(const char* set) const
   {
     for (int i = this->length; i-- > 0;)
-      if (!String::oneOf(this->data[i], set))
+      if (!String::oneOf(this->chars[i], set))
         return i;
     return -1;
   }
   bool endsWith(const String& suffix) const
   {
-    return suffix.length <= this->length && memcmp(this->data + this->length - suffix.length, suffix.data, suffix.length) == 0;
+    return suffix.length <= this->length && memcmp(this->chars + this->length - suffix.length, suffix.chars, suffix.length) == 0;
   }
   bool operator==(const char* other) const { return strlen(other) == (size_t)this->length && memcmp(this->c_str(), other, this->length) == 0; }
   bool operator!=(const char* other) const { return !(*this == other); }
   bool operator<(const String& other) const
   {
     int common = this->length < other.length ? this->length : other.length;
-    int c = common == 0 ? 0 : memcmp(this->data, other.data, common);
+    int c = common == 0 ? 0 : memcmp(this->chars, other.chars, common);
     return c != 0 ? c < 0 : this->length < other.length;
   }
   String& operator+=(const char* text)
@@ -177,14 +201,14 @@ struct String
     while (newCapacity < needed + 1)
       newCapacity *= 2;
     char* bigger = (char*)malloc(newCapacity);
-    if (this->data)
+    if (this->chars)
     {
-      memcpy(bigger, this->data, this->length + 1);
-      free(this->data);
+      memcpy(bigger, this->chars, this->length + 1);
+      free(this->chars);
     }
     else
       bigger[0] = 0;
-    this->data = bigger;
+    this->chars = bigger;
     this->capacity = newCapacity;
   }
 
@@ -193,18 +217,18 @@ struct String
     if (count <= 0)
       return;
     this->reserve(this->length + count);
-    memcpy(this->data + this->length, bytes, count);
+    memcpy(this->chars + this->length, bytes, count);
     this->length += count;
-    this->data[this->length] = 0;
+    this->chars[this->length] = 0;
   }
   void append(const char* text) { this->append(text, (int)strlen(text)); }
-  void append(const String& other) { this->append(other.data, other.length); }
+  void append(const String& other) { this->append(other.chars, other.length); }
   void append(char c)
   {
     this->reserve(this->length + 1);
-    this->data[this->length] = c;
+    this->chars[this->length] = c;
     ++this->length;
-    this->data[this->length] = 0;
+    this->chars[this->length] = 0;
   }
 
   String& operator+=(const String& other)
@@ -223,6 +247,12 @@ struct String
     result += other;
     return result;
   }
+  String operator+(char c) const
+  {
+    String result(*this);
+    result += c;
+    return result;
+  }
 
   bool operator==(const String& other) const
   {
@@ -235,7 +265,7 @@ struct String
   int find(char c) const
   {
     for (int i = 0; i < this->length; ++i)
-      if (this->data[i] == c)
+      if (this->chars[i] == c)
         return i;
     return -1;
   }
@@ -251,15 +281,15 @@ struct String
     if (start < this->length)
     {
       int available = this->length - start;
-      result.append(this->data + start, count < available ? count : available);
+      result.append(this->chars + start, count < available ? count : available);
     }
     return result;
   }
   void clear()
   {
     this->length = 0;
-    if (this->data)
-      this->data[0] = 0;
+    if (this->chars)
+      this->chars[0] = 0;
   }
 };
 

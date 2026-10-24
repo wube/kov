@@ -1388,12 +1388,17 @@ struct GlobalScope::Impl
         if (v->builtin == BUILTIN_EnumValues && v->parent && v->parent->kind == NodeKind::EnumDecl)
           return types.array(types.enumType(v->parent), uint32_t(enumeratorCount(v->parent))); // E::values
         const Ty* t = convertType(v->type, ctx, depth + 1);
+        if (t && t->kind == TyKind::Array && t->count == 0 && v->init && v->init->kind == NodeKind::BraceInitExpr)
+          t = types.array(t->inner, uint32_t(static_cast<BraceInitExpr*>(v->init)->args.size())); // `double a[] = {1, 2}`
         if (types.isDependent(t) && containsAuto(t))
           return t; // Deduced from the initializer by the walker when it reaches the declaration.
         return t;
       }
       case NodeKind::ParamDecl:
-        return convertType(static_cast<ParamDecl*>(d)->type, ctx, depth + 1);
+      {
+        const Ty* t = convertType(static_cast<ParamDecl*>(d)->type, ctx, depth + 1);
+        return t && t->kind == TyKind::Array ? types.decay(t) : t; // `double m[3][3]` is a pointer parameter
+      }
       case NodeKind::EnumeratorDecl:
         return d->parent && d->parent->kind == NodeKind::EnumDecl ? types.enumType(d->parent) : types.intType();
       case NodeKind::FunctionDecl:
@@ -1414,6 +1419,8 @@ struct GlobalScope::Impl
         {
           auto* pd = static_cast<ParamDecl*>(p);
           const Ty* pt = convertType(pd->type, ctx, depth + 1);
+          if (pt && pt->kind == TyKind::Array)
+            pt = types.decay(pt); // `f(double m[3][3])` takes a pointer, as in C
           if (pd->isPack && pt->kind == TyKind::Pack)
             for (const Ty* e : pt->args)
               params.push_back(e); // deduced pack: one parameter per element
@@ -1520,8 +1527,10 @@ struct GlobalScope::Impl
       return;
     if (pattern->kind == TyKind::Param)
     {
+      // `T value` takes the decayed argument; inside a pointer or a class (`T*`, `Vector<T>`) T
+      // keeps the argument's qualifiers: `const int*` against `T*` makes T `const int`.
       if (!out.find(pattern->decl))
-        out.pairs.push_back({pattern->decl, types.decay(arg)});
+        out.pairs.push_back({pattern->decl, depth == 0 ? types.decay(arg) : types.stripRef(arg)});
       return;
     }
     if (pattern->isReference())
@@ -1585,6 +1594,19 @@ struct GlobalScope::Impl
 
   // Deduces f's template parameters from the argument types of a call, including a trailing
   // parameter pack, which binds to the remaining arguments.
+  // The declared type of candidate with its template parameters renamed to those of f: a
+  // declaration and its separate definition each have their own, and signatures must compare equal.
+  const Ty* typeAs(FunctionDecl* candidate, FunctionDecl* f)
+  {
+    const Ty* t = declaredTypeOf(candidate, nullptr, 0);
+    if (candidate == f || f->templateParams.empty() || candidate->templateParams.size() != f->templateParams.size())
+      return t;
+    Subst s;
+    for (size_t i = 0; i < f->templateParams.size(); ++i)
+      s.pairs.push_back({candidate->templateParams[i], types.param(f->templateParams[i])});
+    return substitute(t, s);
+  }
+
   void deduceCall(FunctionDecl* f, const Ty* fnTy, const std::vector<const Ty*>& argTypes, Subst& out)
   {
     if (!fnTy || fnTy->kind != TyKind::Function)
@@ -1623,7 +1645,7 @@ struct GlobalScope::Impl
     {
       case TyKind::Param:
         if (const Ty* r = s.find(t->decl))
-          return types.qualified(r, t->isConst, t->isVolatile);
+          return types.qualified(r, t->isConst || r->isConst, t->isVolatile || r->isVolatile); // T = const int keeps its const
         return t;
       case TyKind::Pointer: return types.qualified(types.pointer(substitute(t->inner, s, depth + 1)), t->isConst, t->isVolatile);
       case TyKind::LRef: return types.lref(substitute(t->inner, s, depth + 1));
@@ -3005,6 +3027,14 @@ struct GlobalScope::Impl
               isFloat = true;
           }
           size_t end = s.size();
+          for (const char* ms : {"i64", "i32", "i16", "i8"}) // MSVC: 1i64, 1ui64
+            if (!isFloat && end > strlen(ms) && s.compare(end - strlen(ms), strlen(ms), ms) == 0)
+            {
+              if (ms[1] == '6')
+                longs = 2;
+              end -= strlen(ms);
+              break;
+            }
           while (end > 0)
           {
             char c = s[end - 1];
@@ -3016,7 +3046,24 @@ struct GlobalScope::Impl
           }
           if (isFloat)
             return types.floatType(f32 ? 32 : 64);
-          return types.intType(longs >= 2 ? 64 : 32, isUnsigned);
+          // The first type the value fits: int, then (for hex and octal) unsigned int, then the
+          // 64-bit ones, as C++ has it; 0xffffffff is unsigned, 4294967296 is 64 bits wide.
+          std::string digits;
+          for (size_t i = 0; i < end; ++i)
+            if (s[i] != '\'')
+              digits += s[i];
+          unsigned long long value = strtoull(digits.c_str(), nullptr, 0);
+          bool decimal = !hex && !(digits.size() > 1 && digits[0] == '0');
+          if (longs < 2)
+          {
+            if (!isUnsigned && value <= 0x7fffffffull)
+              return types.intType(32, false);
+            if ((isUnsigned || !decimal) && value <= 0xffffffffull)
+              return types.intType(32, true);
+          }
+          if (!isUnsigned && value <= 0x7fffffffffffffffull)
+            return types.intType(64, false);
+          return types.intType(64, true);
         }
         default:
           return types.unknown();
@@ -3732,6 +3779,18 @@ void GlobalScope::finishIndex()
     Lookup l = impl->lookupQualified(qualifier, context, &params, 0);
     if (l.scope && l.scope->kind == ScopeKind::Class)
       l.scope->outOfLineMembers.push_back(f);
+    else if (l.scope && l.scope->kind == ScopeKind::Namespace)
+    {
+      // `void StringUtil::f() {}` outside its namespace: the same as written inside it (its name
+      // is found there, its body sees the namespace), as C++ has it.
+      QualifiedName simple;
+      simple.parts.data = f->name.parts.data + (f->name.parts.size() - 1);
+      simple.parts.count = 1;
+      f->name = simple;
+      if (l.scope->owner)
+        f->parent = l.scope->owner;
+      impl->indexDecl(f, l.scope);
+    }
   }
   impl->deferredFunctions.clear();
 }
@@ -3743,6 +3802,43 @@ void GlobalScope::resolveFile(ParsedFile& file, const std::vector<Token>& tokens
 }
 
 TypeTable& GlobalScope::types() { return impl->types; }
+
+FunctionDecl* GlobalScope::findFreeOperator(uint32_t punctuator, const Ty* lhs, const Ty* rhs, Decl* context)
+{
+  uint32_t symbol = impl->opSymbols[punctuator];
+  std::vector<Scope*> places;
+  for (const Ty* t : {impl->types.stripRef(lhs), rhs ? impl->types.stripRef(rhs) : nullptr})
+    if (t && t->kind == TyKind::Class && t->decl)
+      places.push_back(impl->lexicalScopeOf(t->decl));
+  places.push_back(impl->lexicalScopeOf(context));
+  std::vector<const Ty*> argTypes{lhs};
+  if (rhs)
+    argTypes.push_back(rhs);
+  for (Scope* place : places)
+    for (Scope* s = place; s; s = s->parent)
+    {
+      Lookup look;
+      if (!impl->lookupInScope(s, symbol, look, 0))
+        continue;
+      if (look.decl && look.decl->kind == NodeKind::FunctionDecl)
+      {
+        std::vector<FunctionDecl*> candidates;
+        if (look.overloads)
+        {
+          for (const Entry& e : *look.overloads)
+            if (e.decl && e.decl->kind == NodeKind::FunctionDecl)
+              candidates.push_back(static_cast<FunctionDecl*>(e.decl));
+        }
+        else
+          candidates.push_back(static_cast<FunctionDecl*>(look.decl));
+        bool ambiguous = false;
+        if (FunctionDecl* f = impl->chooseAmong(candidates, argTypes, nullptr, nullptr, ambiguous))
+          return f;
+      }
+      break;
+    }
+  return nullptr;
+}
 
 const Ty* GlobalScope::typeOfDecl(Decl* d) { return impl->declaredTypeOf(d, nullptr, 0); }
 
@@ -3801,7 +3897,7 @@ Decl* GlobalScope::definitionOf(Decl* d)
       uint32_t symbol = impl->functionSymbol(f->name);
       const Ty* ft = impl->declaredTypeOf(f, nullptr, 0);
       for (FunctionDecl* candidate : cls->ownScope->outOfLineMembers)
-        if (impl->functionSymbol(candidate->name) == symbol && impl->declaredTypeOf(candidate, nullptr, 0) == ft)
+        if (impl->functionSymbol(candidate->name) == symbol && impl->typeAs(candidate, f) == ft)
           return candidate;
     }
     else if (!cls && f->name.parts.size() == 1)
@@ -3813,7 +3909,7 @@ Decl* GlobalScope::definitionOf(Decl* d)
       if (const std::vector<Entry>* entries = s->find(symbol))
         for (const Entry& e : *entries)
           if (e.decl->kind == NodeKind::FunctionDecl && static_cast<FunctionDecl*>(e.decl)->body &&
-              impl->declaredTypeOf(e.decl, nullptr, 0) == ft)
+              impl->typeAs(static_cast<FunctionDecl*>(e.decl), f) == ft)
             return e.decl;
     }
     return f;

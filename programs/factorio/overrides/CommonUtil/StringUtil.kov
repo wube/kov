@@ -1,0 +1,110 @@
+// Hand-written replacements for parts of StringUtil: the UTF-8/UTF-16 conversions use the
+// Windows API instead of codecvt, and the trim functions index the string instead of using
+// reverse iterators. Every definition here replaces the converted one of the same name.
+extern "C" import "windows.h";
+
+void wstringConvert() = delete; // codecvt is gone: widen and narrow below do the work
+
+// ssprintf: the C runtime's vsnprintf into one static buffer (the original had a thread_local
+// std::array; Kov has no thread_local storage yet), then a String of the right size.
+static char ssprintf_buffer[512];
+
+String vssprintf(const char* format, va_list args)
+{
+  String result;
+  va_list args2;
+  va_copy(args2, args);
+  int written = vsnprintf(ssprintf_buffer, sizeof(ssprintf_buffer), format, args);
+  if (written >= (int)sizeof(ssprintf_buffer))
+  {
+    result.resize(written);
+    vsnprintf(result.data(), (size_t)written + 1, format, args2);
+  }
+  else
+    result = ssprintf_buffer;
+  va_end(args2);
+  return result;
+}
+
+String ssprintf(const char* format, ...)
+{
+  va_list args;
+  va_start(args, format);
+  String result = vssprintf(format, args);
+  va_end(args);
+  return result;
+}
+
+namespace StringUtil
+{
+  WString widen(const char* str, int length)
+  {
+    WString result;
+    if (length <= 0)
+      return result;
+    int count = MultiByteToWideChar(CP_UTF8, 0, str, length, nullptr, 0);
+    if (count <= 0)
+      return result;
+    wchar_t* buffer = (wchar_t*)malloc((size_t)count * sizeof(wchar_t));
+    MultiByteToWideChar(CP_UTF8, 0, str, length, buffer, count);
+    result.append(buffer, count);
+    free(buffer);
+    return result;
+  }
+
+  WString widen(const String& str) { return widen(str.c_str(), str.size()); }
+  WString widen(StringView str) { return widen(str.data(), str.size()); }
+  WString widen(const WString& str) { return str; }
+  WString widen(const char* str) { return widen(str, (int)strlen(str)); }
+
+  String narrow(const wchar_t* str, int length)
+  {
+    String result;
+    if (length <= 0)
+      return result;
+    int count = WideCharToMultiByte(CP_UTF8, 0, str, length, nullptr, 0, nullptr, nullptr);
+    if (count <= 0)
+      return result;
+    char* buffer = (char*)malloc((size_t)count);
+    WideCharToMultiByte(CP_UTF8, 0, str, length, buffer, count, nullptr, nullptr);
+    result.append(buffer, count);
+    free(buffer);
+    return result;
+  }
+
+  String narrow(const WString& str) { return narrow(str.c_str(), str.size()); }
+  String narrow(wchar_t str) { return narrow(&str, 1); }
+  String narrow(const wchar_t* str)
+  {
+    int length = 0;
+    while (str[length] != 0)
+      ++length;
+    return narrow(str, length);
+  }
+  String narrow(const char* str) { return str; }
+
+  void trim_right(String& s)
+  {
+    int end = s.size();
+    while (end > 0 && !StringUtil::isNotSpace(s[end - 1]))
+      --end;
+    s.erase(end);
+  }
+
+  void trimNewlines(String& s)
+  {
+    int end = s.size();
+    while (end > 0 && !StringUtil::isNotNewline(s[end - 1]))
+      --end;
+    s.erase(end);
+  }
+
+  void trimBeginingAndEndingNewlines(String& s)
+  {
+    trimNewlines(s);
+    int begin = 0;
+    while (begin < s.size() && !StringUtil::isNotNewline(s[begin]))
+      ++begin;
+    s.erase(0, begin);
+  }
+}

@@ -57,6 +57,7 @@ namespace
     unsigned currentModule = 0;                                  // where the function being emitted goes
     std::vector<std::string> bodies;                             // per module
     std::vector<std::string> moduleDecls;                        // per module: its string constants and vtables
+    std::vector<std::vector<std::string>> moduleCtors;           // per module: startup functions for its globals
     std::vector<std::unordered_set<std::string>> vtablesIn;      // per module: the vtables it already has
     bool emittingShared = false;                                 // string constants go to the shared decls
     std::unordered_map<ParsedFile*, unsigned> fileModule;        // file -> module
@@ -779,6 +780,38 @@ namespace
       }
       const Ty* firstTy = args.size() == 1 ? args[0]->ty : nullptr;
       FunctionDecl* ctor = findConstructor(t, argTypesOf(args), at);
+      if (ctor && firstTy && isClass(types.stripRef(firstTy)) && classKey(firstTy) == classKey(t) && ctor->params.size() == 1)
+      {
+        // The same class: a copy, unless the chosen constructor is a copy constructor itself.
+        TemplateArgs classArgs = global.classArgsOf(canonicalClass(t, at));
+        const Ty* pt;
+        {
+          ArgsScope scope(*this, &classArgs);
+          pt = declType(ctor->params[0]);
+        }
+        if (!pt || !isClass(types.stripRef(pt)) || classKey(pt) != classKey(t))
+          ctor = nullptr; // a converting constructor of another class: not for a copy
+      }
+      if (ctor && firstTy && isClass(types.stripRef(firstTy)) && classKey(firstTy) != classKey(t) && ctor->params.size() == 1)
+      {
+        TemplateArgs classArgs = global.classArgsOf(canonicalClass(t, at));
+        const Ty* pt;
+        {
+          ArgsScope scope(*this, &classArgs);
+          pt = declType(ctor->params[0]);
+        }
+        if (pt && isClass(types.stripRef(pt)) && classKey(pt) == classKey(t))
+        {
+          // The copy constructor, chosen for a value of another class: that class converts to t
+          // first (a base, or its conversion operator), the constructor is not called with it.
+          Value src = convert(rvalue(args[0]), types.unqualified(t), at);
+          if (src.isTemporary)
+            moveTemporary(addr, src, t, at);
+          else
+            copyConstruct(addr, src.text, t, at);
+          return;
+        }
+      }
       if (ctor)
       {
         callFunction(ctor, global.classArgsOf(canonicalClass(t, at)), canonicalClass(t, at), addr, "", args, at);
@@ -979,6 +1012,18 @@ namespace
         if (bi->args.empty())
         {
           fn += "  store " + llType(t, at) + " zeroinitializer, ptr " + addr + "\n";
+          return;
+        }
+        if (t->kind == TyKind::Array)
+        {
+          // Element by element (nested lists for arrays of arrays); the rest stays zero.
+          fn += "  store " + llType(t, at) + " zeroinitializer, ptr " + addr + "\n";
+          for (size_t i = 0; i < bi->args.size() && i < t->count; ++i)
+          {
+            std::string element = newTemp();
+            fn += "  " + element + " = getelementptr inbounds " + llType(t, at) + ", ptr " + addr + ", i64 0, i64 " + std::to_string(i) + "\n";
+            initializeFrom(element, t->inner, bi->args[i], at);
+          }
           return;
         }
         if (bi->args.size() != 1)
@@ -1564,6 +1609,18 @@ namespace
       else
       {
         q = global.qualifiedName(f);
+        if (f->name.parts.size() > 1 && !global.owningClass(f))
+        {
+          // `int M::twice(int) {}` outside its namespace: the name the declaration in M has.
+          std::string prefix;
+          for (size_t i = 0; i + 1 < f->name.parts.size(); ++i)
+            if (f->name.parts[i].symbol != UINT32_MAX)
+              prefix += sym(f->name.parts[i].symbol) + "::";
+          size_t pos = q.rfind("::");
+          std::string head = pos == std::string::npos ? "" : q.substr(0, pos + 2), tail = pos == std::string::npos ? q : q.substr(pos + 2);
+          if (!prefix.empty() && head.find(prefix) == std::string::npos)
+            q = head + prefix + tail;
+        }
         if (Decl* owner = global.owningClass(f); owner && owner->kind == NodeKind::ClassDecl && (owner->flags & DF_Specialization))
         {
           // Members of `template<> struct Limits<int>`: the arguments tell the specialisations apart.
@@ -1608,6 +1665,21 @@ namespace
           q += (i ? ", " : "") + (t ? types.toString(t, &symbols) : std::string("?"));
         }
         q += ">";
+      }
+      else if ((f->flags & DF_Specialization) && f->isTemplate)
+      {
+        // `template<> Vector<String> splitWords(StringView)`: the explicit arguments, or the return
+        // type when the parameter appears only there, tell the specialisations of one template apart.
+        std::string spelled;
+        for (Node* a : f->name.last().templateArgs)
+        {
+          const Ty* t = uint8_t(a->kind) <= uint8_t(NodeKind::PackType) ? global.typeOfAst(static_cast<Type*>(a), f) : nullptr;
+          spelled += (spelled.empty() ? "" : ", ") + (t && t->isKnown() ? types.toString(t, &symbols) : std::string("?"));
+        }
+        if (spelled.empty())
+          if (const Ty* ft = declType(f); ft && ft->kind == TyKind::Function && ft->inner)
+            spelled = types.toString(ft->inner, &symbols);
+        q += "<" + spelled + ">";
       }
       const Ty* ft = declType(f);
       std::string params;
@@ -1689,7 +1761,14 @@ namespace
         if (!requested[name])
         {
           requested[name] = true;
-          worklist.push_back({def, args, classTy, currentModule});
+          // A definition separate from the declaration has its own parameter declarations.
+          TemplateArgs defArgs = args;
+          if (def != f && def->templateParams.size() == f->templateParams.size())
+            for (auto& [d, t] : defArgs.pairs)
+              for (size_t i = 0; i < f->templateParams.size(); ++i)
+                if (d == f->templateParams[i])
+                  d = def->templateParams[i];
+          worklist.push_back({def, defArgs, classTy, currentModule});
         }
         return name;
       }
@@ -1860,8 +1939,16 @@ namespace
         if (isAggregate(types.stripRef(pt)))
         {
           const Ty* cls = types.stripRef(pt);
-          if (arg->ty && isClass(cls) && arg->ty->isKnown() && !types.isDependent(arg->ty) && !isAggregate(types.stripRef(arg->ty)))
+          const Ty* argTy = arg->ty && arg->ty->isKnown() && !types.isDependent(arg->ty) ? types.stripRef(arg->ty) : nullptr;
+          if (argTy && isClass(cls) && !isAggregate(argTy))
             return "ptr " + convertedTemporary(cls, arg, at); // `f("text")` with `f(const String&)`
+          if (argTy && isClass(cls) && isClass(argTy) && classKey(argTy) != classKey(cls) && !baseInstantiation(argTy, classDef(cls->decl, at), at))
+          {
+            if (conversionOperator(argTy, types.unqualified(cls), at))
+              return "ptr " + convert(rvalue(arg), types.unqualified(cls), at).text; // `f(lowercase)` through `operator const String&()`
+            if (findConstructor(cls, {arg->ty}, at))
+              return "ptr " + convertedTemporary(cls, arg, at); // `f(view)` with `f(const String&)`
+          }
           Value o = rvalue(arg);
           if (!isAggregate(o.ty))
             unsupported(at, "binding a non-class to a class reference");
@@ -1875,9 +1962,22 @@ namespace
       }
       if (pt && isAggregate(pt))
       {
+        const Ty* argTy = arg->ty && arg->ty->isKnown() && !types.isDependent(arg->ty) ? types.stripRef(arg->ty) : nullptr;
+        if (argTy && isClass(pt) && (!isAggregate(argTy) || (isClass(argTy) && classKey(argTy) != classKey(pt) &&
+                                                             !baseInstantiation(argTy, classDef(pt->decl, at), at) &&
+                                                             !conversionOperator(argTy, types.unqualified(pt), at))))
+        {
+          // Through a converting constructor; the callee destroys the parameter.
+          std::string copy = newObjectSlot(pt, at);
+          Expr* one = arg;
+          constructInto(copy, pt, Span<Expr*>{&one, 1}, at);
+          return "ptr " + copy;
+        }
         Value v = rvalue(arg);
         if (!isAggregate(v.ty))
           unsupported(at, "passing a non-class to a class parameter");
+        if (isClass(v.ty) && isClass(pt) && classKey(v.ty) != classKey(pt))
+          v = convert(v, types.unqualified(pt), at); // a base, or a conversion operator
         std::string copy = newObjectSlot(pt, at);
         if (isLambda(pt))
         {
@@ -1894,6 +1994,10 @@ namespace
       Value a = rvalue(arg);
       if (isAggregate(a.ty))
         unsupported(at, "passing a class where a scalar is expected");
+      if (pt && a.ty->kind == TyKind::Pointer && (pt->kind == TyKind::Int || pt->kind == TyKind::Char || pt->kind == TyKind::Enum))
+        unsupported(at, "passing a pointer (" + types.toString(a.ty, &symbols) + ") where " + types.toString(pt, &symbols) + " is expected");
+      if (pt && pt->kind == TyKind::Pointer && (a.ty->kind == TyKind::Int || a.ty->kind == TyKind::Char || a.ty->kind == TyKind::Enum))
+        unsupported(at, "passing " + types.toString(a.ty, &symbols) + " where a pointer is expected");
       if (pt)
         a = convert(a, pt, at);
       else if (a.ty->kind == TyKind::Float && a.ty->bits == 32)
@@ -1926,6 +2030,19 @@ namespace
       return currentFile->text.substr(t.offset, t.length);
     }
 
+    // `(Name)` where Name is a type: a C-style cast the parser could not tell from a parenthesis.
+    bool isParenthesizedTypeName(Expr* e)
+    {
+      if (!e || e->kind != NodeKind::ParenExpr)
+        return false;
+      Expr* inner = static_cast<ParenExpr*>(e)->inner;
+      if (!inner || inner->kind != NodeKind::NameExpr)
+        return false;
+      Decl* d = static_cast<NameExpr*>(inner)->resolved;
+      return d && (d->kind == NodeKind::ClassDecl || d->kind == NodeKind::EnumDecl || d->kind == NodeKind::UsingAliasDecl ||
+                   (d->kind == NodeKind::VariableDecl && (d->flags & DF_Typedef)));
+    }
+
     std::optional<int64_t> evalConst(Expr* e, int depth = 0)
     {
       if (!e || depth > 32)
@@ -1946,6 +2063,9 @@ namespace
             bool hex = digits.rfind("0x", 0) == 0 || digits.rfind("0X", 0) == 0;
             if (!hex && digits.find_first_of(".eE") != std::string::npos)
               return std::nullopt;
+            for (const char* s : {"i64", "i32", "i16", "i8"}) // MSVC suffixes: 1i64, 1ui64
+              if (digits.size() > strlen(s) && digits.compare(digits.size() - strlen(s), strlen(s), s) == 0)
+                digits.resize(digits.size() - strlen(s));
             while (!digits.empty() && strchr("uUlLzZ", digits.back()))
               digits.pop_back();
             try
@@ -1985,6 +2105,8 @@ namespace
           auto* b = static_cast<BinaryExpr*>(e);
           auto l = evalConst(b->lhs, depth + 1);
           auto r = evalConst(b->rhs, depth + 1);
+          if (!l && r && !b->isKeyword && (P(b->op) == P::Minus || P(b->op) == P::Plus) && isParenthesizedTypeName(b->lhs))
+            return P(b->op) == P::Minus ? -*r : *r; // `(DWORD)-11` from a C header, parsed as a subtraction
           if (!l || !r || b->isKeyword)
             return std::nullopt;
           switch (P(b->op))
@@ -2345,7 +2467,7 @@ namespace
         if (it != definedIn.end() && it->second != k)
           declares += declareLines[name] + "\n";
       }
-      return prefix + decls + moduleDecls[k] + "\n" + shared + declares + "\n" + bodies[k];
+      return prefix + decls + moduleDecls[k] + ctorsText(k) + "\n" + shared + declares + "\n" + bodies[k];
     }
 
     // The default assert handler, unless the program defines `extern "C" kov_assert_failed`.
@@ -2381,6 +2503,32 @@ namespace
 
     // --- values ---
 
+    // The class's `operator T()` converting to `to` (exactly, or any scalar one when none is exact);
+    // explicit ones only for bool, where conditions allow them.
+    FunctionDecl* conversionOperator(const Ty* from, const Ty* to, Node* at)
+    {
+      ClassDecl* c = classDef(from->decl, at);
+      TemplateArgs args = global.classArgsOf(canonicalClass(from, at));
+      ArgsScope scope(*this, &args);
+      FunctionDecl* fallback = nullptr;
+      for (Decl* m : c->members)
+      {
+        if (m->kind != NodeKind::FunctionDecl || !(m->flags & DF_Conversion))
+          continue;
+        if ((m->flags & DF_Explicit) && to->kind != TyKind::Bool)
+          continue;
+        const Ty* ft = declType(m);
+        if (!ft || ft->kind != TyKind::Function || !ft->inner || !ft->inner->isKnown())
+          continue;
+        const Ty* ret = types.unqualified(types.stripRef(ft->inner));
+        if (ret == types.unqualified(to))
+          return static_cast<FunctionDecl*>(m);
+        if (!fallback && !isClass(ret))
+          fallback = static_cast<FunctionDecl*>(m);
+      }
+      return fallback;
+    }
+
     Value convert(Value v, const Ty* to, Node* at)
     {
       const Ty* from = v.ty;
@@ -2401,6 +2549,12 @@ namespace
           if (baseAddress(from, to, v.text, addr, at))
             return {addr, to, v.isTemporary && addr == v.text};
         }
+        if (fk == TyKind::Class)
+          if (FunctionDecl* op = conversionOperator(from, to, at))
+          {
+            TemplateArgs args = global.classArgsOf(canonicalClass(from, at));
+            return convert(callRvalue(callFunction(op, args, canonicalClass(from, at), v.text, "", {}, at), at), to, at);
+          }
         unsupported(at, "a conversion from " + types.toString(from, &symbols) + " to " + types.toString(to, &symbols));
       }
       std::string r = newTemp();
@@ -2601,7 +2755,7 @@ namespace
           const Ty* baseTy;
           if (m->op == P::Arrow)
           {
-            Value p = rvalue(m->base);
+            Value p = arrowOperand(rvalue(m->base), e);
             if (p.ty->kind != TyKind::Pointer)
               unsupported(e, "-> on something that is not a pointer");
             object = p.text;
@@ -2703,6 +2857,63 @@ namespace
       return slot;
     }
 
+    // A global built at startup (a class with a constructor, or an initializer that is not a
+    // constant): a function constructing it, registered in llvm.global_ctors of the module that
+    // first uses the global. Order within a module follows first use; destructors at exit do not
+    // run yet.
+    void emitGlobalConstructor(VariableDecl* v, const std::string& name, const Ty* t, Node* at)
+    {
+      FunctionState saved = saveState();
+      std::string savedOverride = funcletOverride;
+      FunctionDecl* savedFunction = currentFunction;
+      ParsedFile* savedFile = currentFile;
+      bool savedShared = emittingShared;
+      funcletOverride.clear();
+      resetFunctionState();
+      currentFunction = nullptr;
+      currentFile = v->file;
+      emittingShared = false;
+      std::string fnName = "@\"kov.init." + global.qualifiedName(v) + "\"";
+      try
+      {
+        pushScope();
+        if (v->init)
+          initializeFrom(name, t, v->init, at);
+        else if (isClass(t))
+          defaultConstruct(name, t, at);
+        destroyTemps();
+        popScope();
+        fn += "  ret void\n";
+        addDefinition(fnName, functionText("define void " + fnName + "() {\nentry:\n"));
+        moduleCtors[moduleCount <= 1 ? 0 : currentModule].push_back(fnName);
+      }
+      catch (Unsupported&)
+      {
+        restoreState(saved);
+        funcletOverride = savedOverride;
+        currentFunction = savedFunction;
+        currentFile = savedFile;
+        emittingShared = savedShared;
+        throw;
+      }
+      restoreState(saved);
+      funcletOverride = savedOverride;
+      currentFunction = savedFunction;
+      currentFile = savedFile;
+      emittingShared = savedShared;
+    }
+
+    // The llvm.global_ctors array of module k.
+    std::string ctorsText(unsigned k)
+    {
+      if (k >= moduleCtors.size() || moduleCtors[k].empty())
+        return "";
+      std::string s = "@llvm.global_ctors = appending global [" + std::to_string(moduleCtors[k].size()) + " x { i32, ptr, ptr }] [";
+      for (size_t i = 0; i < moduleCtors[k].size(); ++i)
+        s += std::string(i ? ", " : "") + "{ i32, ptr, ptr } { i32 65535, ptr " + moduleCtors[k][i] + ", ptr null }";
+      return s + "]\n";
+    }
+
     std::string globalFor(VariableDecl* v, Node* at)
     {
       auto it = globals.find(v);
@@ -2732,6 +2943,7 @@ namespace
         return name;
       }
       std::string init = "zeroinitializer";
+      bool constructed = false;
       const Ty* st = types.stripRef(t);
       ParsedFile* saved = currentFile;
       currentFile = v->file;
@@ -2759,20 +2971,16 @@ namespace
                  st->kind == TyKind::Pointer)
           init = stringConstant(static_cast<LiteralExpr*>(v->init));
         else
-        {
-          currentFile = saved;
-          unsupported(at, "a global with a non-constant initializer");
-        }
+          constructed = true; // built at startup, see emitGlobalConstructor
       }
       else if (isClass(st) && hasUserConstructors(classDef(st->decl, at)))
-      {
-        currentFile = saved;
-        unsupported(at, "a global object with a constructor");
-      }
+        constructed = true;
       currentFile = saved;
       // Defined in every module, merged by the linker (one instance per program).
-      decls += "$" + name.substr(1) + " = comdat any\n" + name + " = linkonce_odr " + (t->isConst ? "constant " : "global ") + llType(st, at) +
-               " " + init + ", comdat\n";
+      decls += "$" + name.substr(1) + " = comdat any\n" + name + " = linkonce_odr " + (t->isConst && !constructed ? "constant " : "global ") +
+               llType(st, at) + " " + init + ", comdat\n";
+      if (constructed)
+        emitGlobalConstructor(v, name, st, at);
       return name;
     }
 
@@ -3025,6 +3233,9 @@ namespace
           }
           return callFunction(f, calleeArgs(f, classTy, c, c), classTy, thisArg, sret, c->args, c, indirect);
         }
+        if (!d)
+          if (std::optional<Value> v = vaBuiltin(n, c))
+            return *v;
         if (!d || d->kind == NodeKind::ClassDecl || d->kind == NodeKind::EnumDecl || d->kind == NodeKind::UsingAliasDecl ||
             d->kind == NodeKind::TemplateParamDecl || (d->kind == NodeKind::VariableDecl && (d->flags & DF_Typedef)))
         {
@@ -3056,7 +3267,7 @@ namespace
           const Ty* objectTy;
           if (m->op == P::Arrow)
           {
-            Value p = rvalue(m->base);
+            Value p = arrowOperand(rvalue(m->base), c);
             if (p.ty->kind != TyKind::Pointer)
               unsupported(c, "-> on something that is not a pointer");
             addr = p.text;
@@ -3081,7 +3292,7 @@ namespace
           {
             if (m->op == P::Arrow)
             {
-              Value p = rvalue(m->base);
+              Value p = arrowOperand(rvalue(m->base), c);
               if (p.ty->kind != TyKind::Pointer)
                 unsupported(c, "-> on something that is not a pointer");
               thisArg = p.text;
@@ -3168,6 +3379,45 @@ namespace
       std::string r = newTemp();
       emitCall(r + " = ", sig + " " + fnValue.text + "(" + args + ")");
       return {r, types.stripRef(ft->inner)};
+    }
+
+    // va_start, va_end and va_copy on a C va_list (a char* on x64 Windows): the LLVM intrinsics.
+    // They are not declared anywhere; a function defined with `...` uses them like C does.
+    std::optional<Value> vaBuiltin(NameExpr* n, CallExpr* c)
+    {
+      if (n->name.parts.size() != 1)
+        return std::nullopt;
+      std::string name = sym(n->name.parts[0].symbol);
+      if (name != "va_start" && name != "va_end" && name != "va_copy")
+        return std::nullopt;
+      if (c->args.size() < (name == "va_start" ? 2u : name == "va_copy" ? 2u : 1u))
+        unsupported(c, name + " with too few arguments");
+      std::string list = lvalue(c->args[0]);
+      std::string intrinsic = name == "va_start" ? "@llvm.va_start.p0" : name == "va_end" ? "@llvm.va_end.p0" : "@llvm.va_copy.p0";
+      if (!declaredNames[intrinsic])
+      {
+        declaredNames[intrinsic] = true;
+        decls += "declare void " + intrinsic + (name == "va_copy" ? "(ptr, ptr)\n" : "(ptr)\n");
+      }
+      if (name == "va_copy")
+        fn += "  call void " + intrinsic + "(ptr " + list + ", ptr " + lvalue(c->args[1]) + ")\n";
+      else
+        fn += "  call void " + intrinsic + "(ptr " + list + ")\n";
+      return Value{"", types.voidType(), false};
+    }
+
+    // The pointer an `->` applies to: the value itself, or what the class's operator-> returns
+    // (repeatedly, for wrappers of wrappers).
+    Value arrowOperand(Value p, Node* at)
+    {
+      for (int depth = 0; depth < 8 && isClass(p.ty); ++depth)
+      {
+        const Ty* foundIn = nullptr;
+        if (!findMemberFunction(p.ty, "operator->", {}, p.ty, at, &foundIn))
+          break;
+        p = callRvalue(operatorCall(p, "operator->", {}, at, true), at);
+      }
+      return p;
     }
 
     // The instantiated base type of `derived` whose definition is `baseDecl`, or null.
@@ -3569,15 +3819,25 @@ namespace
         return rvalue(b->rhs);
       }
       const Ty* lt = types.stripRef(b->lhs->ty);
-      if (isClass(lt))
+      const Ty* rt = b->rhs && b->rhs->ty ? types.stripRef(b->rhs->ty) : nullptr;
+      if (isClass(lt) || isClass(rt))
       {
-        Value l = rvalue(b->lhs);
         std::string name = operatorName(op);
         Expr* rhsExpr = b->rhs;
         Span<Expr*> one{&rhsExpr, 1};
         const Ty* foundIn = nullptr;
-        if (findMemberFunction(l.ty, name, argTypesOf(one), l.ty, b, &foundIn))
-          return callRvalue(operatorCall(l, name, one, b, true), b);
+        if (isClass(lt) && findMemberFunction(types.unqualified(lt), name, argTypesOf(one), types.unqualified(lt), b, &foundIn))
+          return callRvalue(operatorCall(rvalue(b->lhs), name, one, b, true), b);
+        // A free `operator+(const char*, const String&)` and the like.
+        if (b->lhs->ty && b->rhs && b->rhs->ty && b->lhs->ty->isKnown() && b->rhs->ty->isKnown())
+          if (FunctionDecl* f = global.findFreeOperator(uint32_t(op), b->lhs->ty, b->rhs->ty, currentFunction); f && f->templateParams.empty())
+          {
+            Expr* args[2] = {b->lhs, b->rhs};
+            return callRvalue(callFunction(f, {}, nullptr, "", "", Span<Expr*>{args, 2}, b), b);
+          }
+        if (!isClass(lt))
+          unsupported(b, "an operator with a class on the right that no function defines");
+        Value l = rvalue(b->lhs);
         if (op == P::Assign)
         {
           Value r = rvalue(b->rhs);
@@ -4793,6 +5053,7 @@ CodegenResult generateLLVM(std::vector<std::unique_ptr<ParsedFile>>& files, Glob
   e.moduleCount = std::max(1u, moduleCount);
   e.bodies.resize(e.moduleCount);
   e.moduleDecls.resize(e.moduleCount);
+  e.moduleCtors.resize(e.moduleCount);
   e.vtablesIn.resize(e.moduleCount);
   for (size_t i = 0; i < files.size(); ++i)
     e.fileModule[files[i].get()] = unsigned(i % e.moduleCount);
@@ -4820,7 +5081,7 @@ CodegenResult generateLLVM(std::vector<std::unique_ptr<ParsedFile>>& files, Glob
                        "target triple = \"x86_64-pc-windows-msvc\"\n\n";
   if (e.moduleCount <= 1)
   {
-    result.ir = prefix + e.decls + e.moduleDecls[0] + "\n" + e.shared + e.body;
+    result.ir = prefix + e.decls + e.moduleDecls[0] + e.ctorsText(0) + "\n" + e.shared + e.body;
     return result;
   }
   for (unsigned k = 0; k < e.moduleCount; ++k)

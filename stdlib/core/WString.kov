@@ -2,7 +2,7 @@
 // zero-terminated. Conversions to and from UTF-8 live in StringUtil of the program using it.
 struct WString
 {
-  wchar_t* data = nullptr;
+  wchar_t* chars = nullptr;
   int length = 0;
   int capacity = 0;
 
@@ -14,29 +14,31 @@ struct WString
       ++n;
     this->append(text, n);
   }
-  WString(const WString& other) { this->append(other.data, other.length); }
+  WString(const WString& other) { this->append(other.chars, other.length); }
   ~WString()
   {
-    if (this->data)
-      free(this->data);
+    if (this->chars)
+      free(this->chars);
   }
   WString& operator=(const WString& other)
   {
     if (this == &other)
       return *this;
     this->length = 0;
-    this->append(other.data, other.length);
-    if (this->data)
-      this->data[this->length] = 0;
+    this->append(other.chars, other.length);
+    if (this->chars)
+      this->chars[this->length] = 0;
     return *this;
   }
 
   int size() const { return this->length; }
   bool empty() const { return this->length == 0; }
-  const wchar_t* c_str() const { return this->data ? this->data : L""; }
-  wchar_t operator[](int index) const { return this->data[index]; }
-  wchar_t* begin() { return this->data; }
-  wchar_t* end() { return this->data + this->length; }
+  const wchar_t* c_str() const { return this->chars ? this->chars : L""; }
+  wchar_t* data() { return this->chars; }
+  const wchar_t* data() const { return this->chars; }
+  wchar_t operator[](int index) const { return this->chars[index]; }
+  wchar_t* begin() { return this->chars; }
+  wchar_t* end() { return this->chars + this->length; }
 
   void reserve(int needed)
   {
@@ -46,14 +48,14 @@ struct WString
     while (newCapacity < needed + 1)
       newCapacity *= 2;
     wchar_t* bigger = (wchar_t*)malloc((size_t)newCapacity * 2);
-    if (this->data)
+    if (this->chars)
     {
-      memcpy(bigger, this->data, (size_t)(this->length + 1) * 2);
-      free(this->data);
+      memcpy(bigger, this->chars, (size_t)(this->length + 1) * 2);
+      free(this->chars);
     }
     else
       bigger[0] = 0;
-    this->data = bigger;
+    this->chars = bigger;
     this->capacity = newCapacity;
   }
   void append(const wchar_t* units, int count)
@@ -61,20 +63,20 @@ struct WString
     if (count <= 0)
       return;
     this->reserve(this->length + count);
-    memcpy(this->data + this->length, units, (size_t)count * 2);
+    memcpy(this->chars + this->length, units, (size_t)count * 2);
     this->length += count;
-    this->data[this->length] = 0;
+    this->chars[this->length] = 0;
   }
   void push_back(wchar_t c) { this->append(&c, 1); }
   void clear()
   {
     this->length = 0;
-    if (this->data)
-      this->data[0] = 0;
+    if (this->chars)
+      this->chars[0] = 0;
   }
   bool operator==(const WString& other) const
   {
-    return this->length == other.length && (this->length == 0 || memcmp(this->data, other.data, (size_t)this->length * 2) == 0);
+    return this->length == other.length && (this->length == 0 || memcmp(this->chars, other.chars, (size_t)this->length * 2) == 0);
   }
   bool operator!=(const WString& other) const { return !(*this == other); }
 };

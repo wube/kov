@@ -48,6 +48,7 @@ namespace
     std::string stdDir;   // --std <dir>; default: <kovc dir>\..\..\stdlib when it exists
     bool noStd = false;
     std::vector<std::string> cIncludeDirs; // --cinclude DIR, for imported C headers
+    std::vector<std::string> libs;         // --lib FILE: libraries linked into the executable
     bool showImportErrors = false; // --errors given: list parse errors in imported headers too
     ConfigValues configValues;     // --config name=value, --release; becomes the `config` namespace
     bool debug = true;             // config::debug
@@ -74,6 +75,7 @@ namespace
             "  --std DIR     standard library sources (default: stdlib next to the compiler)\n"
             "  --no-std      compile without the standard library\n"
             "  --cinclude D  directory searched by imported C headers (repeatable)\n"
+            "  --lib F       a library (.lib) linked into the executable (repeatable)\n"
             "  --config N=V  build configuration constant config::N (bool, integer, enumerator or string)\n"
             "  --release     the same as --config debug=false\n"
             "  --modules N   split the program into N IR modules compiled in parallel (default: two per thread)\n"
@@ -112,6 +114,41 @@ namespace
 
   double seconds(std::chrono::steady_clock::duration d);
   int codegenExit = 0;
+
+  // What the executable links against: legacy_stdio_definitions (the printf family the UCRT
+  // headers define inline), the Windows libraries programs commonly reach, --lib files; unused
+  // functions go (/OPT:REF).
+  std::string linkFlags(const Options& options)
+  {
+    std::string flags = "-Wl,/OPT:REF -llegacy_stdio_definitions -luser32 -ladvapi32 -lshell32 -lole32 -lws2_32";
+    for (const std::string& lib : options.libs)
+      flags += " \"" + lib + "\"";
+    return flags;
+  }
+
+  // Splits a flag string on spaces, keeping quoted paths whole (without the quotes).
+  std::vector<std::string> splitFlags(const std::string& text)
+  {
+    std::vector<std::string> out;
+    std::string current;
+    bool quoted = false;
+    for (char c : text)
+    {
+      if (c == '"')
+        quoted = !quoted;
+      else if (c == ' ' && !quoted)
+      {
+        if (!current.empty())
+          out.push_back(current);
+        current.clear();
+      }
+      else
+        current += c;
+    }
+    if (!current.empty())
+      out.push_back(current);
+    return out;
+  }
   void importCHeaders(std::vector<SourceFile>& files, std::vector<LexResult>& lexed, std::vector<std::unique_ptr<ParsedFile>>& parsed,
                       SymbolTable& symbols, const Options& options);
 
@@ -198,6 +235,30 @@ namespace
                                                     "uint32_t", "uint64_t", "intptr_t", "uintptr_t", "wchar_t", "bool", "true", "false",
                                                     "DWORD", "WORD", "BYTE", "HANDLE", "LONG", "ULONG", "UINT", "INT", "LONG_PTR", "ULONG_PTR",
                                                     "LPVOID", "SIZE_T", "DWORD_PTR", "HRESULT", "BOOL", "LONGLONG", "ULONGLONG", "UINT_PTR", "INT_PTR"};
+    std::map<std::string, std::string> integerTypes; // constants with a plain integer body, by name
+    for (size_t p = 0; p < defines.size();)
+    {
+      size_t end = defines.find('\n', p);
+      if (end == std::string::npos)
+        end = defines.size();
+      std::string line = defines.substr(p, end - p);
+      p = end + 1;
+      if (line.rfind("#define ", 0) != 0)
+        continue;
+      size_t nameEnd = line.find_first_of(" (", 8);
+      if (nameEnd == std::string::npos || line[nameEnd] == '(' || nameEnd + 1 >= line.size())
+        continue;
+      std::string body = line.substr(nameEnd + 1);
+      while (!body.empty() && (body.back() == ' ' || body.back() == '\r'))
+        body.pop_back();
+      if (body.empty() || !isdigit((unsigned char)body[0]) || body.find_first_not_of("0123456789xXabcdefABCDEFuUlLi") != std::string::npos ||
+          (body.find('i') != std::string::npos && body.find("i64") == std::string::npos && body.find("i32") == std::string::npos) ||
+          (body.find_first_of("xX") == std::string::npos && body.find_first_of("abcdefABCDEF") != std::string::npos))
+        continue;
+      bool wide = body.find_first_of("lL") != std::string::npos || body.find("i64") != std::string::npos;
+      bool isUnsigned = body.find_first_of("uU") != std::string::npos;
+      integerTypes[line.substr(8, nameEnd - 8)] = wide ? (isUnsigned ? "unsigned long long" : "long long") : (isUnsigned ? "unsigned int" : "int");
+    }
     size_t pos = 0;
     while (pos < defines.size())
     {
@@ -216,8 +277,9 @@ namespace
       std::string body = line.substr(nameEnd + 1);
       while (!body.empty() && (body.back() == ' ' || body.back() == '\r'))
         body.pop_back();
-      if (name.empty() || name.rfind("__", 0) == 0 || body.empty())
-        continue; // __FILE__-style internals stay out; _A_SUBDIR-style constants come in
+      bool internal = name.rfind("__", 0) == 0; // __FILE__-style internals stay out, unless a plain number (__LONG_LONG_MAX__)
+      if (name.empty() || body.empty() || (internal && body.find_first_not_of("0123456789xXabcdefABCDEFuUlL") != std::string::npos))
+        continue;
       bool hasNumber = false, ok = true, call = false, namesKnown = true;
       int quotes = 0;
       for (size_t i = 0; i < body.size(); ++i)
@@ -249,7 +311,9 @@ namespace
             call = true; // `name(`: a function-like macro or a call, not a constant; `)(` in casts is fine
         }
       }
-      if (!ok || call || (quotes != 0 && quotes != 2) || !namesKnown || (!hasNumber && quotes == 0 && body.find('(') == std::string::npos))
+      bool aliasOfInteger = integerTypes.count(body) != 0; // DBL_MANT_DIG = __DBL_MANT_DIG__
+      if (!ok || call || (quotes != 0 && quotes != 2) || !namesKnown ||
+          (!hasNumber && quotes == 0 && body.find('(') == std::string::npos && !aliasOfInteger))
         continue;
       // A declared type where the body shows one: a cast, a string, a float or an integer literal.
       std::string type = "auto";
@@ -268,9 +332,55 @@ namespace
       else if (hasNumber && body.find_first_of("\"") == std::string::npos && body.find_first_of("xX") == std::string::npos &&
                body.find_first_of(".eE") != std::string::npos)
         type = body.back() == 'f' || body.back() == 'F' ? "float" : "double";
-      else if (hasNumber && body.find_first_not_of("0123456789xXabcdefABCDEFuUlL()- +") == std::string::npos)
-        type = body.find_first_of("lL") != std::string::npos ? (body.find_first_of("uU") != std::string::npos ? "unsigned long long" : "long long")
-                                                            : (body.find_first_of("uU") != std::string::npos ? "unsigned int" : "int");
+      else if (hasNumber && body.find_first_not_of("0123456789xXabcdefABCDEFuUlLi()- +") == std::string::npos &&
+               (body.find('i') == std::string::npos || body.find("i64") != std::string::npos || body.find("i32") != std::string::npos))
+      {
+        bool wide = body.find_first_of("lL") != std::string::npos || body.find("i64") != std::string::npos;
+        bool isUnsigned = body.find_first_of("uU") != std::string::npos;
+        type = wide ? (isUnsigned ? "unsigned long long" : "long long") : (isUnsigned ? "unsigned int" : "int");
+      }
+      if (type == "auto" && aliasOfInteger)
+        type = integerTypes[body];
+      if (type == "auto" && hasNumber && quotes == 0)
+      {
+        // Names of other integer constants with numbers and operators (LLONG_MIN = (-__LONG_LONG_MAX__-1LL)):
+        // an integer of the widest kind seen.
+        bool integer = true, wide = false, isUnsigned = false;
+        for (size_t i = 0; i < body.size() && integer;)
+        {
+          char c = body[i];
+          if (isalpha((unsigned char)c) || c == '_')
+          {
+            size_t j = i;
+            while (j < body.size() && (isalnum((unsigned char)body[j]) || body[j] == '_'))
+              ++j;
+            std::string word = body.substr(i, j - i);
+            auto known = integerTypes.find(word);
+            bool suffix = i > 0 && isdigit((unsigned char)body[i - 1]) && word.find_first_not_of("uUlLi0123456789") == std::string::npos;
+            if (known != integerTypes.end())
+            {
+              wide = wide || known->second.find("long long") != std::string::npos;
+              isUnsigned = isUnsigned || known->second.find("unsigned") != std::string::npos;
+            }
+            else if (suffix)
+            {
+              wide = wide || word.find_first_of("lL") != std::string::npos || word.find("i64") != std::string::npos;
+              isUnsigned = isUnsigned || word.find_first_of("uU") != std::string::npos;
+            }
+            else
+              integer = false;
+            i = j;
+            continue;
+          }
+          if (c == '.' || c == '"' || c == '\'')
+            integer = false;
+          ++i;
+        }
+        if (integer)
+          type = wide ? (isUnsigned ? "unsigned long long" : "long long") : (isUnsigned ? "unsigned int" : "int");
+      }
+      if (type.find("int") != std::string::npos || type.find("long") != std::string::npos)
+        integerTypes[name] = type;
       out += "const " + type + " " + name + " = " + body + ";\n";
     }
     return out;
@@ -401,13 +511,15 @@ namespace
     };
     std::string clang = clangPath();
     const char* level = options.debug ? "-O0" : "-O2";
+    // Every function in its own section, so that the linker drops the ones nobody calls (and
+    // the libraries they would need): a program pays only for what it uses.
+    const char* compileFlags = "-ffunction-sections -fdata-sections";
     if (cg.modules.empty())
     {
       std::string llPath = options.emitLLVM.empty() ? options.exe + ".ll" : options.emitLLVM;
       if (!writeFile(llPath, cg.ir) || options.exe.empty() || codegenExit)
         return;
-      // legacy_stdio_definitions: the printf/scanf family that the UCRT headers define inline.
-      std::string command = "\"\"" + clang + "\" " + level + " -w \"" + llPath + "\" -o \"" + options.exe + "\" -llegacy_stdio_definitions\"";
+      std::string command = "\"\"" + clang + "\" " + level + " -w " + compileFlags + " \"" + llPath + "\" -o \"" + options.exe + "\" " + linkFlags(options) + "\"";
       start = Clock::now();
       int rc = system(command.c_str());
       report("clang:   %.3f s (%s, exit %d)\n", seconds(Clock::now() - start), level, rc);
@@ -443,7 +555,7 @@ namespace
         ++failures;
         return;
       }
-      std::string command = "\"\"" + clang + "\" " + level + " -w -c \"" + llPath + "\" -o \"" + objects[k] + "\"\"";
+      std::string command = "\"\"" + clang + "\" " + level + " -w " + compileFlags + " -c \"" + llPath + "\" -o \"" + objects[k] + "\"\"";
       if (system(command.c_str()) != 0)
         ++failures;
       else
@@ -468,7 +580,9 @@ namespace
     };
     for (const std::string& o : objects)
       response += "\"" + slashes(o) + "\"\n";
-    response += "-o \"" + slashes(options.exe) + "\"\n-llegacy_stdio_definitions\n";
+    response += "-o \"" + slashes(options.exe) + "\"\n";
+    for (const std::string& flag : splitFlags(linkFlags(options)))
+      response += slashes(flag) + "\n";
     std::string responsePath = options.exe + ".link.rsp";
     if (!writeFile(responsePath, response))
       return;
@@ -723,6 +837,8 @@ int main(int argc, char** argv)
       options.noStd = true;
     else if (arg == "--cinclude" && i + 1 < argc)
       options.cIncludeDirs.push_back(argv[++i]);
+    else if (arg == "--lib" && i + 1 < argc)
+      options.libs.push_back(argv[++i]);
     else if (arg == "--config" && i + 1 < argc)
     {
       std::string item = argv[++i];

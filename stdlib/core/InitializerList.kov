@@ -1,0 +1,19 @@
+// Kov standard library: InitializerList<T>, what a brace list `{a, b, c}` passed to a function
+// becomes: a view of the elements, which live in the caller until the end of the full expression.
+// The compiler builds it directly (a pointer, then a count: keep these two fields first).
+template<typename T>
+struct InitializerList
+{
+  const T* items = nullptr;
+  int length = 0;
+
+  InitializerList() {}
+  InitializerList(const T* items, int length) : items(items), length(length) {}
+
+  int size() const { return this->length; }
+  bool empty() const { return this->length == 0; }
+  const T* begin() const { return this->items; }
+  const T* end() const { return this->items + this->length; }
+  const T* data() const { return this->items; }
+  const T& operator[](int index) const { return this->items[index]; }
+};

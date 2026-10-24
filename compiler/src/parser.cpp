@@ -167,15 +167,16 @@ namespace
       if (accept(P::Greater))
         return true;
       Token t = toks[pos];
-      if (t.is(P::Shr) || t.is(P::GreaterEq) || t.is(P::ShrAssign))
+      if (t.is(P::Shr) || t.is(P::ShrAssign))
       {
-        // Split into '>' and the rest. Inserting keeps earlier token indices valid, so speculative
-        // parses that backtrack over this point re-parse the same token sequence.
+        // Split into '>' and the rest, as C++ does for `>>` (never for `>=`: `x < 0 || x >= 5` is a
+        // comparison). Inserting keeps earlier token indices valid, so speculative parses that
+        // backtrack over this point re-parse the same token sequence.
         Token rest = t;
         rest.offset += 1;
         rest.length -= 1;
         std::string_view restSpelling = spelling(rest);
-        rest.id = uint32_t(restSpelling == ">" ? P::Greater : restSpelling == "=" ? P::Assign : P::GreaterEq);
+        rest.id = uint32_t(restSpelling == ">" ? P::Greater : P::GreaterEq);
         splits.push_back({pos, t});
         toks[pos].length = 1;
         toks[pos].id = uint32_t(P::Greater);
@@ -1217,6 +1218,20 @@ namespace
       bool present = false;
       Expr* requiresClause = nullptr;
     };
+    std::vector<uint32_t> templateTypeNames; // type parameters of the templates being parsed: known type names
+
+    bool isTemplateTypeName(Type* t) const
+    {
+      if (!t || t->kind != NodeKind::NamedType)
+        return false;
+      const QualifiedName& name = static_cast<NamedType*>(t)->name;
+      if (name.parts.size() != 1 || name.parts[0].hasTemplateArgs || name.parts[0].special != 0)
+        return false;
+      for (uint32_t symbol : templateTypeNames)
+        if (symbol == name.parts[0].symbol)
+          return true;
+      return false;
+    }
 
     void parseDeclarationInner(Scope scope, TemplateHeader templ)
     {
@@ -2054,6 +2069,17 @@ namespace
         // Explicit instantiation: `template class X<int>;` / `template void f<int>(int);`
         header.present = false;
       }
+      // The type parameters are type names while the declaration (and its body) is parsed.
+      struct TypeNamesGuard
+      {
+        std::vector<uint32_t>& names;
+        size_t mark;
+        ~TypeNamesGuard() { names.resize(mark); }
+      } typeNamesGuard{templateTypeNames, templateTypeNames.size()};
+      for (Decl* p : header.params)
+        if (p && p->kind == NodeKind::TemplateParamDecl)
+          if (auto* tp = static_cast<TemplateParamDecl*>(p); tp->isType && tp->name != UINT32_MAX)
+            templateTypeNames.push_back(tp->name);
       if (at(Kw::requires_))
       {
         advance();
@@ -3420,7 +3446,7 @@ namespace
     {
       // After `(T)`: a cast if T is obviously a type (builtin, pointer, const...) or the next
       // token cannot continue an expression that `(T)` started.
-      bool obviousType = t->kind != NodeKind::NamedType;
+      bool obviousType = t->kind != NodeKind::NamedType || isTemplateTypeName(t);
       if (!obviousType)
       {
         std::string_view s = spelling(toks[t->token]);

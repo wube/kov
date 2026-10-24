@@ -80,6 +80,64 @@ of `Optional` in boolean context, `nullopt`, `NAN`, globals with constructors. N
 list is a design question; the chrono/codecvt/varargs files are the first candidates for
 hand-written overrides, the rest is library and compiler work.
 
+## CommonUtil compiles, links and runs (2026-10-25)
+
+`programs/factorio/convert.cmd` now converts `libraries/CommonUtil`, compiles the result with
+zero code generation complaints, links it (without `SystemClipboard`, which needs SDL) with
+`programs/factorio/tests/smoke.kov`, runs it and compares the output with `smoke.expected`:
+trimming, splitting, `ssprintf`, number parsing with its `InputException`, UTF-8/UTF-16
+conversion, the fast float approximations and fdlibm's `pow`, `LowercaseString`, `CpuTimer`.
+
+What it took, in the order it was found:
+
+- **Hand-written overrides at definition granularity.** `--overrides DIR` used to replace whole
+  files; now a file under `overrides/` is parsed, and every function, class or global it defines
+  replaces the converted definition of the same qualified name (functions by arity; a name
+  defined once replaces all its overloads, since the original's parameter list may hide behind
+  a macro such as `FORMAT_STRING(...)`; a definition the parser did not recognise is removed by
+  text). The rest of the override file is appended. Four files have overrides, 24 definitions:
+  `CpuTimer` on the library's `Clock`, `widen`/`narrow` on `MultiByteToWideChar`, the trim
+  functions without reverse iterators, `ssprintf`/`vssprintf` on `vsnprintf` and a static
+  buffer, the four Math functions that used anonymous unions (now `bitCast<T>()`), fdlibm's
+  word-access macros as small functions, and the unicode search map as a sorted static array.
+- **Compiler features:** exceptions (section 9); free `operator+(const char*, const String&)`
+  and friends found from either operand; conversion operators (`explicit operator bool`
+  in conditions); `->` through `operator->`; converting constructors for `const T&` and by-value
+  class parameters (`f("text")` with `f(const String&)`); globals with constructors or
+  non-constant initializers (built at startup through `llvm.global_ctors`; destructors at exit
+  do not run yet); arrays from nested brace lists and unsized arrays sized by their initializer;
+  `va_start`/`va_end`/`va_copy` and functions defined with `...`; array parameters as pointers;
+  MSVC integer suffixes (`1i64`); `(DWORD)-11` folded as a constant; integer literals typed by
+  value as in C++ (`0xffffffff` is unsigned; before, `ui & 0xffffffff` kept all 64 bits);
+  template parameter types recognised in casts (`(T)x`); out-of-line qualified definitions
+  (`void StringUtil::f() {}`) attached to their namespace; a template declared in one block and
+  defined in another; `T = const int` keeps its const when deduced through `T*`; function
+  template specialisations get distinct names (resolution of calls to them is still naive);
+  pointer arguments are no longer silently converted to integers; the linker drops unused
+  functions (`-ffunction-sections`, `/OPT:REF`) and links the usual Windows libraries, `--lib`
+  adds more.
+- **Parser bug worth remembering:** `index < 0 || index >= this->length` was parsed as the
+  template-id `index<0 || index>` followed by `= this->length`, because `>=` was split into
+  `>` `=` as a template close. C++ splits only `>>`. Every such condition in the library and in
+  converted code compiled to an assignment; the smoke test found it through `String::erase`.
+- **Library:** `data()` on String, StringView, WString, Vector, Span (the fields are `chars` and
+  `items` now); `back()`/`front()` by reference; `erase` by pointer range; `find_first_of` with
+  a start position and a StringView set; `Vector(int count)`; `Optional` with `nullopt`,
+  `value()`, `*`, `->`, `operator bool`; `InitializerList<T>` (call sites with brace lists are
+  not generated yet); `Time.kov` (Duration, TimePoint, Clock on QueryPerformanceCounter);
+  `bitCast`; `lowerBound` with a comparator; `Limits<float/double>::quiet_NaN()`; `NAN`; `abs`
+  for floats. Converted `std::sqrt` and the other C library functions become `::sqrt`, so a
+  namespace's own `sqrt` wrapper does not call itself.
+- **Converter:** `<cstdint>`-style headers map to their C names, `stdio.h` joins the common
+  imports, `conio.h` and more Windows headers import, `trio_*` becomes the C runtime's printf
+  family, explicit instantiation declarations go, `std::` names in `#else` branches the parser
+  never tokenized are renamed by text.
+
+Still open before the next library (Agui, then the game): non-type template parameters
+(`Array<T, N>`, `std::array`), calls to function template specialisations, brace lists passed
+to `InitializerList` parameters, `thread_local`, destructors of globals at exit, wide string
+literals (`L"..."`), and SDL as a linked library for the few CommonUtil functions that use it.
+
 ## The order that gets to a running game
 
 1. Decide exceptions and RTTI; implement them (they shape what the converter emits).

@@ -3,22 +3,24 @@
 template<typename T>
 struct Vector
 {
-  T* data = nullptr;
+  T* items = nullptr;
   int length = 0;
   int capacity = 0;
 
   Vector() {}
+  // count default-constructed elements.
+  explicit Vector(int count) { this->resize(count); }
   Vector(const Vector<T>& other)
   {
     this->reserve(other.length);
     for (int i = 0; i < other.length; ++i)
-      this->push_back(other.data[i]);
+      this->push_back(other.items[i]);
   }
   ~Vector()
   {
     this->clear();
-    if (this->data)
-      free(this->data);
+    if (this->items)
+      free(this->items);
   }
 
   Vector<T>& operator=(const Vector<T>& other)
@@ -28,16 +30,18 @@ struct Vector
     this->clear();
     this->reserve(other.length);
     for (int i = 0; i < other.length; ++i)
-      this->push_back(other.data[i]);
+      this->push_back(other.items[i]);
     return *this;
   }
 
   int size() const { return this->length; }
+  T* data() { return this->items; }
+  const T* data() const { return this->items; }
   bool empty() const { return this->length == 0; }
-  T& operator[](int index) { return this->data[index]; }
-  T& back() { return this->data[this->length - 1]; }
-  T* begin() { return this->data; }
-  T* end() { return this->data + this->length; }
+  T& operator[](int index) { return this->items[index]; }
+  T& back() { return this->items[this->length - 1]; }
+  T* begin() { return this->items; }
+  T* end() { return this->items + this->length; }
 
   void reserve(int needed)
   {
@@ -47,23 +51,23 @@ struct Vector
     while (newCapacity < needed)
       newCapacity *= 2;
     T* bigger = (T*)malloc(newCapacity * sizeof(T));
-    if (this->data)
+    if (this->items)
     {
-      memcpy(bigger, this->data, this->length * sizeof(T));
-      free(this->data);
+      memcpy(bigger, this->items, this->length * sizeof(T));
+      free(this->items);
     }
-    this->data = bigger;
+    this->items = bigger;
     this->capacity = newCapacity;
   }
 
   void push_back(const T& value)
   {
     this->reserve(this->length + 1);
-    new (this->data + this->length) T(value);
+    new (this->items + this->length) T(value);
     ++this->length;
   }
   void emplace_back(const T& value) { this->push_back(value); }
-  T& front() { return this->data[0]; }
+  T& front() { return this->items[0]; }
   void resize(int newLength)
   {
     while (this->length > newLength)
@@ -75,31 +79,41 @@ struct Vector
   {
     this->push_back(value);
     for (int k = this->length - 1; k > index; --k)
-      this->data[k] = this->data[k - 1];
-    this->data[index] = value;
+      this->items[k] = this->items[k - 1];
+    this->items[index] = value;
   }
   bool contains(const T& value) const
   {
     for (int i = 0; i < this->length; ++i)
-      if (this->data[i] == value)
+      if (this->items[i] == value)
         return true;
     return false;
   }
   void pop_back()
   {
     --this->length;
-    this->data[this->length].~T();
+    this->items[this->length].~T();
   }
   void clear()
   {
     for (int i = 0; i < this->length; ++i)
-      this->data[i].~T();
+      this->items[i].~T();
     this->length = 0;
   }
   void erase(int index)
   {
-    this->data[index].~T();
-    memmove(this->data + index, this->data + index + 1, (this->length - index - 1) * sizeof(T));
+    this->items[index].~T();
+    memmove(this->items + index, this->items + index + 1, (this->length - index - 1) * sizeof(T));
     --this->length;
   }
+  // Removes [first, last), given as pointers into the vector (begin()/end() and what find functions return).
+  void erase(T* first, T* last)
+  {
+    int index = int(first - this->items), count = int(last - first);
+    for (int i = 0; i < count; ++i)
+      this->items[index + i].~T();
+    memmove(this->items + index, this->items + index + count, (this->length - index - count) * sizeof(T));
+    this->length -= count;
+  }
+  void erase(T* at) { this->erase(at, at + 1); }
 };

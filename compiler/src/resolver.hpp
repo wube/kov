@@ -94,6 +94,9 @@ public:
   // object they are called on, classArgs its instantiation). Null if none is viable.
   FunctionDecl* chooseOverload(const std::vector<FunctionDecl*>& candidates, const std::vector<const Ty*>& argTypes,
                                const TemplateArgs& classArgs, const Ty* objectType, bool* ambiguous = nullptr);
+  // The free function `operator<punctuator>(lhs[, rhs])` visible from context (the namespaces of
+  // the operand classes and context's own), chosen by overload ranking; null if none.
+  FunctionDecl* findFreeOperator(uint32_t punctuator, const Ty* lhs, const Ty* rhs, Decl* context);
   // The value of a builtin boolean type trait (`isArray<T>`, `isSame<A, B>`...) written as a
   // name with template arguments, under the instantiation args; nullopt if it is not one or
   // its arguments are still dependent.

@@ -1,4 +1,5 @@
 #include "convert.hpp"
+#include "parser.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -34,6 +35,7 @@ namespace
   const std::map<std::string, std::string> knownFunctionMacros = {{"FORMAT_STRING", "$1"}, {"WHEN_ASSERT", "$1"}, {"FOR_DEVELOPER", "$1"}};
 
   // std:: names and their Kov library spelling. Names not here keep their name and are counted.
+  // C library functions become `::name`: inside a namespace with its own `sqrt`, `std::sqrt` meant the C one.
   const std::map<std::string, std::string> stdNames = {
     {"string", "String"}, {"string_view", "StringView"}, {"wstring", "WString"}, {"vector", "Vector"}, {"pair", "Pair"},
     {"optional", "Optional"}, {"map", "Map"}, {"set", "Set"}, {"unordered_map", "HashMap"}, {"unordered_set", "HashSet"},
@@ -46,11 +48,11 @@ namespace
     {"remove", "remove"}, {"transform", "transform"}, {"count_if", "countIf"}, {"all_of", "allOf"}, {"any_of", "anyOf"},
     {"none_of", "noneOf"}, {"lower_bound", "lowerBound"}, {"upper_bound", "upperBound"}, {"reverse", "reverse"},
     {"fill", "fill"}, {"copy", "copy"}, {"accumulate", "accumulate"}, {"begin", "begin"}, {"end", "end"}, {"size", "size"},
-    {"isnan", "isnan"}, {"isinf", "isinf"}, {"abs", "abs"}, {"floor", "floor"}, {"ceil", "ceil"}, {"round", "round"},
-    {"sqrt", "sqrt"}, {"pow", "pow"}, {"tolower", "tolower"}, {"toupper", "toupper"}, {"size_t", "size_t"},
+    {"isnan", "::isnan"}, {"isinf", "::isinf"}, {"abs", "::abs"}, {"floor", "::floor"}, {"ceil", "::ceil"}, {"round", "::round"},
+    {"sqrt", "::sqrt"}, {"pow", "::pow"}, {"tolower", "::tolower"}, {"toupper", "::toupper"}, {"size_t", "size_t"},
     {"nullptr_t", "nullptr_t"}, {"to_string", "toString"}, {"make_unique", "makeUnique"}, {"make_shared", "makeShared"},
-    {"make_pair", "makePair"}, {"make_tuple", "makeTuple"}, {"get", "get"}, {"declval", "declval"}, {"memcpy", "memcpy"},
-    {"memset", "memset"}, {"strlen", "strlen"}, {"is_same_v", "isSame"}, {"is_array_v", "isArray"}, {"is_signed_v", "isSigned"},
+    {"make_pair", "makePair"}, {"make_tuple", "makeTuple"}, {"get", "get"}, {"declval", "declval"}, {"memcpy", "::memcpy"},
+    {"memset", "::memset"}, {"strlen", "::strlen"}, {"is_same_v", "isSame"}, {"is_array_v", "isArray"}, {"is_signed_v", "isSigned"},
     {"is_unsigned_v", "isUnsigned"}, {"is_pointer_v", "isPointer"}, {"is_enum_v", "isEnum"}, {"is_integral_v", "isIntegral"},
     {"is_floating_point_v", "isFloatingPoint"}, {"is_base_of_v", "isBaseOf"}, {"is_trivially_copyable_v", "isTriviallyCopyable"},
     {"remove_reference_t", "RemoveReference"}, {"remove_const_t", "RemoveConst"}, {"remove_cv_t", "RemoveCv"},
@@ -59,28 +61,104 @@ namespace
     {"lock_guard", "LockGuard"}, {"unique_lock", "UniqueLock"}, {"thread", "Thread"}, {"condition_variable", "ConditionVariable"},
     {"exchange", "exchange"}, {"hash", "Hash"}, {"less", "Less"}, {"equal_to", "EqualTo"}, {"bind", "bind"}, {"ref", "ref"},
     {"cref", "cref"}, {"reference_wrapper", "ReferenceWrapper"}, {"is_const_v", "isConst"}, {"is_reference_v", "isReference"},
-    {"numeric_limits", "Limits"}, {"strtoll", "strtoll"}, {"strtoull", "strtoull"}, {"strtod", "strtod"}, {"strtof", "strtof"},
+    {"numeric_limits", "Limits"}, {"strtoll", "::strtoll"}, {"strtoull", "::strtoull"}, {"strtod", "::strtod"}, {"strtof", "::strtof"},
     {"ostream", "OutStream"}, {"istream", "InStream"}, {"stringstream", "StringStream"}, {"ostringstream", "StringStream"},
     {"nullopt", "nullopt"}, {"count", "count"}, {"distance", "distance"}, {"max_element", "maxElement"}, {"min_element", "minElement"},
-    {"nextafter", "nextafter"}, {"rbegin", "rbegin"}, {"rend", "rend"}, {"unique", "unique"}, {"is_class_v", "isClass"},
+    {"nextafter", "::nextafter"}, {"rbegin", "rbegin"}, {"rend", "rend"}, {"unique", "unique"}, {"is_class_v", "isClass"},
     {"is_convertible_v", "isConvertible"}, {"is_null_pointer_v", "isNullPointer"}, {"back_inserter", "backInserter"},
     {"is_void_v", "isVoid"}, {"is_function_v", "isFunction"}, {"invoke", "invoke"}, {"apply", "apply"}, {"tie", "tie"},
     {"ignore", "ignore"}, {"index_sequence", "IndexSequence"}, {"make_index_sequence", "makeIndexSequence"}, {"byte", "u8"},
     {"int8_t", "int8_t"}, {"int16_t", "int16_t"}, {"int32_t", "int32_t"}, {"int64_t", "int64_t"}, {"uint8_t", "uint8_t"},
     {"uint16_t", "uint16_t"}, {"uint32_t", "uint32_t"}, {"uint64_t", "uint64_t"}, {"intptr_t", "intptr_t"}, {"uintptr_t", "uintptr_t"},
-    {"ptrdiff_t", "ptrdiff_t"}, {"fabs", "fabs"}, {"fmod", "fmod"}, {"log", "log"}, {"exp", "exp"}, {"sin", "sin"}, {"cos", "cos"},
-    {"atan2", "atan2"}, {"isfinite", "isfinite"}, {"signbit", "signbit"}, {"trunc", "trunc"}, {"lround", "lround"}};
+    {"ptrdiff_t", "ptrdiff_t"}, {"fabs", "::fabs"}, {"fmod", "::fmod"}, {"log", "::log"}, {"exp", "::exp"}, {"sin", "::sin"}, {"cos", "::cos"},
+    {"atan2", "::atan2"}, {"isfinite", "::isfinite"}, {"signbit", "::signbit"}, {"trunc", "::trunc"}, {"lround", "::lround"}};
 
   bool isIdentChar(char c) { return isalnum((unsigned char)c) || c == '_'; }
+
+  // --- hand-written overrides ---
+
+  // What an override file defines, by qualified name: those definitions of the converted file
+  // are dropped and the override file's text is appended.
+  struct OverrideKeys
+  {
+    std::set<std::string> functions;           // "ns::name/arity", or "ns::name/*" for every overload
+    std::map<std::string, int> functionCounts; // definitions per qualified name
+    std::set<std::string> classes;             // "ns::Class" (its out-of-line members go too)
+    std::set<std::string> variables;           // "ns::name"
+  };
+
+  std::string nameText(const QualifiedName& name, const SymbolTable& symbols)
+  {
+    std::string s;
+    for (size_t i = 0; i < name.parts.size(); ++i)
+    {
+      const NamePart& p = name.parts[i];
+      if (i)
+        s += "::";
+      if (p.special == 1)
+        s += "~";
+      if (p.special == 2)
+        s += "operator#" + std::to_string(p.opToken);
+      else if (p.special == 3)
+        s += "operator-conversion";
+      else if (p.symbol != UINT32_MAX)
+        s += std::string(symbols.name(p.symbol));
+    }
+    return s;
+  }
+
+  bool isFunctionDefinition(FunctionDecl* f) { return f->body != nullptr || (f->flags & (DF_Default | DF_Delete)); }
+
+  void collectOverrideKeys(Span<Decl*> decls, const std::string& prefix, const SymbolTable& symbols, OverrideKeys& out)
+  {
+    for (Decl* d : decls)
+      switch (d->kind)
+      {
+        case NodeKind::NamespaceDecl:
+        {
+          auto* n = static_cast<NamespaceDecl*>(d);
+          std::string name = !n->nested.empty() ? nameText(n->nested, symbols) : n->name == UINT32_MAX ? std::string() : std::string(symbols.name(n->name));
+          collectOverrideKeys(n->decls, prefix + name + "::", symbols, out);
+          break;
+        }
+        case NodeKind::FunctionDecl:
+        {
+          auto* f = static_cast<FunctionDecl*>(d);
+          if (isFunctionDefinition(f))
+          {
+            out.functions.insert(prefix + nameText(f->name, symbols) + "/" + std::to_string(f->params.size()));
+            ++out.functionCounts[prefix + nameText(f->name, symbols)];
+          }
+          break;
+        }
+        case NodeKind::ClassDecl:
+        {
+          auto* c = static_cast<ClassDecl*>(d);
+          if (c->isDefinition && !c->name.empty())
+            out.classes.insert(prefix + nameText(c->name, symbols));
+          break;
+        }
+        case NodeKind::VariableDecl: out.variables.insert(prefix + nameText(static_cast<VariableDecl*>(d)->name, symbols)); break;
+        default: break;
+      }
+  }
+
+  struct OverrideFile
+  {
+    std::string text;
+    OverrideKeys keys;
+  };
 
   struct FileConverter
   {
     const ConvertInput& in;
     GlobalScope& global;
     const SymbolTable& symbols;
+    const OverrideKeys* overrides = nullptr; // definitions a hand-written file replaces
+    std::set<std::string> replacedFunctions;  // qualified names whose definitions were found and removed
     std::vector<Edit> edits;
     Counts counts;
-    bool importedCommon = false;    // stdlib.h and string.h added next to the first C import
+    bool importedCommon = false;    // stdlib.h, string.h and stdio.h added next to the first C import
     std::vector<std::string> todos; // "line: text"
     std::string_view text;
     const std::vector<Token>& toks;
@@ -455,7 +533,9 @@ namespace
           // C headers become imports; C++ and project headers go (every project symbol is visible).
           static const std::set<std::string> cHeaders = {"windows.h", "stdio.h", "stdlib.h", "string.h", "math.h", "ctype.h", "errno.h",
                                                          "stdarg.h", "stdint.h", "stddef.h", "time.h", "io.h", "fcntl.h", "direct.h",
-                                                         "process.h", "signal.h", "locale.h", "wchar.h", "float.h", "limits.h", "assert.h"};
+                                                         "process.h", "signal.h", "locale.h", "wchar.h", "float.h", "limits.h", "assert.h",
+                                                         "conio.h", "intrin.h", "malloc.h", "memory.h", "wctype.h", "inttypes.h",
+                                                         "shellapi.h", "shlobj.h", "winsock2.h", "ws2tcpip.h", "psapi.h", "dbghelp.h"};
           size_t open = rest.find_first_of("<\"");
           size_t close = rest.find_first_of(">\"", open + 1);
           std::string header = open != std::string::npos && close != std::string::npos ? rest.substr(open + 1, close - open - 1) : "";
@@ -463,7 +543,9 @@ namespace
           static const std::map<std::string, std::string> cxxToC = {{"cmath", "math.h"}, {"cstdio", "stdio.h"}, {"cstring", "string.h"},
                                                                     {"cstdlib", "stdlib.h"}, {"cctype", "ctype.h"}, {"cerrno", "errno.h"},
                                                                     {"cstdarg", "stdarg.h"}, {"ctime", "time.h"}, {"cwchar", "wchar.h"},
-                                                                    {"cfloat", "float.h"}, {"climits", "limits.h"}};
+                                                                    {"cfloat", "float.h"}, {"climits", "limits.h"}, {"cstdint", "stdint.h"},
+                                                                    {"cstddef", "stddef.h"}, {"cassert", "assert.h"}, {"csignal", "signal.h"},
+                                                                    {"clocale", "locale.h"}, {"cwctype", "wctype.h"}, {"cinttypes", "inttypes.h"}};
           auto cxx = cxxToC.find(base);
           if (cxx != cxxToC.end())
             base = cxx->second;
@@ -481,10 +563,9 @@ namespace
             {
               // The C++ standard headers brought these in transitively; converted code expects them.
               importedCommon = true;
-              if (base != "stdlib.h")
-                imports += "\nextern \"C\" import \"stdlib.h\";";
-              if (base != "string.h")
-                imports += "\nextern \"C\" import \"string.h\";";
+              for (const char* common : {"stdlib.h", "string.h", "stdio.h"})
+                if (base != common)
+                  imports += std::string("\nextern \"C\" import \"") + common + "\";";
             }
             replace(offset, length, imports);
             counts.add("includes to imports");
@@ -540,6 +621,19 @@ namespace
           counts.add("template keyword dropped");
           continue;
         }
+        if (t.getKind() == TokenKind::Identifier && toks[i + 1].is(P::LParen))
+        {
+          // Library functions Factorio wraps that the C runtime provides as well.
+          static const std::map<std::string_view, std::string> renames = {
+            {"trio_vsnprintf", "vsnprintf"}, {"trio_snprintf", "snprintf"}, {"trio_sprintf", "sprintf"}, {"trio_vsprintf", "vsprintf"}};
+          auto rn = renames.find(spelling(i));
+          if (rn != renames.end())
+          {
+            replace(t.offset, t.length, rn->second);
+            counts.add("function renamed");
+            continue;
+          }
+        }
         if (t.getKind() == TokenKind::Identifier && spelling(i) == "length" && i > 0 && (toks[i - 1].is(P::Dot) || toks[i - 1].is(P::Arrow)) &&
             toks[i + 1].is(P::LParen) && toks[i + 2].is(P::RParen))
         {
@@ -585,13 +679,60 @@ namespace
 
     static bool isDefinition(FunctionDecl* f) { return f->body != nullptr || (f->flags & (DF_Default | DF_Delete)); }
 
-    void convertDecls(Span<Decl*> decls, bool namespaceScope)
+    // Whether a hand-written override replaces this namespace-scope definition.
+    bool overridden(Decl* d, const std::string& prefix)
+    {
+      if (!overrides)
+        return false;
+      if (d->kind == NodeKind::FunctionDecl)
+      {
+        auto* f = static_cast<FunctionDecl*>(d);
+        if (!isFunctionDefinition(f))
+          return false;
+        std::string q = prefix + nameText(f->name, symbols);
+        std::string resolved = global.qualifiedName(f); // the namespace the resolver put it in
+        size_t cut = resolved.rfind("::");
+        std::string alt = (cut == std::string::npos ? std::string() : resolved.substr(0, cut + 2)) + nameText(f->name, symbols);
+        for (const std::string& key : {q, alt})
+          if (overrides->functions.count(key + "/" + std::to_string(f->params.size())) || overrides->functions.count(key + "/*"))
+          {
+            replacedFunctions.insert(key);
+            return true;
+          }
+        for (const std::string& c : overrides->classes)
+          if (q.size() > c.size() + 2 && q.compare(0, c.size(), c) == 0 && q.compare(c.size(), 2, "::") == 0)
+            return true; // a member of a replaced class, defined out of line
+        return false;
+      }
+      if (d->kind == NodeKind::ClassDecl)
+      {
+        auto* c = static_cast<ClassDecl*>(d);
+        return c->isDefinition && !c->name.empty() && overrides->classes.count(prefix + nameText(c->name, symbols));
+      }
+      if (d->kind == NodeKind::VariableDecl)
+        return overrides->variables.count(prefix + nameText(static_cast<VariableDecl*>(d)->name, symbols)) != 0;
+      return false;
+    }
+
+    void convertDecls(Span<Decl*> decls, bool namespaceScope, const std::string& prefix = "")
     {
       for (Decl* d : decls)
       {
+        if (namespaceScope && overridden(d, prefix))
+        {
+          removeDefinition(d);
+          counts.add("replaced by the override file");
+          continue;
+        }
         switch (d->kind)
         {
-          case NodeKind::NamespaceDecl: convertDecls(static_cast<NamespaceDecl*>(d)->decls, true); break;
+          case NodeKind::NamespaceDecl:
+          {
+            auto* n = static_cast<NamespaceDecl*>(d);
+            std::string name = !n->nested.empty() ? nameText(n->nested, symbols) : n->name == UINT32_MAX ? std::string() : std::string(symbols.name(n->name));
+            convertDecls(n->decls, true, prefix + name + "::");
+            break;
+          }
           case NodeKind::ClassDecl:
           {
             auto* c = static_cast<ClassDecl*>(d);
@@ -604,7 +745,7 @@ namespace
               }
               break;
             }
-            convertDecls(c->members, false);
+            convertDecls(c->members, false, prefix + nameText(c->name, symbols) + "::");
             break;
           }
           case NodeKind::EnumDecl:
@@ -620,6 +761,12 @@ namespace
           case NodeKind::FunctionDecl:
           {
             auto* f = static_cast<FunctionDecl*>(d);
+            if (f->templateParams.empty() && !f->body && !f->name.empty() && f->name.last().hasTemplateArgs && !(f->flags & DF_Specialization))
+            {
+              removeDecl(d); // an explicit instantiation: templates compile from source in Kov
+              counts.add("explicit instantiations removed");
+              break;
+            }
             if (!isDefinition(f) && namespaceScope && !(f->flags & DF_ExternC))
             {
               Decl* def = global.definitionOf(f);
@@ -684,6 +831,26 @@ namespace
           return false;
       }
       return true;
+    }
+
+    // Removes a whole definition (a function with its body, a class, a global): from the end of
+    // whatever declaration precedes it, so that a return type or `template<...>` on an earlier
+    // line goes with it.
+    void removeDefinition(Decl* d)
+    {
+      uint32_t start = toks[d->token].offset;
+      while (start > 0 && text[start - 1] != ';' && text[start - 1] != '{' && text[start - 1] != '}')
+        --start;
+      while (start < text.size() && (text[start] == '\n' || text[start] == '\r'))
+        ++start;
+      uint32_t end = d->endToken > d->token && d->endToken <= toks.size() ? endOffset(d->endToken - 1) : endOffset(d->token);
+      // The rest of the line too when nothing else is on it (a `}` closing a namespace stays).
+      uint32_t lineEnd = end;
+      while (lineEnd < text.size() && (text[lineEnd] == ' ' || text[lineEnd] == '\t' || text[lineEnd] == '\r' || text[lineEnd] == ';'))
+        ++lineEnd;
+      if (lineEnd < text.size() && text[lineEnd] == '\n')
+        end = lineEnd + 1;
+      remove(start, end - start);
     }
 
     void removeDecl(Decl* d)
@@ -971,11 +1138,64 @@ namespace
 
     // --- putting it together ---
 
+    // Definitions of overridden functions the parser did not see as functions, found by text:
+    // `... name(` at the start of a line with a `{` before the next `;`, through the body's end.
+    void removeUnparsedDefinitions()
+    {
+      if (!overrides)
+        return;
+      for (const auto& [qualified, count] : overrides->functionCounts)
+      {
+        if (count != 1 || replacedFunctions.count(qualified))
+          continue;
+        std::string name = qualified.substr(qualified.rfind(':') == std::string::npos ? 0 : qualified.rfind(':') + 1);
+        for (size_t p = text.find(name); p != std::string::npos; p = text.find(name, p + 1))
+        {
+          if (p > 0 && (isalnum((unsigned char)text[p - 1]) || text[p - 1] == '_' || text[p - 1] == ':' || text[p - 1] == '.'))
+            continue;
+          size_t q = p + name.size();
+          while (q < text.size() && text[q] == ' ')
+            ++q;
+          if (q >= text.size() || text[q] != '(')
+            continue;
+          size_t lineStart = text.rfind('\n', p);
+          lineStart = lineStart == std::string::npos ? 0 : lineStart + 1;
+          std::string_view head = text.substr(lineStart, p - lineStart);
+          if (head.find_first_not_of(" ") == std::string_view::npos || head.find(';') != std::string_view::npos || head.find("//") != std::string_view::npos)
+            continue; // not a declaration line
+          size_t brace = text.find('{', q), semi = text.find(';', q);
+          if (brace == std::string::npos || (semi != std::string::npos && semi < brace))
+            continue; // a prototype
+          int depth = 0;
+          size_t end = brace;
+          for (; end < text.size(); ++end)
+          {
+            if (text[end] == '{')
+              ++depth;
+            else if (text[end] == '}' && --depth == 0)
+              break;
+          }
+          if (end >= text.size())
+            break;
+          ++end;
+          while (end < text.size() && (text[end] == ' ' || text[end] == '\r'))
+            ++end;
+          if (end < text.size() && text[end] == '\n')
+            ++end;
+          remove(uint32_t(lineStart), uint32_t(end - lineStart));
+          counts.add("replaced by the override file (by text)");
+          replacedFunctions.insert(qualified);
+          break;
+        }
+      }
+    }
+
     std::string run()
     {
       convertPreprocessor();
       convertTokens();
       convertDecls(in.parsed->decls, true);
+      removeUnparsedDefinitions();
       // By offset; at the same offset the longest first, so that a removal cancels the edits inside it.
       std::stable_sort(edits.begin(), edits.end(),
                        [](const Edit& a, const Edit& b) { return a.offset != b.offset ? a.offset < b.offset : a.length > b.length; });
@@ -1020,6 +1240,22 @@ namespace
           lineStart = i + 1;
         }
       }
+      // `std::name` in text the parser never tokenized (the other branch of an #if): the same
+      // renames by text.
+      for (size_t p = squeezed.find("std::"); p != std::string::npos; p = squeezed.find("std::", p + 1))
+      {
+        if (p > 0 && (isalnum((unsigned char)squeezed[p - 1]) || squeezed[p - 1] == '_'))
+          continue;
+        size_t e = p + 5;
+        while (e < squeezed.size() && (isalnum((unsigned char)squeezed[e]) || squeezed[e] == '_'))
+          ++e;
+        auto it = stdNames.find(squeezed.substr(p + 5, e - p - 5));
+        if (it != stdNames.end())
+        {
+          squeezed.replace(p, e - p, it->second);
+          counts.add("std renamed");
+        }
+      }
       return squeezed;
     }
   };
@@ -1053,6 +1289,41 @@ std::string convertToKov(const std::vector<ConvertInput>& inputs, GlobalScope& g
   };
   std::map<std::string, std::vector<Piece>> outputs; // output path -> header piece(s) then source piece(s)
   Counts total;
+  // Hand-written override files, parsed once: what they define replaces the converted definitions.
+  std::map<std::string, std::unique_ptr<OverrideFile>> overrideFiles;
+  auto overrideFor = [&](const std::string& key) -> OverrideFile*
+  {
+    if (overridesDir.empty())
+      return nullptr;
+    auto it = overrideFiles.find(key);
+    if (it != overrideFiles.end())
+      return it->second.get();
+    std::unique_ptr<OverrideFile>& slot = overrideFiles[key];
+    std::error_code ec;
+    std::filesystem::path p = overridesDir / key;
+    if (!std::filesystem::exists(p, ec))
+      return nullptr;
+    slot = std::make_unique<OverrideFile>();
+    if (FILE* f = fopen(p.string().c_str(), "rb"))
+    {
+      char buffer[65536];
+      size_t n;
+      while ((n = fread(buffer, 1, sizeof buffer, f)) > 0)
+        slot->text.append(buffer, n);
+      fclose(f);
+    }
+    SymbolTable localSymbols;
+    LexResult lexed = lex(slot->text, localSymbols);
+    ParsedFile parsed;
+    parseFile(lexed.tokens, slot->text, localSymbols, parsed, false, nullptr);
+    collectOverrideKeys(parsed.decls, "", localSymbols, slot->keys);
+    // One definition of a name replaces every overload of it (the original's parameter list
+    // may hide behind a macro); several definitions match by arity.
+    for (const auto& [name, count] : slot->keys.functionCounts)
+      if (count == 1)
+        slot->keys.functions.insert(name + "/*");
+    return slot.get();
+  };
   for (const ConvertInput& in : inputs)
   {
     if (!in.parsed || in.parsed->isImported || in.path.string().rfind("<", 0) == 0)
@@ -1060,15 +1331,17 @@ std::string convertToKov(const std::vector<ConvertInput>& inputs, GlobalScope& g
     std::string ext = in.path.extension().string();
     if (ext != ".cpp" && ext != ".hpp" && ext != ".h" && ext != ".cc" && ext != ".inl")
       continue;
+    std::string rel = relativeTo(in.path, roots);
+    std::string key = rel.substr(0, rel.size() - ext.size()) + ".kov";
     FileConverter fc(in, global, symbols);
+    if (OverrideFile* ov = overrideFor(key))
+      fc.overrides = &ov->keys;
     Piece piece;
     piece.text = fc.run();
     piece.counts = fc.counts;
     piece.todos = fc.todos;
     piece.source = in.path.string();
     piece.header = ext != ".cpp" && ext != ".cc";
-    std::string rel = relativeTo(in.path, roots);
-    std::string key = rel.substr(0, rel.size() - ext.size()) + ".kov";
     outputs[key].push_back(std::move(piece));
     for (auto& [k, v] : fc.counts.values)
       total.add(k, v);
@@ -1081,15 +1354,7 @@ std::string convertToKov(const std::vector<ConvertInput>& inputs, GlobalScope& g
     std::filesystem::path outPath = outDir / key;
     std::error_code ec;
     std::filesystem::create_directories(outPath.parent_path(), ec);
-    if (!overridesDir.empty() && std::filesystem::exists(overridesDir / key, ec))
-    {
-      // Hand-written: copied as it is.
-      std::filesystem::copy_file(overridesDir / key, outPath, std::filesystem::copy_options::overwrite_existing, ec);
-      ++files;
-      report += "## " + key + "\n- overridden by " + (overridesDir / key).generic_string() + "\n";
-      total.add("files overridden");
-      continue;
-    }
+    OverrideFile* ov = overrideFor(key);
     std::string text = "// Converted from";
     for (const Piece& p : pieces)
       text += " " + std::filesystem::path(p.source).filename().string();
@@ -1100,6 +1365,14 @@ std::string convertToKov(const std::vector<ConvertInput>& inputs, GlobalScope& g
       if (text.empty() || text.back() != '\n')
         text += '\n';
       text += '\n';
+    }
+    if (ov)
+    {
+      // The hand-written part: appended, its definitions replaced the converted ones above.
+      text += "// --- Hand-written, from " + (overridesDir / key).generic_string() + " ---\n\n" + ov->text;
+      if (text.back() != '\n')
+        text += '\n';
+      total.add("files with overrides");
     }
     FILE* f = fopen(outPath.string().c_str(), "wb");
     if (f)

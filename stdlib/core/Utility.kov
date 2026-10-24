@@ -23,6 +23,10 @@ T exchange(T& slot, const U& newValue)
   return old;
 }
 
+// The bits of one value read as another type of the same size (`bitCast<uint32_t>(f)`).
+template<typename To, typename From>
+To bitCast(const From& from) { return *(const To*)&from; }
+
 template<typename T>
 const T& min(const T& a, const T& b) { return b < a ? b : a; }
 template<typename T>
@@ -124,6 +128,7 @@ struct Limits<float>
   static float max() { return 3.40282347e+38f; }
   static float lowest() { return -3.40282347e+38f; }
   static float infinity() { return 1e38f * 1e38f; }
+  static float quiet_NaN() { return 0.0f / 0.0f; }
   static float epsilon() { return 1.19209290e-07f; }
 };
 template<>
@@ -133,6 +138,7 @@ struct Limits<double>
   static double max() { return 1.7976931348623157e+308; }
   static double lowest() { return -1.7976931348623157e+308; }
   static double infinity() { return 1e308 * 1e308; }
+  static double quiet_NaN() { return 0.0 / 0.0; }
   static double epsilon() { return 2.2204460492503131e-16; }
 };
 
