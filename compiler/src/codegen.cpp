@@ -1939,9 +1939,16 @@ namespace
         }
         case NodeKind::NameExpr:
         {
-          Decl* d = static_cast<NameExpr*>(e)->resolved;
+          auto* n = static_cast<NameExpr*>(e);
+          Decl* d = n->resolved;
           if (!d)
+          {
+            // A builtin type trait, evaluated under the current instantiation.
+            TemplateArgs none;
+            if (std::optional<bool> trait = global.typeTraitValue(n, currentFunction, currentArgs ? *currentArgs : none))
+              return *trait ? 1 : 0;
             return std::nullopt;
+          }
           if (d->kind == NodeKind::EnumeratorDecl)
             return enumeratorValue(static_cast<EnumeratorDecl*>(d));
           if (d->kind == NodeKind::VariableDecl)
@@ -3127,6 +3134,9 @@ namespace
         {
           auto* n = static_cast<NameExpr*>(e);
           Decl* d = n->resolved;
+          if (!d)
+            if (std::optional<int64_t> c = evalConst(e)) // a builtin trait used as a value
+              return {e->ty && e->ty->kind == TyKind::Bool ? std::string(*c ? "true" : "false") : std::to_string(*c), e->ty};
           if (d && d->kind == NodeKind::EnumeratorDecl)
             return {std::to_string(enumeratorValue(static_cast<EnumeratorDecl*>(d))), e->ty};
           if (d && d->kind == NodeKind::FunctionDecl)

@@ -6,6 +6,7 @@
 #include "ast.hpp"
 #include "types.hpp"
 #include <cstdint>
+#include <optional>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -93,6 +94,10 @@ public:
   // object they are called on, classArgs its instantiation). Null if none is viable.
   FunctionDecl* chooseOverload(const std::vector<FunctionDecl*>& candidates, const std::vector<const Ty*>& argTypes,
                                const TemplateArgs& classArgs, const Ty* objectType, bool* ambiguous = nullptr);
+  // The value of a builtin boolean type trait (`isArray<T>`, `isSame<A, B>`...) written as a
+  // name with template arguments, under the instantiation args; nullopt if it is not one or
+  // its arguments are still dependent.
+  std::optional<bool> typeTraitValue(NameExpr* e, Decl* context, const TemplateArgs& args);
 
 
 private:

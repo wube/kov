@@ -1,0 +1,233 @@
+// Kov standard library: algorithms over ranges given as pointer pairs, which is what the
+// containers' begin()/end() return.
+
+template<typename T>
+long long distance(const T* first, const T* last) { return last - first; }
+
+template<typename T, typename V>
+T* find(T* first, T* last, const V& value)
+{
+  for (; first != last; ++first)
+    if (*first == value)
+      return first;
+  return last;
+}
+
+template<typename T, typename F>
+T* findIf(T* first, T* last, F predicate)
+{
+  for (; first != last; ++first)
+    if (predicate(*first))
+      return first;
+  return last;
+}
+
+template<typename T, typename V>
+long long count(const T* first, const T* last, const V& value)
+{
+  long long n = 0;
+  for (; first != last; ++first)
+    if (*first == value)
+      ++n;
+  return n;
+}
+
+template<typename T, typename F>
+long long countIf(const T* first, const T* last, F predicate)
+{
+  long long n = 0;
+  for (; first != last; ++first)
+    if (predicate(*first))
+      ++n;
+  return n;
+}
+
+template<typename T, typename F>
+bool allOf(const T* first, const T* last, F predicate)
+{
+  for (; first != last; ++first)
+    if (!predicate(*first))
+      return false;
+  return true;
+}
+
+template<typename T, typename F>
+bool anyOf(const T* first, const T* last, F predicate)
+{
+  for (; first != last; ++first)
+    if (predicate(*first))
+      return true;
+  return false;
+}
+
+template<typename T, typename F>
+bool noneOf(const T* first, const T* last, F predicate) { return !anyOf(first, last, predicate); }
+
+// Writes f(x) for every x of [first, last) to out; returns one past the last written.
+template<typename T, typename U, typename F>
+U* transform(const T* first, const T* last, U* out, F f)
+{
+  for (; first != last; ++first, ++out)
+    *out = f(*first);
+  return out;
+}
+
+template<typename T, typename V>
+void fill(T* first, T* last, const V& value)
+{
+  for (; first != last; ++first)
+    *first = value;
+}
+
+template<typename T>
+void reverse(T* first, T* last)
+{
+  while (first < last)
+  {
+    --last;
+    swap(*first, *last);
+    ++first;
+  }
+}
+
+template<typename T>
+T* maxElement(T* first, T* last)
+{
+  T* best = first;
+  for (; first != last; ++first)
+    if (*best < *first)
+      best = first;
+  return best;
+}
+
+template<typename T>
+T* minElement(T* first, T* last)
+{
+  T* best = first;
+  for (; first != last; ++first)
+    if (*first < *best)
+      best = first;
+  return best;
+}
+
+// Moves the elements that satisfy predicate to the end; returns the new end of the kept ones.
+template<typename T, typename F>
+T* removeIf(T* first, T* last, F predicate)
+{
+  T* out = first;
+  for (; first != last; ++first)
+    if (!predicate(*first))
+    {
+      if (out != first)
+        *out = move(*first);
+      ++out;
+    }
+  return out;
+}
+
+template<typename T, typename V>
+T* lowerBound(T* first, T* last, const V& value)
+{
+  while (first < last)
+  {
+    T* middle = first + (last - first) / 2;
+    if (*middle < value)
+      first = middle + 1;
+    else
+      last = middle;
+  }
+  return first;
+}
+
+template<typename T, typename V>
+T* upperBound(T* first, T* last, const V& value)
+{
+  while (first < last)
+  {
+    T* middle = first + (last - first) / 2;
+    if (value < *middle)
+      last = middle;
+    else
+      first = middle + 1;
+  }
+  return first;
+}
+
+// Sorts [first, last) by operator< (insertion sort below 16 elements, quicksort above).
+template<typename T>
+void sort(T* first, T* last)
+{
+  long long n = last - first;
+  if (n < 16)
+  {
+    for (long long i = 1; i < n; ++i)
+    {
+      T value = move(first[i]);
+      long long j = i;
+      while (j > 0 && value < first[j - 1])
+      {
+        first[j] = move(first[j - 1]);
+        --j;
+      }
+      first[j] = move(value);
+    }
+    return;
+  }
+  T pivot = first[n / 2];
+  T* left = first;
+  T* right = last - 1;
+  while (left <= right)
+  {
+    while (*left < pivot)
+      ++left;
+    while (pivot < *right)
+      --right;
+    if (left <= right)
+    {
+      swap(*left, *right);
+      ++left;
+      --right;
+    }
+  }
+  sort(first, right + 1);
+  sort(left, last);
+}
+
+// Sorts by a less-than predicate.
+template<typename T, typename F>
+void sort(T* first, T* last, F less)
+{
+  long long n = last - first;
+  for (long long i = 1; i < n; ++i)
+  {
+    T value = move(first[i]);
+    long long j = i;
+    while (j > 0 && less(value, first[j - 1]))
+    {
+      first[j] = move(first[j - 1]);
+      --j;
+    }
+    first[j] = move(value);
+  }
+}
+
+// A view of a contiguous range.
+template<typename T>
+struct Span
+{
+  T* data = nullptr;
+  int length = 0;
+
+  Span() {}
+  Span(T* data, int length) : data(data), length(length) {}
+  implicit Span(Vector<T>& values) : data(values.data), length(values.length) {}
+
+  int size() const { return this->length; }
+  bool empty() const { return this->length == 0; }
+  T& operator[](int index) { return this->data[index]; }
+  T* begin() { return this->data; }
+  T* end() { return this->data + this->length; }
+  T& front() { return this->data[0]; }
+  T& back() { return this->data[this->length - 1]; }
+  Span<T> subspan(int start, int count) const { return Span<T>(this->data + start, count); }
+};

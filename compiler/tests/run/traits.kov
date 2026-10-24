@@ -1,0 +1,40 @@
+// Builtin type traits: compile-time booleans and type functions, no partial specialisation.
+
+struct Base { int x; };
+struct Derived : Base { int y; };
+enum class Color : uint8_t { { Red, Green } };
+
+template<typename T>
+const char* describe()
+{
+  if constexpr (isPointer<T>)
+    return "pointer";
+  else if constexpr (isEnum<T>)
+    return "enum";
+  else if constexpr (isFloatingPoint<T>)
+    return "float";
+  else if constexpr (isIntegral<T>)
+    return isSigned<T> ? "signed" : "unsigned";
+  else if constexpr (isClass<T>)
+    return "class";
+  else
+    return "?";
+}
+
+template<typename T>
+int widthOf()
+{
+  RemoveReference<RemoveConst<T>> value;
+  return sizeof(value);
+}
+
+int main()
+{
+  println("{} {} {} {} {} {}", describe<int>(), describe<char*>(), describe<Color>(), describe<double>(), describe<unsigned int>(),
+          describe<Base>());
+  println("{} {}", widthOf<const long long&>(), widthOf<Derived>());
+  println("{} {} {}", isSame<RemoveConst<const int>, int>, isSame<RemoveReference<Base&>, Base>, isSame<int, long long>);
+  println("{} {} {}", isBaseOf<Base, Derived>, isBaseOf<Derived, Base>, isConvertible<Derived*, Base*>);
+  println("{} {}", isSame<UnderlyingType<Color>, uint8_t>, isNullPointer<nullptr_t>);
+  return 0;
+}

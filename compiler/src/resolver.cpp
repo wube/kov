@@ -836,6 +836,186 @@ struct GlobalScope::Impl
     std::string_view text;
   };
 
+  // --- builtin type traits ---
+
+  static bool isTypeNode(Node* n)
+  {
+    switch (n->kind)
+    {
+      case NodeKind::NamedType: case NodeKind::PointerType: case NodeKind::LRefType: case NodeKind::RRefType: case NodeKind::ConstType:
+      case NodeKind::ArrayType: case NodeKind::FunctionType: case NodeKind::DecltypeType: case NodeKind::AutoType: case NodeKind::BuiltinType:
+      case NodeKind::MemberPointerType: case NodeKind::PackType:
+        return true;
+      default: return false;
+    }
+  }
+
+  // The argument types of a trait, or empty when one is not a type or is still dependent.
+  std::vector<const Ty*> traitArgs(const NamePart& part, const TypeContext& ctx, int depth)
+  {
+    std::vector<const Ty*> args;
+    for (Node* a : part.templateArgs)
+    {
+      if (!isTypeNode(a))
+        return {};
+      const Ty* t = convertType(static_cast<Type*>(a), ctx, depth + 1);
+      if (!t || !t->isKnown() || types.isDependent(t))
+        return {};
+      args.push_back(t);
+    }
+    return args;
+  }
+
+  const Ty* enumUnderlyingType(const Ty* e, const TypeContext& ctx, int depth)
+  {
+    Decl* def = e->decl;
+    if (def && def->kind == NodeKind::EnumDecl && static_cast<EnumDecl*>(def)->underlying)
+      return convertType(static_cast<EnumDecl*>(def)->underlying, ctx, depth + 1);
+    return types.intType();
+  }
+
+  bool isTypeTraitName(uint32_t symbol)
+  {
+    std::string_view name = symbols.name(symbol);
+    return name == "RemoveConst" || name == "RemoveCv" || name == "RemoveReference" || name == "RemoveExtent" || name == "RemovePointer" ||
+           name == "Decay" || name == "UnderlyingType" || name == "AddConst" || name == "AddPointer" || name == "RemoveCvRef";
+  }
+
+  // RemoveConst<T> and the other type-valued traits; null when `part` is not one.
+  const Ty* typeTrait(const NamePart& part, const TypeContext& ctx, int depth)
+  {
+    std::string_view name = symbols.name(part.symbol);
+    if (!isTypeTraitName(part.symbol))
+      return nullptr;
+    if (part.templateArgs.size() != 1 || !isTypeNode(part.templateArgs[0]))
+      return types.unknown();
+    const Ty* t = convertType(static_cast<Type*>(part.templateArgs[0]), ctx, depth + 1);
+    if (!t || !t->isKnown() || types.isDependent(t))
+      return t; // settled when the instantiation substitutes the argument
+    if (name == "RemoveConst" || name == "RemoveCv")
+      return types.unqualified(t);
+    if (name == "RemoveReference")
+      return types.stripRef(t);
+    if (name == "RemoveCvRef")
+      return types.unqualified(types.stripRef(t));
+    if (name == "RemoveExtent")
+      return t->kind == TyKind::Array ? t->inner : t;
+    if (name == "RemovePointer")
+      return t->kind == TyKind::Pointer ? t->inner : t;
+    if (name == "AddConst")
+      return types.qualified(t, true, false);
+    if (name == "AddPointer")
+      return types.pointer(types.stripRef(t));
+    if (name == "Decay")
+      return types.decay(t);
+    if (name == "UnderlyingType")
+      return t->kind == TyKind::Enum ? enumUnderlyingType(t, ctx, depth) : t;
+    return nullptr;
+  }
+
+  static bool isArithmeticKind(const Ty* t)
+  {
+    return t->kind == TyKind::Int || t->kind == TyKind::Char || t->kind == TyKind::Bool || t->kind == TyKind::Float || t->kind == TyKind::Enum;
+  }
+
+  // Whether `derived` is `base` or has it among its bases (classes only).
+  bool derivesFrom(const Ty* derived, const Ty* base, int depth = 0)
+  {
+    if (!derived || !base || depth > 16)
+      return false;
+    if (derived->kind != TyKind::Class || base->kind != TyKind::Class)
+      return false;
+    if (derived->decl == base->decl)
+      return true;
+    Decl* def = derived->decl;
+    if (def && def->kind == NodeKind::ClassDecl && !def->ownScope)
+    {
+      Entry e{def, nullptr};
+      Scope* s = scopeOfEntry(e, 0);
+      def = s ? s->owner : def;
+    }
+    if (!def || def->kind != NodeKind::ClassDecl)
+      return false;
+    DeclContext dc;
+    declContextFor(def, dc);
+    for (const ClassDecl::Base& b : static_cast<ClassDecl*>(def)->bases)
+    {
+      const Ty* bt = convertType(b.type, TypeContext{dc.scope, &dc.params, nullptr, def->file ? def->file->tokens : nullptr,
+                                                     def->file ? def->file->text : std::string_view()}, 0);
+      if (bt && derivesFrom(bt, base, depth + 1))
+        return true;
+    }
+    return false;
+  }
+
+  // isArray<T>, isSame<A, B>, ... ; nullopt when `name` is not a trait.
+  std::optional<bool> traitValue(std::string_view name, const std::vector<const Ty*>& a)
+  {
+    auto one = [&]() { return a.size() == 1 ? a[0] : nullptr; };
+    if (name == "isArray") return one() && one()->kind == TyKind::Array;
+    if (name == "isPointer") return one() && one()->kind == TyKind::Pointer;
+    if (name == "isEnum") return one() && one()->kind == TyKind::Enum;
+    if (name == "isClass") return one() && one()->kind == TyKind::Class;
+    if (name == "isVoid") return one() && one()->kind == TyKind::Void;
+    if (name == "isReference") return one() && one()->isReference();
+    if (name == "isConst") return one() && one()->isConst;
+    if (name == "isNullPointer") return one() && one() == types.nullptrType();
+    if (name == "isIntegral") return one() && (one()->kind == TyKind::Int || one()->kind == TyKind::Char || one()->kind == TyKind::Bool);
+    if (name == "isFloatingPoint") return one() && one()->kind == TyKind::Float;
+    if (name == "isArithmetic") return one() && isArithmeticKind(one()) && one()->kind != TyKind::Enum;
+    if (name == "isSigned")
+      return one() && (one()->kind == TyKind::Float || ((one()->kind == TyKind::Int || one()->kind == TyKind::Char) && !one()->isUnsigned));
+    if (name == "isUnsigned")
+      return one() && ((one()->kind == TyKind::Int || one()->kind == TyKind::Char || one()->kind == TyKind::Bool) && (one()->isUnsigned || one()->kind == TyKind::Bool));
+    if (name == "isFunction") return one() && one()->kind == TyKind::Function;
+    if (name == "isTriviallyCopyable")
+    {
+      const Ty* t = one();
+      if (!t)
+        return false;
+      if (t->kind != TyKind::Class)
+        return true;
+      Decl* def = t->decl;
+      if (!def || def->kind != NodeKind::ClassDecl)
+        return false;
+      for (Decl* m : static_cast<ClassDecl*>(def)->members)
+        if (m->kind == NodeKind::FunctionDecl && (m->flags & (DF_Destructor | DF_Virtual)))
+          return false;
+      return true;
+    }
+    if (name == "isSame") return a.size() == 2 && a[0] == a[1];
+    if (name == "isBaseOf") return a.size() == 2 && derivesFrom(a[1], a[0]);
+    if (name == "isConvertible")
+    {
+      if (a.size() != 2)
+        return false;
+      const Ty* from = types.unqualified(types.stripRef(a[0]));
+      const Ty* to = types.unqualified(types.stripRef(a[1]));
+      if (from == to)
+        return true;
+      if (isArithmeticKind(from) && isArithmeticKind(to) && to->kind != TyKind::Enum)
+        return true;
+      if (from == types.nullptrType() && to->kind == TyKind::Pointer)
+        return true;
+      if (from->kind == TyKind::Pointer && to->kind == TyKind::Pointer)
+      {
+        const Ty* fp = types.unqualified(from->inner);
+        const Ty* tp = types.unqualified(to->inner);
+        return tp->kind == TyKind::Void || fp == tp || derivesFrom(fp, tp);
+      }
+      return false;
+    }
+    return std::nullopt;
+  }
+
+  bool isBoolTraitName(uint32_t symbol)
+  {
+    std::string_view n = symbols.name(symbol);
+    return n == "isArray" || n == "isPointer" || n == "isEnum" || n == "isClass" || n == "isVoid" || n == "isReference" || n == "isConst" ||
+           n == "isNullPointer" || n == "isIntegral" || n == "isFloatingPoint" || n == "isArithmetic" || n == "isSigned" ||
+           n == "isUnsigned" || n == "isFunction" || n == "isTriviallyCopyable" || n == "isSame" || n == "isBaseOf" || n == "isConvertible";
+  }
+
   // Minimal constant evaluation for array bounds: literals and arithmetic on them.
   std::optional<int64_t> constEval(Expr* e, const TypeContext& ctx, int depth = 0)
   {
@@ -1028,6 +1208,9 @@ struct GlobalScope::Impl
         auto* n = static_cast<NamedType*>(t);
         if (n->name.empty())
           return types.unknown();
+        if (n->name.parts.size() == 1 && n->name.parts[0].hasTemplateArgs)
+          if (const Ty* trait = typeTrait(n->name.parts[0], ctx, depth))
+            return trait;
         Lookup l = lookupQualified(n->name, ctx.scope, ctx.locals, depth + 1);
         if (l.found == Found::No)
         {
@@ -1949,6 +2132,8 @@ struct GlobalScope::Impl
       {
         if (t->name.parts.size() == 1 && impl.builtinByName(t->name.parts[0].symbol))
           ++stats.typesBuiltinByName;
+        else if (t->name.parts.size() == 1 && t->name.parts[0].hasTemplateArgs && impl.isTypeTraitName(t->name.parts[0].symbol))
+          ++stats.typesResolved; // RemoveConst<T> and friends
         else
         {
           ++stats.typesUnresolved;
@@ -2020,6 +2205,15 @@ struct GlobalScope::Impl
     {
       if (e->name.empty())
         return unknown(Why::Unsupported);
+      if (e->name.parts.size() == 1 && e->name.parts[0].hasTemplateArgs && impl.isBoolTraitName(e->name.parts[0].symbol))
+      {
+        // A builtin trait: a bool the code generator evaluates once the arguments are known.
+        for (Node* arg : e->name.parts[0].templateArgs)
+          walkNode(arg);
+        e->resolved = nullptr;
+        ++stats.namesGlobal;
+        return types.boolType();
+      }
       Lookup l = impl.lookupQualified(e->name, scope, &locals, 0);
       e->resolved = l.decl;
       for (const NamePart& part : e->name.parts)
@@ -3680,6 +3874,21 @@ const Ty* GlobalScope::typeOfAstIn(Type* t, Decl* context, const TemplateArgs& a
   ParsedFile* file = context ? context->file : nullptr;
   return impl->convertType(t, Impl::TypeContext{dc.scope, &dc.params, args.empty() ? nullptr : &s, file ? file->tokens : nullptr,
                                                 file ? file->text : std::string_view()}, 0);
+}
+
+std::optional<bool> GlobalScope::typeTraitValue(NameExpr* e, Decl* context, const TemplateArgs& args)
+{
+  if (e->name.parts.size() != 1 || !e->name.parts[0].hasTemplateArgs || !impl->isBoolTraitName(e->name.parts[0].symbol))
+    return std::nullopt;
+  Impl::DeclContext dc;
+  impl->declContextFor(context, dc);
+  Subst s = toSubst(args);
+  ParsedFile* file = context ? context->file : nullptr;
+  Impl::TypeContext ctx{dc.scope, &dc.params, args.empty() ? nullptr : &s, file ? file->tokens : nullptr, file ? file->text : std::string_view()};
+  std::vector<const Ty*> a = impl->traitArgs(e->name.parts[0], ctx, 0);
+  if (a.size() != e->name.parts[0].templateArgs.size())
+    return std::nullopt;
+  return impl->traitValue(impl->symbols.name(e->name.parts[0].symbol), a);
 }
 
 FunctionDecl* GlobalScope::chooseOverload(const std::vector<FunctionDecl*>& candidates, const std::vector<const Ty*>& argTypes,

@@ -62,6 +62,31 @@ struct StringView
     return suffix.length <= this->length && memcmp(this->data + this->length - suffix.length, suffix.data, suffix.length) == 0;
   }
   void removePrefix(int count) { this->data += count; this->length -= count; }
+  void remove_prefix(int count) { this->removePrefix(count); }
+  void remove_suffix(int count) { this->length -= count; }
+  bool starts_with(StringView prefix) const { return this->startsWith(prefix); }
+  bool ends_with(StringView suffix) const { return this->endsWith(suffix); }
+  int find_first_of(const char* set) const
+  {
+    for (int i = 0; i < this->length; ++i)
+      for (int k = 0; set[k] != 0; ++k)
+        if (this->data[i] == set[k])
+          return i;
+    return -1;
+  }
+  int find_first_not_of(const char* set) const
+  {
+    for (int i = 0; i < this->length; ++i)
+    {
+      bool inSet = false;
+      for (int k = 0; set[k] != 0; ++k)
+        if (this->data[i] == set[k])
+          inSet = true;
+      if (!inSet)
+        return i;
+    }
+    return -1;
+  }
   void removeSuffix(int count) { this->length -= count; }
 
   bool operator==(StringView other) const
