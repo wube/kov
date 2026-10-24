@@ -435,6 +435,31 @@ with Factorio's number of functions is 1.25 s against Factorio's 16 s, and the n
 make parallel is the IR writing itself. (The same cache serves release builds: a one-line
 change costs one module's -O2, about 0.3 s, instead of 3.7 s.)
 
+## Exceptions (2026-10-24)
+
+`throw`, `try`/`catch` (by reference, by value, by base class, `...`), `throw;` and nested
+handlers work, with destructors of locals and temporaries running while unwinding, `return` and
+`break` out of handlers, and exceptions crossing several frames; `compiler/tests/run/exceptions.kov`
+covers all of it and passes in debug and `--release` builds. The implementation is Windows SEH
+(`__C_specific_handler`, `RaiseException`, LLVM's `catchswitch`/`catchpad`/`cleanuppad`), about
+550 lines in codegen.cpp plus 150 lines of runtime IR emitted into every program that throws;
+design.md section 9 records the rules that follow from it.
+
+Two things cost most of the day and are worth knowing before touching this again:
+
+- **Every call inside a catch handler needs the `"funclet"` operand bundle.** One `malloc` call
+  without it made LLVM treat the whole handler as unreachable and replace it with `int3`; the
+  program died with a breakpoint exception and no message. All calls now go through one helper.
+- **A catch handler must not start at a call's return address.** The SEH scope table covers
+  `[call, return address]`; when the handler label sits exactly at the return address the
+  runtime takes the unwind for a jump within the scope and skips the cleanups (destructors) in
+  between. LLVM lays the handler out there whenever the code after the call is `unreachable`,
+  including after calls to functions it has *inferred* noreturn (a function whose paths all
+  throw). So kovc emits no `unreachable` after a throw: the raise functions are declared as
+  returning, the code after a throw stays, and no function is ever provably noreturn. Found
+  with a vectored exception handler printing every exception code: `0xE0000001`, then
+  `0x80000003`.
+
 ## Lessons
 
 - **Windows memory allocation serialises parallel work.** The first parser version allocated and

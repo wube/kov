@@ -220,6 +220,19 @@ the switch they cost nothing. Fixtures are ordinary classes constructed in the t
 - `dynamic_cast` and `typeid` exist for single-inheritance hierarchies: a type descriptor behind
   the vtable, with the chain of bases, which is what Factorio's 647 casts need. No
   cross-casts or virtual bases.
+- Implemented 2026-10-24 (throw, try/catch, rethrow; `dynamic_cast` not yet) on Windows SEH
+  rather than the MSVC C++ ABI: `throw` builds the object on the heap and raises an SEH exception
+  (code 0xE0000001) carrying the object, its type descriptor and its destructor; every `try`
+  gets a filter function that walks the descriptor's base chain against the handlers in order
+  (so `catch (const Base&)` works, with the base-subobject offset applied); destructors between
+  the throw and the handler run in cleanup funclets; a handler owns the object and destroys it on
+  exit unless it rethrows. Calls that may throw become `invoke`s only where something has to
+  happen on the way out, so code without destructible locals and without `try` is unchanged.
+  Uncaught exceptions print `unhandled exception of type T: message` and abort. Rules that follow
+  from this: destructors do not throw; `extern "C"` functions do not throw (calls to them stay
+  plain calls); an exception cannot pass through a C callback frame that was not compiled for
+  unwinding; `catch` by pointer matches the pointee type's spelling only (no base conversion);
+  `new T(args)` leaks the memory when the constructor throws (to fix with the allocator work).
 
 ## Benchmark target
 

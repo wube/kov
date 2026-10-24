@@ -1,0 +1,34 @@
+~Tracker(3)
+~Tracker(2)
+depth1 done 1
+~Tracker(1)
+value 1
+live 0
+~Tracker(3)
+~Tracker(2)
+~Tracker(1)
+error: deep
+live 0
+iteration 0
+~Tracker(10)
+iteration 1
+~Tracker(11)
+caught Other 2
+~Tracker(12)
+fromHandler 200
+iteration 0
+~Tracker(10)
+caught Other 1
+~Tracker(11)
+fromHandler -1
+live 0
+rethrowing original
+~Tracker(20)
+translating original (7)
+outer caught wrapped original
+int 42
+catch-all
+~Tracker(3)
+~Tracker(30)
+caught deep, live 0
+live 0

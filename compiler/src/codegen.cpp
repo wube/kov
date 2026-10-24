@@ -136,6 +136,7 @@ namespace
     {
       std::string addr;
       const Ty* ty;
+      bool exception = false; // addr holds a caught exception record: ending it destroys the object
     };
     std::vector<std::vector<Object>> scopes; // Objects to destroy, per open scope.
     std::vector<Object> statementTemps;       // Temporaries of the current full-expression.
@@ -146,6 +147,29 @@ namespace
     };
     std::vector<Loop> loops;
     bool mallocDeclared = false;
+
+    // Exceptions (docs/design.md section 9) on Windows SEH: `throw` raises through kov_throw, one
+    // filter function per try statement matches the thrown type against the handlers, and the
+    // destructors of the objects between a call and its handler run in cleanup pads.
+    struct EHFrame
+    {
+      bool isHandler;            // false: an open try body; true: an open catch handler
+      std::string dispatchLabel; // try: the block of its catchswitch
+      std::string parentFunclet; // the funclet token the try or handler is in ("" at top level)
+      std::string funclet;       // handler: its catchpad token
+      std::string exceptionSlot; // handler: the alloca holding the caught exception record
+      size_t scopeDepth;         // scopes.size() when entered
+      bool used = false;         // try: some call in the body unwinds to the dispatch
+    };
+    std::vector<EHFrame> ehFrames;
+    std::string ehBlocks;                                     // cleanup pads of the current function
+    std::unordered_map<std::string, std::string> cleanupPads; // destruction state -> cleanup block
+    std::string funcletOverride;                              // the pad being emitted, for its calls
+    bool usesEH = false;                                      // the current function has invokes or pads
+    bool usesExceptions = false;                              // the program needs the exception runtime
+    uint32_t filterCount = 0;
+    std::unordered_map<std::string, bool> emittedShared;      // typeinfo and destructor thunks emitted
+    std::string exceptionTypeinfo;                            // typeinfo of the library's Exception, once seen
 
     Emitter(GlobalScope& global, const SymbolTable& symbols, CodegenResult& result)
       : global(global), types(global.types()), symbols(symbols), result(result)
@@ -617,14 +641,14 @@ namespace
           if (info.vtableKeys[i] == "~")
           {
             std::string fp = loadSlot(addr, int(i));
-            fn += "  call void " + fp + "(ptr " + addr + ")\n";
+            emitCall("", "void " + fp + "(ptr " + addr + ")", false);
             return;
           }
       }
       if (FunctionDecl* dtor = findDestructor(c))
       {
         TemplateArgs args = global.classArgsOf(canonicalClass(t, at));
-        fn += "  call void " + useFunction(dtor, args, canonicalClass(t, at)) + "(ptr " + addr + ")\n";
+        emitCall("", "void " + useFunction(dtor, args, canonicalClass(t, at)) + "(ptr " + addr + ")", false);
         return;
       }
       destroyMembers(addr, t, at);
@@ -663,7 +687,7 @@ namespace
         if (!ctor)
           unsupported(at, "default construction of " + global.qualifiedName(c) + ", which has no default constructor");
         TemplateArgs args = global.classArgsOf(canonicalClass(t, at));
-        fn += "  call void " + useFunction(ctor, args, canonicalClass(t, at)) + "(ptr " + addr + ")\n";
+        emitCall("", "void " + useFunction(ctor, args, canonicalClass(t, at)) + "(ptr " + addr + ")");
         return;
       }
       fn += "  store " + llType(t, at) + " zeroinitializer, ptr " + addr + "\n";
@@ -808,7 +832,7 @@ namespace
       }
       if (copy)
       {
-        fn += "  call void " + useFunction(copy, args, canonicalClass(t, at)) + "(ptr " + dst + ", ptr " + src + ")\n";
+        emitCall("", "void " + useFunction(copy, args, canonicalClass(t, at)) + "(ptr " + dst + ", ptr " + src + ")");
         return;
       }
       if (findDestructor(c))
@@ -863,12 +887,9 @@ namespace
           s = signatureOf(op);
         }
         if (s.returnType == "void")
-          fn += "  call void " + name + "(ptr " + thisArg + ", ptr " + src + ")\n";
+          emitCall("", "void " + name + "(ptr " + thisArg + ", ptr " + src + ")");
         else
-        {
-          std::string r = newTemp();
-          fn += "  " + r + " = call " + s.returnType + " " + name + "(ptr " + thisArg + ", ptr " + src + ")\n";
-        }
+          emitCall(newTemp() + " = ", s.returnType + " " + name + "(ptr " + thisArg + ", ptr " + src + ")");
         return;
       }
       if (!needsDestruction(t, at))
@@ -1323,12 +1344,16 @@ namespace
       FunctionDecl* currentFunction;
       const Ty* currentReturn;
       const Ty* currentClassTy;
+      std::vector<EHFrame> ehFrames;
+      std::string ehBlocks;
+      std::unordered_map<std::string, std::string> cleanupPads;
+      bool usesEH;
     };
 
     FunctionState saveState()
     {
       return {fn, allocas, currentBlock, sretAddr, locals, loops, scopes, statementTemps, temp, label, blockTerminated,
-              currentFunction, currentReturn, currentClassTy};
+              currentFunction, currentReturn, currentClassTy, ehFrames, ehBlocks, cleanupPads, usesEH};
     }
 
     void restoreState(FunctionState& s)
@@ -1347,6 +1372,36 @@ namespace
       currentFunction = s.currentFunction;
       currentReturn = s.currentReturn;
       currentClassTy = s.currentClassTy;
+      ehFrames = s.ehFrames;
+      ehBlocks = s.ehBlocks;
+      cleanupPads = s.cleanupPads;
+      usesEH = s.usesEH;
+    }
+
+    void resetFunctionState()
+    {
+      fn.clear();
+      allocas.clear();
+      locals.clear();
+      loops.clear();
+      scopes.clear();
+      statementTemps.clear();
+      ehFrames.clear();
+      ehBlocks.clear();
+      cleanupPads.clear();
+      usesEH = false;
+      temp = 0;
+      label = 0;
+      blockTerminated = false;
+      currentBlock = "entry";
+    }
+
+    // A function's definition text: the personality and the cleanup pads when it uses exceptions.
+    std::string functionText(std::string header)
+    {
+      if (usesEH)
+        header.insert(header.rfind("{\nentry:"), "personality ptr @__C_specific_handler ");
+      return header + allocas + fn + ehBlocks + "}\n\n";
     }
 
     // Emits the lambda's function while another function is being emitted: the enclosing
@@ -1355,16 +1410,7 @@ namespace
     {
       ClosureInfo info = closureFor(t, l);
       FunctionState saved = saveState();
-      fn.clear();
-      allocas.clear();
-      locals.clear();
-      loops.clear();
-      scopes.clear();
-      statementTemps.clear();
-      temp = 0;
-      label = 0;
-      blockTerminated = false;
-      currentBlock = "entry";
+      resetFunctionState();
       currentReturn = t->inner ? t->inner : types.voidType();
       sretAddr.clear();
       currentClassTy = info.enclosingClass;
@@ -1428,9 +1474,9 @@ namespace
           if (currentReturn->kind == TyKind::Void || hasSret)
             fn += "  ret void\n";
           else
-            fn += "  unreachable\n";
+            fn += "  ret " + (currentReturn->isReference() ? std::string("ptr null") : llType(currentReturn, l) + " zeroinitializer") + "\n";
         }
-        addDefinition(info.functionName, header + allocas + fn + "}\n\n");
+        addDefinition(info.functionName, functionText(header));
         ++result.functions;
       }
       catch (Unsupported&)
@@ -1487,11 +1533,11 @@ namespace
       sig += ")";
       if (hasSret || ret->kind == TyKind::Void)
       {
-        fn += "  call " + sig + " " + info.functionName + "(" + argText + ")\n";
+        emitCall("", sig + " " + info.functionName + "(" + argText + ")");
         return hasSret ? Value{resultAddr, ret, sret.empty()} : Value{"", types.voidType(), false};
       }
       std::string r = newTemp();
-      fn += "  " + r + " = call " + sig + " " + info.functionName + "(" + argText + ")\n";
+      emitCall(r + " = ", sig + " " + info.functionName + "(" + argText + ")");
       return {r, ret, false};
     }
 
@@ -1503,7 +1549,7 @@ namespace
       if (global.isExternC(f))
         return "@" + sym(f->name.last().symbol);
       if (f->name.parts.size() == 1 && sym(f->name.parts[0].symbol) == "main" && !global.owningClass(f))
-        return "@main";
+        return "@kov.main"; // called by the generated @main, which reports uncaught exceptions
       ArgsScope scope(*this, &args);
       std::string q;
       if (classTy && !classTy->args.empty())
@@ -1793,15 +1839,16 @@ namespace
         }
       }
       std::string sig = (s.variadic || !indirect.empty()) ? signatureText(s) + " " : s.returnType + " ";
+      bool mayThrow = !global.isExternC(f); // C functions do not throw Kov exceptions
       if (s.returnType == "void")
       {
-        fn += "  call " + sig + name + "(" + argText + ")\n";
+        emitCall("", sig + name + "(" + argText + ")", mayThrow);
         if (s.hasSret)
           return {resultAddr, ret, sret.empty()};
         return {"", types.voidType(), false};
       }
       std::string r = newTemp();
-      fn += "  " + r + " = call " + sig + name + "(" + argText + ")\n";
+      emitCall(r + " = ", sig + name + "(" + argText + ")", mayThrow);
       return {r, ret, false};
     }
 
@@ -1812,6 +1859,9 @@ namespace
       {
         if (isAggregate(types.stripRef(pt)))
         {
+          const Ty* cls = types.stripRef(pt);
+          if (arg->ty && isClass(cls) && arg->ty->isKnown() && !types.isDependent(arg->ty) && !isAggregate(types.stripRef(arg->ty)))
+            return "ptr " + convertedTemporary(cls, arg, at); // `f("text")` with `f(const String&)`
           Value o = rvalue(arg);
           if (!isAggregate(o.ty))
             unsupported(at, "binding a non-class to a class reference");
@@ -1853,6 +1903,18 @@ namespace
       else if (a.ty->kind == TyKind::Bool)
         a = convert(a, types.intType(32), at);
       return llType(a.ty, at) + " " + a.text;
+    }
+
+    // A temporary of class type cls built from a non-class value through a converting
+    // constructor, alive until the end of the full expression: what a reference parameter binds to.
+    std::string convertedTemporary(const Ty* cls, Expr* arg, Node* at)
+    {
+      std::string tmp = newObjectSlot(cls, at);
+      Expr* one = arg;
+      constructInto(tmp, cls, Span<Expr*>{&one, 1}, at);
+      if (needsDestruction(cls, at))
+        statementTemps.push_back({tmp, cls});
+      return tmp;
     }
 
     // --- constants ---
@@ -2262,7 +2324,7 @@ namespace
     // Module k: the shared declarations, then declares for what it uses from other modules, then its bodies.
     std::string moduleText(unsigned k, const std::string& prefix)
     {
-      std::string text = moduleDecls[k] + bodies[k];
+      std::string text = moduleDecls[k] + bodies[k] + shared;
       std::string declares;
       std::unordered_set<std::string> seen;
       for (size_t i = text.find('@'); i != std::string::npos; i = text.find('@', i + 1))
@@ -3100,11 +3162,11 @@ namespace
       sig += std::string(ft->variadic ? (ft->args.empty() ? "..." : ", ...") : "") + ")";
       if (ft->inner->kind == TyKind::Void)
       {
-        fn += "  call " + sig + " " + fnValue.text + "(" + args + ")\n";
+        emitCall("", sig + " " + fnValue.text + "(" + args + ")");
         return {"", types.voidType()};
       }
       std::string r = newTemp();
-      fn += "  " + r + " = call " + sig + " " + fnValue.text + "(" + args + ")\n";
+      emitCall(r + " = ", sig + " " + fnValue.text + "(" + args + ")");
       return {r, types.stripRef(ft->inner)};
     }
 
@@ -3367,7 +3429,7 @@ namespace
           {
             ensureMalloc();
             r = newTemp();
-            fn += "  " + r + " = call ptr @malloc(i64 " + std::to_string(sizeOf(t, e)) + ")\n";
+            emitCall(r + " = ", "ptr @malloc(i64 " + std::to_string(sizeOf(t, e)) + ")", false);
           }
           if (isClass(t))
             constructInto(r, t, n->args, e);
@@ -3383,6 +3445,9 @@ namespace
           return {r, e->ty};
         }
         case NodeKind::LambdaExpr: return makeClosure(static_cast<LambdaExpr*>(e));
+        case NodeKind::ThrowExpr:
+          emitThrow(static_cast<ThrowExpr*>(e));
+          return {"", types.voidType()};
         case NodeKind::DeleteExpr:
         {
           auto* d = static_cast<DeleteExpr*>(e);
@@ -3392,7 +3457,7 @@ namespace
           if (isClass(p.ty->inner))
             destroy(p.text, p.ty->inner, e, true);
           ensureMalloc();
-          fn += "  call void @free(ptr " + p.text + ")\n";
+          emitCall("", "void @free(ptr " + p.text + ")", false);
           return {"", types.voidType()};
         }
         default:
@@ -3577,8 +3642,16 @@ namespace
     void destroyTemps()
     {
       for (size_t i = statementTemps.size(); i-- > 0;)
-        destroy(statementTemps[i].addr, statementTemps[i].ty, nullptr);
+        destroyObject(statementTemps[i]);
       statementTemps.clear();
+    }
+
+    void destroyObject(const Object& o)
+    {
+      if (o.exception)
+        fn += "  call void @kov_eh_end(ptr " + o.addr + ")" + bundle() + "\n";
+      else
+        destroy(o.addr, o.ty, nullptr);
     }
 
     void pushScope() { scopes.emplace_back(); }
@@ -3587,16 +3660,484 @@ namespace
     {
       if (!blockTerminated)
         for (size_t i = scopes.back().size(); i-- > 0;)
-          destroy(scopes.back()[i].addr, scopes.back()[i].ty, nullptr);
+          destroyObject(scopes.back()[i]);
       scopes.pop_back();
     }
 
     // Destroys the objects of the innermost scopes down to (not including) depth.
-    void unwindTo(size_t depth)
+    void unwindTo(size_t depth) { unwindRange(depth, scopes.size()); }
+
+    // Destroys the objects of scopes [low, high), innermost first; the scopes stay open.
+    void unwindRange(size_t low, size_t high)
     {
-      for (size_t s = scopes.size(); s-- > depth;)
+      for (size_t s = high; s-- > low;)
         for (size_t i = scopes[s].size(); i-- > 0;)
-          destroy(scopes[s][i].addr, scopes[s][i].ty, nullptr);
+          destroyObject(scopes[s][i]);
+    }
+
+    // Destroys the scopes above depth for a `return`, `break` or `continue`, leaving the catch
+    // handlers in between through catchret: a funclet cannot branch out directly.
+    void leaveScopes(size_t depth)
+    {
+      std::vector<EHFrame> saved = ehFrames;
+      size_t top = scopes.size();
+      for (size_t i = ehFrames.size(); i-- > 0;)
+      {
+        if (!ehFrames[i].isHandler)
+          continue;
+        if (ehFrames[i].scopeDepth < depth)
+          break; // the target is inside this handler
+        unwindRange(ehFrames[i].scopeDepth, top);
+        top = ehFrames[i].scopeDepth;
+        std::string next = newLabel("catchret");
+        fn += "  catchret from " + ehFrames[i].funclet + " to label %" + next + "\n";
+        ehFrames.resize(i);
+        startBlock(next);
+      }
+      unwindRange(depth, top);
+      ehFrames = saved;
+    }
+
+    // --- exceptions ---
+
+    // The catchpad token of the handler the code being emitted belongs to, or "" outside handlers.
+    std::string currentFunclet()
+    {
+      if (!funcletOverride.empty())
+        return funcletOverride;
+      for (size_t i = ehFrames.size(); i-- > 0;)
+        if (ehFrames[i].isHandler)
+          return ehFrames[i].funclet;
+      return "";
+    }
+
+    // The operand bundle a call inside a funclet carries.
+    std::string bundle()
+    {
+      std::string f = currentFunclet();
+      return f.empty() ? "" : " [ \"funclet\"(token " + f + ") ]";
+    }
+
+    void markEH()
+    {
+      usesEH = true;
+      if (!declaredNames["@__C_specific_handler"])
+      {
+        decls += "declare i32 @__C_specific_handler(...)\n";
+        declaredNames["@__C_specific_handler"] = true;
+      }
+    }
+
+    // Emits `call` or, when an exception leaving the call has to run destructors or reach a handler
+    // of this function, `invoke`. prefix is "" or "%r = "; callee is the text after `call`.
+    void emitCall(const std::string& prefix, const std::string& callee, bool mayThrow = true)
+    {
+      std::string dest = mayThrow && funcletOverride.empty() ? unwindDestination() : std::string();
+      if (dest.empty())
+      {
+        fn += "  " + prefix + "call " + callee + bundle() + "\n";
+        return;
+      }
+      markEH();
+      std::string cont = newLabel("invoke.cont");
+      fn += "  " + prefix + "invoke " + callee + bundle() + " to label %" + cont + " unwind label %" + dest + "\n";
+      startBlock(cont);
+    }
+
+    // Where an exception thrown at this point unwinds to: a cleanup pad destroying the objects
+    // constructed since the innermost try or handler began (shared by all calls with the same
+    // objects), the try's dispatch, or "" when nothing in this function has to happen.
+    std::string unwindDestination()
+    {
+      size_t limit = ehFrames.empty() ? 0 : ehFrames.back().scopeDepth;
+      std::vector<Object> objects;
+      for (size_t i = statementTemps.size(); i-- > 0;)
+        objects.push_back(statementTemps[i]);
+      for (size_t s = scopes.size(); s-- > limit;)
+        for (size_t i = scopes[s].size(); i-- > 0;)
+          objects.push_back(scopes[s][i]);
+      std::string next; // "" = out of the function or funclet
+      if (!ehFrames.empty() && !ehFrames.back().isHandler)
+      {
+        next = ehFrames.back().dispatchLabel;
+        if (objects.empty())
+          return ehFrames.back().used = true, next;
+      }
+      if (objects.empty())
+        return "";
+      std::string parent = currentFunclet();
+      std::string key = next + "|" + parent;
+      for (const Object& o : objects)
+        key += "|" + o.addr;
+      auto it = cleanupPads.find(key);
+      if (it != cleanupPads.end())
+        return it->second;
+      markEH();
+      if (!next.empty())
+        ehFrames.back().used = true;
+      std::string padLabel = newLabel("cleanup"), pad = newTemp();
+      cleanupPads[key] = padLabel;
+      // The pad is emitted aside, after the function body.
+      std::string savedFn = std::move(fn), savedBlock = currentBlock, savedOverride = funcletOverride;
+      bool savedTerminated = blockTerminated;
+      fn.clear();
+      startBlock(padLabel);
+      fn += "  " + pad + " = cleanuppad within " + (parent.empty() ? "none" : parent) + " []\n";
+      funcletOverride = pad;
+      for (const Object& o : objects)
+        destroyObject(o);
+      funcletOverride = savedOverride;
+      fn += "  cleanupret from " + pad + " unwind " + (next.empty() ? "to caller" : "label %" + next) + "\n";
+      ehBlocks += fn;
+      fn = std::move(savedFn);
+      currentBlock = savedBlock;
+      blockTerminated = savedTerminated;
+      return padLabel;
+    }
+
+    std::string sharedComdat(const std::string& name) { return "$" + name.substr(1) + " = comdat any\n"; }
+
+    // The type descriptor matched against catch clauses: { base descriptor, name, base offset }.
+    std::string typeinfoFor(const Ty* t, Node* at)
+    {
+      t = types.unqualified(types.stripRef(t));
+      std::string name, base = "null", offset = "0", display;
+      if (isClass(t))
+      {
+        StructInfo info = structFor(t, at); // copy: the base's descriptor may add structs
+        name = "@kov.ti." + info.name.substr(8);
+        display = types.toString(t, &symbols);
+        if (!info.bases.empty())
+        {
+          base = typeinfoFor(info.fieldTypes[info.bases[0].second], at);
+          offset = "ptrtoint (ptr getelementptr (" + info.name + ", ptr null, i32 0, i32 " + std::to_string(info.bases[0].second) + ") to i64)";
+        }
+        if (display == "Exception" && exceptionTypeinfo.empty())
+          exceptionTypeinfo = name;
+      }
+      else
+      {
+        display = types.toString(t, &symbols);
+        name = "@\"kov.ti." + display + "\""; // one descriptor per scalar type, pointers by pointee
+      }
+      if (emittedShared[name])
+        return name;
+      emittedShared[name] = true;
+      bool was = emittingShared;
+      emittingShared = true;
+      std::string str = cStringConstant(display);
+      emittingShared = was;
+      shared += sharedComdat(name) + name + " = linkonce_odr constant { ptr, ptr, i64 } { ptr " + base + ", ptr " + str + ", i64 " +
+                offset + " }, comdat\n";
+      return name;
+    }
+
+    // A function destroying an object of type t through a pointer (for the exception runtime), or null.
+    std::string destructorThunk(const Ty* t, Node* at)
+    {
+      if (!needsDestruction(t, at))
+        return "null";
+      std::string name = "@kov.dtor." + structFor(t, at).name.substr(8);
+      if (emittedShared[name])
+        return name;
+      emittedShared[name] = true;
+      FunctionState saved = saveState();
+      std::string savedOverride = funcletOverride;
+      funcletOverride.clear();
+      resetFunctionState();
+      try
+      {
+        destroy("%o", t, at);
+        fn += "  ret void\n";
+        shared += sharedComdat(name) + "define linkonce_odr void " + name + "(ptr %o) comdat {\nentry:\n" + allocas + fn + "}\n";
+      }
+      catch (Unsupported&)
+      {
+        restoreState(saved);
+        funcletOverride = savedOverride;
+        throw;
+      }
+      restoreState(saved);
+      funcletOverride = savedOverride;
+      return name;
+    }
+
+    // `throw expr`: the object is built on the heap and raised with its descriptor and destructor.
+    // `throw;` raises the innermost handler's exception again, which then no longer owns it. The
+    // runtime's raise functions are declared as returning (they never do), see below.
+    void emitThrow(ThrowExpr* t)
+    {
+      usesExceptions = true;
+      if (!t->operand)
+      {
+        const EHFrame* handler = nullptr;
+        for (size_t i = ehFrames.size(); i-- > 0 && !handler;)
+          if (ehFrames[i].isHandler)
+            handler = &ehFrames[i];
+        if (!handler)
+          unsupported(t, "`throw;` outside a catch handler");
+        std::string slot = handler->exceptionSlot;
+        destroyTemps();
+        emitCall("", "void @kov_eh_rethrow(ptr " + slot + ")");
+      }
+      else
+      {
+        const Ty* ty = t->operand->ty ? types.unqualified(types.stripRef(t->operand->ty)) : nullptr;
+        if (!ty || !ty->isKnown() || types.isDependent(ty))
+          unsupported(t, "throwing a value of unknown type");
+        if (ty->kind == TyKind::Array)
+          ty = types.pointer(ty->inner);
+        ensureMalloc();
+        std::string obj = newTemp();
+        emitCall(obj + " = ", "ptr @malloc(i64 " + std::to_string(sizeOf(ty, t)) + ")", false);
+        if (isClass(ty))
+          initializeFrom(obj, ty, t->operand, t);
+        else
+          store(convert(rvalue(t->operand), ty, t), obj, ty, t);
+        std::string ti = typeinfoFor(ty, t), dtor = destructorThunk(ty, t);
+        destroyTemps();
+        emitCall("", "void @kov_throw(ptr " + obj + ", ptr " + ti + ", ptr " + dtor + ")");
+      }
+      // No `unreachable` here, on purpose: the code after a throw stays, so that the optimizer never
+      // proves a function noreturn. The SEH scope tables need an instruction after every throwing
+      // call; a catch handler placed right at a call's return address would make the runtime skip
+      // the cleanups between them, taking the unwind for a jump within the scope.
+    }
+
+    // try { body } catch (T1 a) {...} catch (...) {...}: the body's calls unwind to a catchswitch
+    // whose filter function (run by the OS during the search phase) matches the thrown type against
+    // the handlers in order and records the exception for the one that takes it. The handler code
+    // is a catchpad funclet reading that record; leaving it normally ends the exception.
+    void tryStatement(TryStmt* t)
+    {
+      usesExceptions = true;
+      markEH();
+      std::string endL = newLabel("try.end"), dispatchL = newLabel("catch.dispatch"), handlerL = newLabel("catch.pad");
+      ehFrames.push_back({false, dispatchL, currentFunclet(), "", "", scopes.size()});
+      statement(t->body);
+      emitBranch(endL);
+      EHFrame frame = ehFrames.back();
+      ehFrames.pop_back();
+      if (!frame.used)
+      {
+        startBlock(endL); // nothing in the body can throw to the handlers
+        return;
+      }
+      // The filter function.
+      std::string filter = "@kov.filter." + std::to_string(filterCount++);
+      std::string ft = "define i32 " + filter + "(ptr %pointers, ptr %frame) {\nentry:\n"
+                       "  %rec = load ptr, ptr %pointers\n  %code = load i32, ptr %rec\n"
+                       "  %tip = getelementptr inbounds i8, ptr %rec, i64 40\n  %ti = load ptr, ptr %tip\n"
+                       "  %is = icmp eq i32 %code, -536870911\n  br i1 %is, label %check0, label %no\n";
+      for (size_t i = 0; i < t->handlers.size(); ++i)
+      {
+        std::string n = std::to_string(i), nextL = i + 1 < t->handlers.size() ? "check" + std::to_string(i + 1) : "no";
+        ft += "check" + n + ":\n";
+        if (!t->handlers[i].param)
+        {
+          ft += "  call void @kov_eh_push(ptr %rec, i32 " + n + ", i64 0)\n  ret i32 1\n";
+          break;
+        }
+        const Ty* pt = declType(t->handlers[i].param);
+        if (!pt || !pt->isKnown())
+          unsupported(t->handlers[i].param, "a catch parameter of unknown type");
+        ft += "  %off" + n + " = call i64 @kov_eh_offset(ptr %ti, ptr " + typeinfoFor(pt, t) + ")\n"
+              "  %ok" + n + " = icmp sge i64 %off" + n + ", 0\n  br i1 %ok" + n + ", label %yes" + n + ", label %" + nextL + "\n"
+              "yes" + n + ":\n  call void @kov_eh_push(ptr %rec, i32 " + n + ", i64 %off" + n + ")\n  ret i32 1\n";
+      }
+      ft += "no:\n  ret i32 0\n}\n\n";
+      addDefinition(filter, ft);
+      // The dispatch and the handlers.
+      std::string outer = unwindDestination(); // objects outside the try, then the enclosing try
+      startBlock(dispatchL);
+      std::string cs = newTemp(), pad = newTemp();
+      fn += "  " + cs + " = catchswitch within " + (frame.parentFunclet.empty() ? "none" : frame.parentFunclet) + " [label %" + handlerL +
+            "] unwind " + (outer.empty() ? "to caller" : "label %" + outer) + "\n";
+      startBlock(handlerL);
+      fn += "  " + pad + " = catchpad within " + cs + " [ptr " + filter + "]\n";
+      std::string slot = "%v" + std::to_string(temp++);
+      allocas += "  " + slot + " = alloca [5 x i64]\n"; // object, typeinfo, destructor, handler, adjusted object
+      ehFrames.push_back({true, "", frame.parentFunclet, pad, slot, scopes.size()});
+      fn += "  call void @kov_eh_begin(ptr " + slot + ")" + bundle() + "\n";
+      std::vector<std::string> handlerLabels;
+      for (size_t i = 0; i < t->handlers.size(); ++i)
+        handlerLabels.push_back(newLabel("catch.body"));
+      if (t->handlers.size() == 1)
+        emitBranch(handlerLabels[0]);
+      else
+      {
+        std::string hp = newTemp(), h = newTemp();
+        fn += "  " + hp + " = getelementptr inbounds i8, ptr " + slot + ", i64 24\n  " + h + " = load i64, ptr " + hp + "\n";
+        fn += "  switch i64 " + h + ", label %" + handlerLabels[0] + " [";
+        for (size_t i = 1; i < t->handlers.size(); ++i)
+          fn += " i64 " + std::to_string(i) + ", label %" + handlerLabels[i];
+        fn += " ]\n";
+        blockTerminated = true;
+      }
+      for (size_t i = 0; i < t->handlers.size(); ++i)
+      {
+        const TryStmt::Handler& h = t->handlers[i];
+        startBlock(handlerLabels[i]);
+        pushScope();
+        scopes.back().push_back({slot, nullptr, true});
+        if (h.param)
+        {
+          const Ty* pt = declType(h.param);
+          std::string ap = newTemp(), obj = newTemp();
+          fn += "  " + ap + " = getelementptr inbounds i8, ptr " + slot + ", i64 32\n  " + obj + " = load ptr, ptr " + ap + "\n";
+          if (pt->isReference())
+          {
+            std::string ref = "%v" + std::to_string(temp++);
+            allocas += "  " + ref + " = alloca ptr\n";
+            fn += "  store ptr " + obj + ", ptr " + ref + "\n";
+            locals[h.param] = {ref, pt, true};
+          }
+          else if (isClass(pt))
+          {
+            std::string copy = newObjectSlot(pt, h.param);
+            copyConstruct(copy, obj, pt, h.param);
+            locals[h.param] = {copy, pt, false};
+            if (needsDestruction(pt, h.param))
+              scopes.back().push_back({copy, pt});
+          }
+          else
+          {
+            std::string v = "%v" + std::to_string(temp++), loaded = newTemp();
+            allocas += "  " + v + " = alloca " + llType(pt, h.param) + "\n";
+            fn += "  " + loaded + " = load " + llType(pt, h.param) + ", ptr " + obj + "\n  store " + llType(pt, h.param) + " " + loaded + ", ptr " + v + "\n";
+            locals[h.param] = {v, pt, false};
+          }
+        }
+        statement(h.body);
+        popScope();
+        if (!blockTerminated)
+        {
+          fn += "  catchret from " + pad + " to label %" + endL + "\n";
+          blockTerminated = true;
+        }
+      }
+      ehFrames.pop_back();
+      startBlock(endL);
+    }
+
+    // The exception runtime (linkonce_odr, in every module) and the real @main, which calls the
+    // program's main and reports an exception nobody caught.
+    void finishExceptionRuntime()
+    {
+      std::string mainName = "@kov.main";
+      auto declareOnce = [&](const char* name, const std::string& line)
+      {
+        if (declaredNames[name])
+          return;
+        declaredNames[name] = true;
+        decls += line + "\n";
+      };
+      if (usesExceptions)
+      {
+        ensureMalloc();
+        declareOnce("@RaiseException", "declare dllimport void @RaiseException(i32, i32, i32, ptr)");
+        declareOnce("@fprintf", "declare i32 @fprintf(ptr, ptr, ...)");
+        declareOnce("@__acrt_iob_func", "declare ptr @__acrt_iob_func(i32)");
+        declareOnce("@abort", "declare void @abort()");
+        markEH();
+        emittingShared = true;
+        std::string fmt1 = cStringConstant("unhandled exception of type %s"), fmt2 = cStringConstant(": %s"), fmt3 = cStringConstant("\n");
+        emittingShared = false;
+        shared += sharedComdat("@kov.eh.stack") + "@kov.eh.stack = linkonce_odr thread_local global [160 x i64] zeroinitializer, comdat\n" +
+                  sharedComdat("@kov.eh.depth") + "@kov.eh.depth = linkonce_odr thread_local global i64 0, comdat\n";
+        shared += sharedComdat("@kov_throw") +
+                  "define linkonce_odr void @kov_throw(ptr %object, ptr %typeinfo, ptr %dtor) noinline comdat {\nentry:\n"
+                  "  %args = alloca [3 x i64]\n  %a1 = getelementptr inbounds i64, ptr %args, i64 1\n  %a2 = getelementptr inbounds i64, ptr %args, i64 2\n"
+                  "  store ptr %object, ptr %args\n  store ptr %typeinfo, ptr %a1\n  store ptr %dtor, ptr %a2\n"
+                  "  call void @RaiseException(i32 -536870911, i32 1, i32 3, ptr %args)\n  ret void\n}\n";
+        shared += sharedComdat("@kov_eh_offset") +
+                  "define linkonce_odr i64 @kov_eh_offset(ptr %typeinfo, ptr %target) comdat {\nentry:\n  br label %loop\n"
+                  "loop:\n  %ti = phi ptr [ %typeinfo, %entry ], [ %base, %next ]\n  %off = phi i64 [ 0, %entry ], [ %off1, %next ]\n"
+                  "  %null = icmp eq ptr %ti, null\n  br i1 %null, label %no, label %check\n"
+                  "check:\n  %same = icmp eq ptr %ti, %target\n  br i1 %same, label %yes, label %next\n"
+                  "next:\n  %base = load ptr, ptr %ti\n  %op = getelementptr inbounds i8, ptr %ti, i64 16\n  %bo = load i64, ptr %op\n"
+                  "  %off1 = add i64 %off, %bo\n  br label %loop\n"
+                  "yes:\n  ret i64 %off\nno:\n  ret i64 -1\n}\n";
+        shared += sharedComdat("@kov_eh_push") +
+                  "define linkonce_odr void @kov_eh_push(ptr %record, i32 %handler, i64 %offset) comdat {\nentry:\n"
+                  "  %d = load i64, ptr @kov.eh.depth\n  %i = mul i64 %d, 5\n  %slot = getelementptr inbounds i64, ptr @kov.eh.stack, i64 %i\n"
+                  "  %info = getelementptr inbounds i8, ptr %record, i64 32\n  %obj = load i64, ptr %info\n"
+                  "  %tip = getelementptr inbounds i8, ptr %record, i64 40\n  %ti = load i64, ptr %tip\n"
+                  "  %dp = getelementptr inbounds i8, ptr %record, i64 48\n  %dtor = load i64, ptr %dp\n"
+                  "  %h = zext i32 %handler to i64\n  %adj = add i64 %obj, %offset\n"
+                  "  %s1 = getelementptr inbounds i64, ptr %slot, i64 1\n  %s2 = getelementptr inbounds i64, ptr %slot, i64 2\n"
+                  "  %s3 = getelementptr inbounds i64, ptr %slot, i64 3\n  %s4 = getelementptr inbounds i64, ptr %slot, i64 4\n"
+                  "  store i64 %obj, ptr %slot\n  store i64 %ti, ptr %s1\n  store i64 %dtor, ptr %s2\n  store i64 %h, ptr %s3\n  store i64 %adj, ptr %s4\n"
+                  "  %d1 = add i64 %d, 1\n  store i64 %d1, ptr @kov.eh.depth\n  ret void\n}\n";
+        shared += sharedComdat("@kov_eh_begin") +
+                  "define linkonce_odr void @kov_eh_begin(ptr %out) comdat {\nentry:\n"
+                  "  %d = load i64, ptr @kov.eh.depth\n  %d1 = sub i64 %d, 1\n  store i64 %d1, ptr @kov.eh.depth\n"
+                  "  %i = mul i64 %d1, 5\n  %slot = getelementptr inbounds i64, ptr @kov.eh.stack, i64 %i\n"
+                  "  call void @llvm.memcpy.p0.p0.i64(ptr %out, ptr %slot, i64 40, i1 false)\n  ret void\n}\n";
+        shared += sharedComdat("@kov_eh_end") +
+                  "define linkonce_odr void @kov_eh_end(ptr %out) comdat {\nentry:\n"
+                  "  %obj = load ptr, ptr %out\n  %null = icmp eq ptr %obj, null\n  br i1 %null, label %done, label %live\n"
+                  "live:\n  %dp = getelementptr inbounds i8, ptr %out, i64 16\n  %dtor = load ptr, ptr %dp\n"
+                  "  %nodtor = icmp eq ptr %dtor, null\n  br i1 %nodtor, label %release, label %destroy\n"
+                  "destroy:\n  call void %dtor(ptr %obj)\n  br label %release\n"
+                  "release:\n  call void @free(ptr %obj)\n  store ptr null, ptr %out\n  br label %done\n"
+                  "done:\n  ret void\n}\n";
+        shared += sharedComdat("@kov_eh_rethrow") +
+                  "define linkonce_odr void @kov_eh_rethrow(ptr %out) noinline comdat {\nentry:\n"
+                  "  %obj = load ptr, ptr %out\n  %tp = getelementptr inbounds i8, ptr %out, i64 8\n  %ti = load ptr, ptr %tp\n"
+                  "  %dp = getelementptr inbounds i8, ptr %out, i64 16\n  %dtor = load ptr, ptr %dp\n  store ptr null, ptr %out\n"
+                  "  call void @kov_throw(ptr %obj, ptr %ti, ptr %dtor)\n  ret void\n}\n";
+        shared += sharedComdat("@kov.eh.filter.any") +
+                  "define linkonce_odr i32 @kov.eh.filter.any(ptr %pointers, ptr %frame) comdat {\nentry:\n"
+                  "  %rec = load ptr, ptr %pointers\n  %code = load i32, ptr %rec\n  %is = icmp eq i32 %code, -536870911\n"
+                  "  br i1 %is, label %yes, label %no\nyes:\n  call void @kov_eh_push(ptr %rec, i32 0, i64 0)\n  ret i32 1\nno:\n  ret i32 0\n}\n";
+        std::string message;
+        if (!exceptionTypeinfo.empty())
+          message = "  %off = call i64 @kov_eh_offset(ptr %typeinfo, ptr " + exceptionTypeinfo + ")\n  %isExc = icmp sge i64 %off, 0\n"
+                    "  br i1 %isExc, label %msg, label %end\n"
+                    "msg:\n  %ep = getelementptr inbounds i8, ptr %object, i64 %off\n  %data = load ptr, ptr %ep\n"
+                    "  %nodata = icmp eq ptr %data, null\n  br i1 %nodata, label %end, label %print\n"
+                    "print:\n  %r2 = call i32 (ptr, ptr, ...) @fprintf(ptr %err, ptr " + fmt2 + ", ptr %data)\n  br label %end\n";
+        else
+          message = "  br label %end\n";
+        shared += sharedComdat("@kov_eh_unhandled") +
+                  "define linkonce_odr void @kov_eh_unhandled(ptr %object, ptr %typeinfo) noinline comdat {\nentry:\n"
+                  "  %err = call ptr @__acrt_iob_func(i32 2)\n  %np = getelementptr inbounds i8, ptr %typeinfo, i64 8\n  %name = load ptr, ptr %np\n"
+                  "  %r1 = call i32 (ptr, ptr, ...) @fprintf(ptr %err, ptr " + fmt1 + ", ptr %name)\n" + message +
+                  "end:\n  %r3 = call i32 (ptr, ptr, ...) @fprintf(ptr %err, ptr " + fmt3 + ")\n  call void @abort()\n  unreachable\n}\n";
+        declareOnce("@llvm.memcpy.p0.p0.i64", "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
+      }
+      // @main.
+      std::string declare = declareLines[mainName];
+      if (moduleCount <= 1)
+      {
+        size_t at = body.find("define i32 " + mainName + "(");
+        if (at == std::string::npos)
+          return;
+        size_t close = body.find(")", at);
+        declare = body.substr(at, close - at + 1);
+      }
+      if (declare.empty())
+        return;
+      bool args = declare.find("(i32, ptr)") != std::string::npos || declare.find("(i32 %p0, ptr %p1)") != std::string::npos;
+      std::string call = "i32 " + mainName + (args ? "(i32 %argc, ptr %argv)" : "()");
+      std::string text = "define i32 @main(i32 %argc, ptr %argv) " + std::string(usesExceptions ? "personality ptr @__C_specific_handler " : "") + "{\nentry:\n";
+      if (!usesExceptions)
+        text += "  %r = call " + call + "\n  ret i32 %r\n}\n\n";
+      else
+        text += "  %out = alloca [5 x i64]\n  %r = invoke " + call + " to label %done unwind label %dispatch\n"
+                "done:\n  ret i32 %r\n"
+                "dispatch:\n  %cs = catchswitch within none [label %handler] unwind to caller\n"
+                "handler:\n  %pad = catchpad within %cs [ptr @kov.eh.filter.any]\n"
+                "  call void @kov_eh_begin(ptr %out) [ \"funclet\"(token %pad) ]\n"
+                "  %obj = load ptr, ptr %out\n  %tp = getelementptr inbounds i8, ptr %out, i64 8\n  %ti = load ptr, ptr %tp\n"
+                "  call void @kov_eh_unhandled(ptr %obj, ptr %ti) [ \"funclet\"(token %pad) ]\n"
+                "  catchret from %pad to label %failed\n"
+                "failed:\n  ret i32 3\n}\n\n";
+      if (moduleCount <= 1)
+        body += text;
+      else
+        bodies[definedIn[mainName]] += text;
     }
 
     void declareLocal(VariableDecl* v)
@@ -3702,11 +4243,25 @@ namespace
             retText = convert(rvalue(r->value), currentReturn, s).text;
           }
           destroyTemps();
-          unwindTo(0);
-          if (currentReturn->kind == TyKind::Void || isClass(currentReturn))
+          std::string retLl = currentReturn->kind == TyKind::Void || isClass(currentReturn) ? std::string()
+                              : currentReturn->isReference()                                ? std::string("ptr")
+                                                                                             : llType(currentReturn, s);
+          if (!retLl.empty() && !currentFunclet().empty())
+          {
+            // Leaving a catch handler: the value crosses a funclet boundary through memory.
+            std::string slot = "%v" + std::to_string(temp++);
+            allocas += "  " + slot + " = alloca " + retLl + "\n";
+            fn += "  store " + retLl + " " + retText + ", ptr " + slot + "\n";
+            leaveScopes(0);
+            retText = newTemp();
+            fn += "  " + retText + " = load " + retLl + ", ptr " + slot + "\n";
+          }
+          else
+            leaveScopes(0);
+          if (retLl.empty())
             fn += "  ret void\n";
           else
-            fn += "  ret " + std::string(currentReturn->isReference() ? "ptr" : llType(currentReturn, s)) + " " + retText + "\n";
+            fn += "  ret " + retLl + " " + retText + "\n";
           blockTerminated = true;
           break;
         }
@@ -3751,8 +4306,9 @@ namespace
           fn += "  br i1 " + cond.text + ", label %" + okL + ", label %" + failL + "\n";
           startBlock(failL);
           auto [line, column] = lineColumnOf(a->token);
-          fn += "  call void @kov_assert_failed(ptr " + cStringConstant(currentFile->path) + ", i32 " + std::to_string(line) + ", i32 " +
-                std::to_string(column) + ", ptr " + cStringConstant(sourceText(a->startToken, a->endToken)) + ")\n  unreachable\n";
+          emitCall("", "void @kov_assert_failed(ptr " + cStringConstant(currentFile->path) + ", i32 " + std::to_string(line) + ", i32 " +
+                           std::to_string(column) + ", ptr " + cStringConstant(sourceText(a->startToken, a->endToken)) + ")", false);
+          fn += "  unreachable\n";
           usesAssert = true;
           startBlock(okL);
           break;
@@ -3827,7 +4383,7 @@ namespace
         case NodeKind::BreakStmt:
           if (loops.empty())
             unsupported(s, "break outside a loop or switch");
-          unwindTo(loops.back().scopeDepth);
+          leaveScopes(loops.back().scopeDepth);
           emitBranch(loops.back().breakLabel);
           break;
         case NodeKind::ContinueStmt:
@@ -3835,7 +4391,7 @@ namespace
           for (size_t i = loops.size(); i-- > 0;)
             if (!loops[i].continueLabel.empty())
             {
-              unwindTo(loops[i].scopeDepth);
+              leaveScopes(loops[i].scopeDepth);
               emitBranch(loops[i].continueLabel);
               return;
             }
@@ -3843,6 +4399,9 @@ namespace
         }
         case NodeKind::SwitchStmt:
           switchStatement(static_cast<SwitchStmt*>(s));
+          break;
+        case NodeKind::TryStmt:
+          tryStatement(static_cast<TryStmt*>(s));
           break;
         case NodeKind::RangeForStmt:
           rangeFor(static_cast<RangeForStmt*>(s));
@@ -4046,8 +4605,9 @@ namespace
       {
         startBlock(invalidL);
         auto [line, column] = lineColumnOf(sw->token);
-        fn += "  call void @kov_assert_failed(ptr " + cStringConstant(currentFile->path) + ", i32 " + std::to_string(line) + ", i32 " +
-              std::to_string(column) + ", ptr " + cStringConstant("invalid value in switch on " + global.qualifiedName(condTy->decl)) + ")\n  unreachable\n";
+        emitCall("", "void @kov_assert_failed(ptr " + cStringConstant(currentFile->path) + ", i32 " + std::to_string(line) + ", i32 " +
+                         std::to_string(column) + ", ptr " + cStringConstant("invalid value in switch on " + global.qualifiedName(condTy->decl)) + ")", false);
+        fn += "  unreachable\n";
         usesAssert = true;
         blockTerminated = true;
       }
@@ -4095,16 +4655,7 @@ namespace
         currentArgs = nullptr;
         return;
       }
-      fn.clear();
-      allocas.clear();
-      locals.clear();
-      loops.clear();
-      scopes.clear();
-      statementTemps.clear();
-      temp = 0;
-      label = 0;
-      blockTerminated = false;
-      currentBlock = "entry";
+      resetFunctionState();
       currentFunction = f;
       currentReturn = ft->inner;
       sretAddr.clear();
@@ -4186,10 +4737,10 @@ namespace
           popScope();
           if (currentReturn->kind == TyKind::Void || isClass(currentReturn))
             fn += "  ret void\n";
-          else if (name == "@main")
+          else if (name == "@kov.main")
             fn += "  ret i32 0\n";
-          else
-            fn += "  unreachable\n";
+          else // falling off the end (after a throw, usually): a zero rather than `unreachable`, see emitThrow
+            fn += "  ret " + (currentReturn->isReference() ? std::string("ptr null") : llType(currentReturn, f) + " zeroinitializer") + "\n";
         }
         else if (f->flags & DF_Destructor)
         {
@@ -4197,7 +4748,7 @@ namespace
           currentArgs = nullptr;
           return;
         }
-        addDefinition(name, header + allocas + fn + "}\n\n");
+        addDefinition(name, functionText(header));
         ++result.functions;
       }
       catch (Unsupported&)
@@ -4263,6 +4814,7 @@ CodegenResult generateLLVM(std::vector<std::unique_ptr<ParsedFile>>& files, Glob
     e.emitFunction(inst.f, inst.args, inst.classTy);
   }
   e.finishAssertRuntime();
+  e.finishExceptionRuntime();
   std::string prefix = "; Kov v0: generated by kovc\n"
                        "target datalayout = \"e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\n"
                        "target triple = \"x86_64-pc-windows-msvc\"\n\n";

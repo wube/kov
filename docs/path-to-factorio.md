@@ -66,6 +66,20 @@ unresolved rest is the library worklist, in order: `Pair` (350 uses), `StringVie
 `end`, `push_back`, `erase`, `resize`, `find_first_not_of`, `replace`), then `va_list` and the
 `trio_*` printf functions behind `ssprintf`.
 
+Later the same day, with that library worklist done, exceptions implemented and hand-written
+overrides possible (`programs/factorio/convert.cmd`, `--overrides`): 100% of files parse, 96% of
+type names and 88.6% of expressions resolve, and code generation stops at 53 places (from 82
+before the library work). By kind: 13 member accesses the library lacks (`rbegin().base()`,
+`wstring_convert`/`codecvt`, `chrono` durations), 8 reference bindings and constructor calls
+with no matching library constructor (`String` from a `char`, `Vector` from a brace list,
+`StringView` into a `String&`), 7 locals of unknown type (the anonymous unions `Math.kov` uses
+for float bit casts, `thread_local`, `auto begin = ...data()`), 6 unresolved calls (`va_start`,
+`va_copy`, the `EXTRACT_WORDS` macro, `trio_snprintf`), 3 `String` to integer conversions in
+`strtoint`, 3 unknown function types in a dropped `#if` region of `Demangle`, and single cases
+of `Optional` in boolean context, `nullopt`, `NAN`, globals with constructors. Nothing in the
+list is a design question; the chrono/codecvt/varargs files are the first candidates for
+hand-written overrides, the rest is library and compiler work.
+
 ## The order that gets to a running game
 
 1. Decide exceptions and RTTI; implement them (they shape what the converter emits).
