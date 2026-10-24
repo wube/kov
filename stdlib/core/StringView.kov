@@ -1,0 +1,94 @@
+// Kov standard library: StringView, a borrowed slice of UTF-8 code units. It does not own the
+// bytes and is not zero-terminated; copy it into a String to keep it.
+struct StringView
+{
+  const char* data = nullptr;
+  int length = 0;
+
+  static const int npos = -1;
+
+  StringView() {}
+  implicit StringView(const char* text) : data(text), length(text ? (int)strlen(text) : 0) {}
+  StringView(const char* text, int count) : data(text), length(count) {}
+  implicit StringView(const String& text) : data(text.data), length(text.length) {}
+
+  int size() const { return this->length; }
+  bool empty() const { return this->length == 0; }
+  char operator[](int index) const { return this->data[index]; }
+  const char* begin() const { return this->data; }
+  const char* end() const { return this->data + this->length; }
+  char front() const { return this->data[0]; }
+  char back() const { return this->data[this->length - 1]; }
+
+  StringView substr(int start, int count) const
+  {
+    if (start > this->length)
+      start = this->length;
+    if (count < 0 || start + count > this->length)
+      count = this->length - start;
+    return StringView(this->data + start, count);
+  }
+  StringView substr(int start) const { return this->substr(start, -1); }
+
+  int find(char c) const
+  {
+    for (int i = 0; i < this->length; ++i)
+      if (this->data[i] == c)
+        return i;
+    return -1;
+  }
+  int find(StringView needle) const
+  {
+    if (needle.length == 0)
+      return 0;
+    for (int i = 0; i + needle.length <= this->length; ++i)
+      if (memcmp(this->data + i, needle.data, needle.length) == 0)
+        return i;
+    return -1;
+  }
+  int rfind(char c) const
+  {
+    for (int i = this->length; i-- > 0;)
+      if (this->data[i] == c)
+        return i;
+    return -1;
+  }
+  bool startsWith(StringView prefix) const
+  {
+    return prefix.length <= this->length && memcmp(this->data, prefix.data, prefix.length) == 0;
+  }
+  bool endsWith(StringView suffix) const
+  {
+    return suffix.length <= this->length && memcmp(this->data + this->length - suffix.length, suffix.data, suffix.length) == 0;
+  }
+  void removePrefix(int count) { this->data += count; this->length -= count; }
+  void removeSuffix(int count) { this->length -= count; }
+
+  bool operator==(StringView other) const
+  {
+    return this->length == other.length && (this->length == 0 || memcmp(this->data, other.data, this->length) == 0);
+  }
+  bool operator!=(StringView other) const { return !(*this == other); }
+  bool operator<(StringView other) const
+  {
+    int common = this->length < other.length ? this->length : other.length;
+    int c = common == 0 ? 0 : memcmp(this->data, other.data, common);
+    return c != 0 ? c < 0 : this->length < other.length;
+  }
+
+  String toString() const
+  {
+    String result;
+    result.append(this->data, this->length);
+    return result;
+  }
+};
+
+String toString(StringView text) { return text.toString(); }
+size_t hashOf(StringView text)
+{
+  size_t h = 14695981039346656037ull;
+  for (int i = 0; i < text.length; ++i)
+    h = (h ^ (size_t)(uint8_t)text.data[i]) * 1099511628211ull;
+  return h;
+}

@@ -291,6 +291,11 @@ qualified Kov names with parameter types, quoted, so there is no mangling scheme
   parser uses heuristics that work on 99.2% of Factorio files; the resolver can flag misparses
   later, but a real compiler should not have to guess.
 
+- **Library names and program names share one global scope.** The first clash happened on
+  2026-10-24: a test's own `struct Pair` against the library's `Pair`. Options: the library in a
+  namespace (`kov::`) that programs see through an implicit `using`; or program declarations
+  shadowing library ones; or simply distinct names. Not decided; the test was renamed.
+
 ## Roadmap
 1. **Speed-test prototype** (done, see [prototype-results.md](prototype-results.md)): parallel
    lexer + parser + order-independent name resolution, benchmarked on Factorio. Whole front end

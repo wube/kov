@@ -1509,7 +1509,40 @@ namespace
         q += pos == std::string::npos ? "::" + full : full.substr(pos);
       }
       else
+      {
         q = global.qualifiedName(f);
+        if (Decl* owner = global.owningClass(f); owner && owner->kind == NodeKind::ClassDecl && (owner->flags & DF_Specialization))
+        {
+          // Members of `template<> struct Limits<int>`: the arguments tell the specialisations apart.
+          const NamePart& last = static_cast<ClassDecl*>(owner)->name.last();
+          std::string spelled;
+          for (Node* a : last.templateArgs)
+          {
+            const Ty* t = nullptr;
+            switch (a->kind)
+            {
+              case NodeKind::NamedType: case NodeKind::PointerType: case NodeKind::LRefType: case NodeKind::RRefType:
+              case NodeKind::ConstType: case NodeKind::ArrayType: case NodeKind::FunctionType: case NodeKind::BuiltinType:
+              case NodeKind::DecltypeType: case NodeKind::AutoType: case NodeKind::MemberPointerType:
+                t = global.typeOfAst(static_cast<Type*>(a), owner);
+                break;
+              default: break;
+            }
+            std::string one;
+            if (t && t->isKnown())
+              one = types.toString(t, &symbols);
+            else if (owner->file && owner->file->tokens && a->token < owner->file->tokens->size())
+            {
+              const Token& tok = (*owner->file->tokens)[a->token];
+              one = std::string(owner->file->text.substr(tok.offset, tok.length));
+            }
+            spelled += (spelled.empty() ? "" : ", ") + one;
+          }
+          size_t pos = q.rfind("::");
+          if (pos != std::string::npos)
+            q.insert(pos, "<" + spelled + ">");
+        }
+      }
       if (!f->templateParams.empty())
       {
         q += "<";
@@ -1527,7 +1560,8 @@ namespace
       std::string params;
       for (size_t i = 0; ft && i < ft->args.size(); ++i)
         params += (i ? ", " : "") + types.toString(ft->args[i], &symbols);
-      return "@\"" + q + "(" + params + ")\"";
+      // A const method is a different function from its non-const overload.
+      return "@\"" + q + "(" + params + ")" + ((f->flags & DF_Const) && !(f->flags & DF_Static) ? " const" : "") + "\"";
     }
 
     struct Signature
@@ -3076,11 +3110,12 @@ namespace
               if (c != '\'' && c != 'f' && c != 'F' && c != 'l' && c != 'L')
                 digits += c;
             double d = strtod(digits.c_str(), nullptr);
-            char buf[64];
-            if (t->bits == 32)
-              snprintf(buf, sizeof buf, "%.9e", double(float(d)));
-            else
-              snprintf(buf, sizeof buf, "%.17e", d);
+            // LLVM wants the exact value: the bits of the double (rounded through float first for f32).
+            double exact = t->bits == 32 ? double(float(d)) : d;
+            uint64_t bits;
+            memcpy(&bits, &exact, sizeof bits);
+            char buf[32];
+            snprintf(buf, sizeof buf, "0x%016llX", (unsigned long long)bits);
             return {buf, t};
           }
           auto v = evalConst(e);

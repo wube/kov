@@ -1,0 +1,107 @@
+// Kov standard library: the small containers. Set<T> keeps its values sorted in a Vector and
+// finds them by binary search; Deque<T> is a Vector that also pops at the front. Both are the
+// simplest thing that has the interface; they get real implementations when a program needs
+// them to be fast.
+
+template<typename T>
+struct Set
+{
+  Vector<T> values;
+
+  int size() const { return this->values.size(); }
+  bool empty() const { return this->values.empty(); }
+  T* begin() { return this->values.begin(); }
+  T* end() { return this->values.end(); }
+
+  // Index of value, or of the place it would take.
+  int lowerBound(const T& value) const
+  {
+    int low = 0;
+    int high = this->values.size();
+    while (low < high)
+    {
+      int middle = (low + high) / 2;
+      if (this->values.data[middle] < value)
+        low = middle + 1;
+      else
+        high = middle;
+    }
+    return low;
+  }
+  bool contains(const T& value) const
+  {
+    int i = this->lowerBound(value);
+    return i < this->values.size() && !(value < this->values.data[i]);
+  }
+  // True when the value was new.
+  bool insert(const T& value)
+  {
+    int i = this->lowerBound(value);
+    if (i < this->values.size() && !(value < this->values.data[i]))
+      return false;
+    this->values.push_back(value);
+    for (int k = this->values.size() - 1; k > i; --k)
+      this->values.data[k] = this->values.data[k - 1];
+    this->values.data[i] = value;
+    return true;
+  }
+  bool erase(const T& value)
+  {
+    int i = this->lowerBound(value);
+    if (i >= this->values.size() || value < this->values.data[i])
+      return false;
+    this->values.erase(i);
+    return true;
+  }
+  void clear() { this->values.clear(); }
+};
+
+template<typename T>
+struct Deque
+{
+  Vector<T> values;
+  int head = 0; // index of the first live value
+
+  int size() const { return this->values.size() - this->head; }
+  bool empty() const { return this->size() == 0; }
+  T& front() { return this->values.data[this->head]; }
+  T& back() { return this->values.back(); }
+  T& operator[](int index) { return this->values.data[this->head + index]; }
+  T* begin() { return this->values.begin() + this->head; }
+  T* end() { return this->values.end(); }
+
+  void push_back(const T& value) { this->values.push_back(value); }
+  void pop_back() { this->values.pop_back(); }
+  void pop_front()
+  {
+    ++this->head;
+    if (this->head > 32 && this->head * 2 > this->values.size())
+    {
+      // Slide the live values down so that the dead prefix does not grow forever.
+      int live = this->values.size() - this->head;
+      for (int i = 0; i < live; ++i)
+        this->values.data[i] = this->values.data[this->head + i];
+      while (this->values.size() > live)
+        this->values.pop_back();
+      this->head = 0;
+    }
+  }
+  void push_front(const T& value)
+  {
+    if (this->head > 0)
+    {
+      --this->head;
+      this->values.data[this->head] = value;
+      return;
+    }
+    this->values.push_back(value);
+    for (int k = this->values.size() - 1; k > 0; --k)
+      this->values.data[k] = this->values.data[k - 1];
+    this->values.data[0] = value;
+  }
+  void clear()
+  {
+    this->values.clear();
+    this->head = 0;
+  }
+};

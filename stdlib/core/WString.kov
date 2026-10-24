@@ -1,0 +1,80 @@
+// Kov standard library: WString, a string of wchar_t for the Windows API (UTF-16), always
+// zero-terminated. Conversions to and from UTF-8 live in StringUtil of the program using it.
+struct WString
+{
+  wchar_t* data = nullptr;
+  int length = 0;
+  int capacity = 0;
+
+  WString() {}
+  implicit WString(const wchar_t* text)
+  {
+    int n = 0;
+    while (text != nullptr && text[n] != 0)
+      ++n;
+    this->append(text, n);
+  }
+  WString(const WString& other) { this->append(other.data, other.length); }
+  ~WString()
+  {
+    if (this->data)
+      free(this->data);
+  }
+  WString& operator=(const WString& other)
+  {
+    if (this == &other)
+      return *this;
+    this->length = 0;
+    this->append(other.data, other.length);
+    if (this->data)
+      this->data[this->length] = 0;
+    return *this;
+  }
+
+  int size() const { return this->length; }
+  bool empty() const { return this->length == 0; }
+  const wchar_t* c_str() const { return this->data ? this->data : L""; }
+  wchar_t operator[](int index) const { return this->data[index]; }
+  wchar_t* begin() { return this->data; }
+  wchar_t* end() { return this->data + this->length; }
+
+  void reserve(int needed)
+  {
+    if (needed + 1 <= this->capacity)
+      return;
+    int newCapacity = this->capacity == 0 ? 16 : this->capacity;
+    while (newCapacity < needed + 1)
+      newCapacity *= 2;
+    wchar_t* bigger = (wchar_t*)malloc((size_t)newCapacity * 2);
+    if (this->data)
+    {
+      memcpy(bigger, this->data, (size_t)(this->length + 1) * 2);
+      free(this->data);
+    }
+    else
+      bigger[0] = 0;
+    this->data = bigger;
+    this->capacity = newCapacity;
+  }
+  void append(const wchar_t* units, int count)
+  {
+    if (count <= 0)
+      return;
+    this->reserve(this->length + count);
+    memcpy(this->data + this->length, units, (size_t)count * 2);
+    this->length += count;
+    this->data[this->length] = 0;
+  }
+  void push_back(wchar_t c) { this->append(&c, 1); }
+  void clear()
+  {
+    this->length = 0;
+    if (this->data)
+      this->data[0] = 0;
+  }
+  bool operator==(const WString& other) const
+  {
+    return this->length == other.length && (this->length == 0 || memcmp(this->data, other.data, (size_t)this->length * 2) == 0);
+  }
+  bool operator!=(const WString& other) const { return !(*this == other); }
+};

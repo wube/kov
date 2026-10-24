@@ -459,6 +459,13 @@ namespace
           size_t close = rest.find_first_of(">\"", open + 1);
           std::string header = open != std::string::npos && close != std::string::npos ? rest.substr(open + 1, close - open - 1) : "";
           std::string base = header.substr(header.find_last_of('/') + 1);
+          static const std::map<std::string, std::string> cxxToC = {{"cmath", "math.h"}, {"cstdio", "stdio.h"}, {"cstring", "string.h"},
+                                                                    {"cstdlib", "stdlib.h"}, {"cctype", "ctype.h"}, {"cerrno", "errno.h"},
+                                                                    {"cstdarg", "stdarg.h"}, {"ctime", "time.h"}, {"cwchar", "wchar.h"},
+                                                                    {"cfloat", "float.h"}, {"climits", "limits.h"}};
+          auto cxx = cxxToC.find(base);
+          if (cxx != cxxToC.end())
+            base = cxx->second;
           if (cHeaders.count(base))
           {
             replace(offset, length, "extern \"C\" import \"" + base + "\";");

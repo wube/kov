@@ -13,7 +13,7 @@ struct Derived : Base
   int sum() const { return this->twice() + this->extra; }
 };
 
-struct Pair
+struct TwoLists
 {
   Derived a;
   Derived b;
@@ -27,7 +27,7 @@ void fill(Derived& d, int id, int extra)
 
 int main()
 {
-  Pair p;
+  TwoLists p;
   fill(p.a, 1, 10);
   fill(p.b, 2, 20);
   Derived copy = p.b;
