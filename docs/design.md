@@ -118,8 +118,8 @@ replacements, in the order of how much code they remove:
 The spellings above are the working proposal; each is settled and recorded here when the feature
 is implemented.
 
-### 8. Compile-time iteration, reflection, enums, typed unions, tests (proposed 2026-10-24)
-The spellings below are proposed for kovarex's review; they implement items 1 and 3 to 6 of
+### 8. Compile-time iteration, reflection, enums, typed unions, tests (decided 2026-10-24)
+The spellings below were accepted by kovarex on 2026-10-24; they implement items 1 and 3 to 6 of
 section 7. Everything here is instantiated at compile time by the same machinery as templates:
 a body written once is checked and generated once per element.
 
@@ -212,6 +212,14 @@ sees private members). `check(expr)` records a failure with the expression text,
 and the operand values and continues; `require(expr)` ends the test. Tests are compiled only
 with `kovc --tests`, which generates the runner (`--run-test <name or file>` selects); without
 the switch they cost nothing. Fixtures are ordinary classes constructed in the test.
+
+### 9. Exceptions and RTTI (decided 2026-10-24)
+- Kov has exceptions, with C++'s `throw`/`try`/`catch` semantics, implemented on LLVM's
+  unwinding (the Windows personality); the non-throwing path costs nothing. Factorio's 3,198
+  `throw` sites convert as they are.
+- `dynamic_cast` and `typeid` exist for single-inheritance hierarchies: a type descriptor behind
+  the vtable, with the chain of bases, which is what Factorio's 647 casts need. No
+  cross-casts or virtual bases.
 
 ## Benchmark target
 
