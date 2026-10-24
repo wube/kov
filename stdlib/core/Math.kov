@@ -8,3 +8,7 @@ bool isinf(float value) { return value == value && value != 0.0f && value * 2.0f
 bool isfinite(double value) { return !isnan(value) && !isinf(value); }
 bool isfinite(float value) { return !isnan(value) && !isinf(value); }
 bool signbit(double value) { return value < 0.0 || (value == 0.0 && 1.0 / value < 0.0); }
+
+// math.h defines these through compiler builtins, which the importer cannot bring over.
+const float INFINITY = 1e39f;
+const double HUGE_VAL = 1e309;

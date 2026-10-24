@@ -8,7 +8,7 @@ struct String
   int capacity = 0;
 
   String() {}
-  String(const char* text) { this->append(text); }
+  implicit String(const char* text) { this->append(text); }
   String(const String& other) { this->append(other.data, other.length); }
   ~String()
   {
@@ -102,6 +102,14 @@ struct String
   }
   int find(const char* needle) const { return this->find(needle, 0); }
   int find(const String& needle) const { return this->find(needle.c_str(), 0); }
+  int find(const String& needle, int from) const { return this->find(needle.c_str(), from); }
+  int find(char c, int from) const
+  {
+    for (int i = from; i < this->length; ++i)
+      if (this->data[i] == c)
+        return i;
+    return -1;
+  }
   int rfind(char c) const
   {
     for (int i = this->length; i-- > 0;)
@@ -116,6 +124,10 @@ struct String
         return true;
     return false;
   }
+  int find_first_of(char c) const { return this->find(c); }
+  int find_first_of(const String& set) const { return this->find_first_of(set.c_str()); }
+  int find_first_not_of(const String& set) const { return this->find_first_not_of(set.c_str()); }
+  int find_last_not_of(const String& set) const { return this->find_last_not_of(set.c_str()); }
   int find_first_of(const char* set) const
   {
     for (int i = 0; i < this->length; ++i)
@@ -248,3 +260,10 @@ struct String
       this->data[0] = 0;
   }
 };
+
+String operator+(const char* left, const String& right)
+{
+  String result(left);
+  result.append(right);
+  return result;
+}

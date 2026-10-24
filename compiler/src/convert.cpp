@@ -522,6 +522,13 @@ namespace
           counts.add("template keyword dropped");
           continue;
         }
+        if (t.getKind() == TokenKind::Identifier && spelling(i) == "length" && i > 0 && (toks[i - 1].is(P::Dot) || toks[i - 1].is(P::Arrow)) &&
+            toks[i + 1].is(P::LParen) && toks[i + 2].is(P::RParen))
+        {
+          replace(t.offset, t.length, "size"); // `.length()` on strings: the library spells it size()
+          counts.add("length() to size()");
+          continue;
+        }
         if (t.getKind() == TokenKind::Identifier)
         {
           std::string name(spelling(i));

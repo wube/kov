@@ -936,6 +936,13 @@ namespace
           initializeFrom(addr, t, static_cast<ParenExpr*>(init)->inner, at);
           return;
         }
+        if (init->ty && !isClass(types.stripRef(init->ty)) && isClass(t))
+        {
+          // A non-class value: through a converting constructor (`String s = "text"`).
+          Expr* one = init;
+          constructInto(addr, t, Span<Expr*>{&one, 1}, at);
+          return;
+        }
         Value src = rvalue(init);
         if (!isClass(src.ty))
           unsupported(at, "initialising a class from a non-class value");
@@ -2131,6 +2138,17 @@ namespace
       moduleDecls[currentModule] += info.vtableText;
     }
 
+    // A floating-point constant in IR: the exact bits, rounded through float for 32-bit values.
+    static std::string floatConstant(double value, uint8_t bits)
+    {
+      double exact = bits == 32 ? double(float(value)) : value;
+      uint64_t raw;
+      memcpy(&raw, &exact, sizeof raw);
+      char buf[32];
+      snprintf(buf, sizeof buf, "0x%016llX", (unsigned long long)raw);
+      return buf;
+    }
+
     // Line and column (1-based) of a token of the current file.
     std::pair<uint32_t, uint32_t> lineColumnOf(uint32_t token)
     {
@@ -2660,6 +2678,17 @@ namespace
         auto c = evalConst(v->init);
         if (c && (st->kind == TyKind::Int || st->kind == TyKind::Char || st->kind == TyKind::Enum))
           init = std::to_string(*c);
+        else if (c && st->kind == TyKind::Float)
+          init = floatConstant(double(*c), st->bits);
+        else if (st->kind == TyKind::Float && v->init->kind == NodeKind::LiteralExpr &&
+                 static_cast<LiteralExpr*>(v->init)->literalKind == TokenKind::Number)
+        {
+          std::string digits;
+          for (char ch : spelling(v->init->token))
+            if (ch != '\'' && ch != 'f' && ch != 'F' && ch != 'l' && ch != 'L')
+              digits += ch;
+          init = floatConstant(strtod(digits.c_str(), nullptr), st->bits);
+        }
         else if (c && st->kind == TyKind::Bool)
           init = *c ? "true" : "false";
         else if (v->init->kind == NodeKind::LiteralExpr && static_cast<LiteralExpr*>(v->init)->literalKind == TokenKind::String &&

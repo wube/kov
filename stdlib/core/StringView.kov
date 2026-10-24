@@ -66,6 +66,13 @@ struct StringView
   void remove_suffix(int count) { this->length -= count; }
   bool starts_with(StringView prefix) const { return this->startsWith(prefix); }
   bool ends_with(StringView suffix) const { return this->endsWith(suffix); }
+  int find_first_of(char c) const { return this->find(c); }
+  int find(StringView needle, int from) const
+  {
+    StringView rest = this->substr(from);
+    int i = rest.find(needle);
+    return i < 0 ? -1 : i + from;
+  }
   int find_first_of(const char* set) const
   {
     for (int i = 0; i < this->length; ++i)
