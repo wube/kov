@@ -2916,6 +2916,20 @@ namespace
           if (classTy && n->name.parts.size() == 1 && !thisArg.empty())
             if (int slot = slotOf(classTy, f, c); slot >= 0)
               indirect = loadSlot(thisArg, slot);
+          if (!classTy && (f->flags & DF_Static) && n->name.parts.size() > 1 && global.owningClass(f))
+          {
+            // `Box<T>::get()`: the instantiation comes from the qualifier.
+            QualifiedName qualifier = n->name;
+            qualifier.parts.count -= 1;
+            NamedType tmp{};
+            tmp.kind = NodeKind::NamedType;
+            tmp.token = n->token;
+            tmp.name = qualifier;
+            TemplateArgs none;
+            const Ty* q = global.typeOfAstIn(&tmp, currentFunction, currentArgs ? *currentArgs : none);
+            if (q && isClass(q) && !q->args.empty())
+              classTy = canonicalClass(q, c);
+          }
           return callFunction(f, calleeArgs(f, classTy, c, c), classTy, thisArg, sret, c->args, c, indirect);
         }
         if (!d || d->kind == NodeKind::ClassDecl || d->kind == NodeKind::EnumDecl || d->kind == NodeKind::UsingAliasDecl ||

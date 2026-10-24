@@ -752,7 +752,39 @@ struct GlobalScope::Impl
     return out;
   }
 
-  Lookup lookupQualified(const QualifiedName& name, Scope* context, const LocalStack* locals, int depth)
+  // Among the entries a class template's name resolved to, the full specialisation whose
+  // arguments are exactly `args`; null when there is none or an argument is still dependent.
+  Decl* matchSpecialization(const Lookup& l, const std::vector<const Ty*>& args, int depth)
+  {
+    if (!l.overloads || args.empty() || depth > 24)
+      return nullptr;
+    for (const Ty* a : args)
+      if (!a || !a->isKnown() || types.isDependent(a))
+        return nullptr;
+    for (const Entry& e : *l.overloads)
+    {
+      if (!e.decl || e.decl->kind != NodeKind::ClassDecl || !(e.decl->flags & DF_Specialization))
+        continue;
+      auto* c = static_cast<ClassDecl*>(e.decl);
+      if (!c->isDefinition || c->name.empty())
+        continue;
+      const NamePart& part = c->name.last();
+      if (part.templateArgs.size() != args.size())
+        continue;
+      TypeContext sctx{lexicalScopeOf(c), nullptr, nullptr, c->file ? c->file->tokens : nullptr, c->file ? c->file->text : std::string_view()};
+      bool same = true;
+      for (size_t i = 0; i < args.size() && same; ++i)
+      {
+        Node* a = part.templateArgs[i];
+        same = uint8_t(a->kind) <= uint8_t(NodeKind::PackType) && convertType(static_cast<Type*>(a), sctx, depth + 1) == args[i];
+      }
+      if (same)
+        return c;
+    }
+    return nullptr;
+  }
+
+  Lookup lookupQualified(const QualifiedName& name, Scope* context, const LocalStack* locals, int depth, const Subst* subst = nullptr)
   {
     Lookup out;
     if (name.empty() || depth > 24)
@@ -814,6 +846,19 @@ struct GlobalScope::Impl
       }
       if (last)
         return step;
+      if (part.hasTemplateArgs && step.decl && step.decl->kind == NodeKind::ClassDecl)
+      {
+        // `Limits<int>::max`: the specialisation for these arguments, when there is one.
+        std::vector<const Ty*> args;
+        TypeContext actx{context, locals, subst};
+        for (Node* a : part.templateArgs)
+          args.push_back(uint8_t(a->kind) <= uint8_t(NodeKind::PackType) ? convertType(static_cast<Type*>(a), actx, depth + 1) : types.unknown());
+        if (Decl* spec = matchSpecialization(step, args, depth))
+        {
+          step.decl = spec;
+          step.scope = spec->ownScope;
+        }
+      }
       if (!step.scope)
       {
         // A variable/function used as a qualifier, or an alias we could not follow.
@@ -1141,6 +1186,9 @@ struct GlobalScope::Impl
         else if (args.empty() && !params.empty())
           for (Decl* p : params)
             args.push_back(types.param(p));
+        if (!params.empty())
+          if (Decl* spec = matchSpecialization(l, args, depth))
+            return types.classType(spec, {}); // a full specialisation is its own class
         return types.classType(def, Span<const Ty*>{args.data(), uint32_t(args.size())});
       }
       case NodeKind::EnumDecl:
@@ -2126,7 +2174,7 @@ struct GlobalScope::Impl
     {
       if (t->name.empty())
         return;
-      Lookup l = impl.lookupQualified(t->name, scope, &locals, 0);
+      Lookup l = impl.lookupQualified(t->name, scope, &locals, 0, activeSubst);
       t->resolved = l.decl;
       if (l.found == Found::No)
       {
@@ -2214,7 +2262,7 @@ struct GlobalScope::Impl
         ++stats.namesGlobal;
         return types.boolType();
       }
-      Lookup l = impl.lookupQualified(e->name, scope, &locals, 0);
+      Lookup l = impl.lookupQualified(e->name, scope, &locals, 0, activeSubst);
       e->resolved = l.decl;
       for (const NamePart& part : e->name.parts)
         for (Node* arg : part.templateArgs)
@@ -2551,7 +2599,7 @@ struct GlobalScope::Impl
       if (callee->kind == NodeKind::NameExpr)
       {
         auto* n = static_cast<NameExpr*>(callee);
-        Lookup l = impl.lookupQualified(n->name, scope, &locals, 0);
+        Lookup l = impl.lookupQualified(n->name, scope, &locals, 0, activeSubst);
         n->resolved = l.decl;
         for (const NamePart& part : n->name.parts)
           for (Node* arg : part.templateArgs)

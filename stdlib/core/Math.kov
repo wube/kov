@@ -1,0 +1,10 @@
+// Kov standard library: the floating-point classification functions, which C's math.h only
+// provides as macros.
+
+bool isnan(double value) { return value != value; }
+bool isnan(float value) { return value != value; }
+bool isinf(double value) { return value == value && value != 0.0 && value * 2.0 == value; }
+bool isinf(float value) { return value == value && value != 0.0f && value * 2.0f == value; }
+bool isfinite(double value) { return !isnan(value) && !isinf(value); }
+bool isfinite(float value) { return !isnan(value) && !isinf(value); }
+bool signbit(double value) { return value < 0.0 || (value == 0.0 && 1.0 / value < 0.0); }

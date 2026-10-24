@@ -10,6 +10,7 @@
 #include <cctype>
 #include <cstring>
 #include <exception>
+#include <set>
 #include <cstdarg>
 #include <cstdlib>
 #include <chrono>
@@ -172,6 +173,28 @@ namespace
   std::string macroConstants(const std::string& defines)
   {
     std::string out = "\n// Object-like macros, as constants.\n";
+    // Names of object-like macros with a body: a body may refer to them (INFINITY uses _HUGE_ENUF).
+    std::set<std::string> candidates;
+    {
+      size_t p = 0;
+      while (p < defines.size())
+      {
+        size_t end = defines.find('\n', p);
+        if (end == std::string::npos)
+          end = defines.size();
+        std::string line = defines.substr(p, end - p);
+        p = end + 1;
+        if (line.rfind("#define ", 0) != 0)
+          continue;
+        size_t nameEnd = line.find_first_of(" (", 8);
+        if (nameEnd == std::string::npos || line[nameEnd] == '(' || nameEnd + 1 >= line.size())
+          continue;
+        candidates.insert(line.substr(8, nameEnd - 8));
+      }
+    }
+    static const std::set<std::string> typeWords = {"float", "double", "int", "long", "short", "char", "unsigned", "signed", "const",
+                                                    "sizeof", "size_t", "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t", "uint16_t",
+                                                    "uint32_t", "uint64_t", "intptr_t", "uintptr_t", "wchar_t", "bool", "true", "false"};
     size_t pos = 0;
     while (pos < defines.size())
     {
@@ -192,7 +215,7 @@ namespace
         body.pop_back();
       if (name.empty() || name.rfind("__", 0) == 0 || body.empty())
         continue; // __FILE__-style internals stay out; _A_SUBDIR-style constants come in
-      bool hasNumber = false, ok = true, call = false;
+      bool hasNumber = false, ok = true, call = false, namesKnown = true;
       int quotes = 0;
       for (size_t i = 0; i < body.size(); ++i)
       {
@@ -204,6 +227,16 @@ namespace
           hasNumber = hasNumber || !prevIdent; // a digit inside a name (_SAL1_1_) is not a number
         else if (!(isalnum((unsigned char)c) || strchr("_ .+-*/()<>|&~!^,'\\xX", c)))
           ok = false;
+        if ((isalpha((unsigned char)c) || c == '_') && !prevIdent && quotes % 2 == 0)
+        {
+          // An identifier: it must be a type word or another constant macro for the body to be a constant.
+          size_t j = i;
+          while (j < body.size() && (isalnum((unsigned char)body[j]) || body[j] == '_'))
+            ++j;
+          std::string word = body.substr(i, j - i);
+          if (!typeWords.count(word) && !candidates.count(word))
+            namesKnown = false;
+        }
         if (c == '(')
         {
           size_t j = i;
@@ -213,7 +246,7 @@ namespace
             call = true; // `name(`: a function-like macro or a call, not a constant; `)(` in casts is fine
         }
       }
-      if (!ok || call || (quotes != 0 && quotes != 2) || (!hasNumber && quotes == 0))
+      if (!ok || call || (quotes != 0 && quotes != 2) || !namesKnown || (!hasNumber && quotes == 0 && body.find('(') == std::string::npos))
         continue;
       out += "const auto " + name + " = " + body + ";\n";
     }
@@ -238,7 +271,7 @@ namespace
     if (headers.empty())
       return;
     auto importStart = std::chrono::steady_clock::now();
-    std::string wrapper = "#define WIN32_LEAN_AND_MEAN\n#define NOMINMAX\n";
+    std::string wrapper = "#define WIN32_LEAN_AND_MEAN\n#define NOMINMAX\n#define _USE_MATH_DEFINES\n";
     for (const std::string& h : headers)
       wrapper += "#include <" + h + ">\n";
     std::string includeArgs;
