@@ -227,8 +227,8 @@ namespace
         case TyKind::Char: case TyKind::Int: return "i" + std::to_string(t->bits);
         case TyKind::Float: return t->bits == 32 ? "float" : "double";
         case TyKind::Nullptr: case TyKind::Pointer: case TyKind::LRef: case TyKind::RRef: case TyKind::Function:
-        case TyKind::MemberPointer:
           return "ptr";
+        case TyKind::MemberPointer: return "i64"; // a data member's offset within its class
         case TyKind::Lambda: return t->decl ? closureFor(t, at).structName : "ptr";
         case TyKind::Array:
           return "[" + std::to_string(t->count) + " x " + llType(t->inner, at) + "]";
@@ -572,11 +572,30 @@ namespace
       return global.chooseOverload(candidates, argTypes, args, nullptr);
     }
 
-    static std::vector<const Ty*> argTypesOf(Span<Expr*> args)
+    std::vector<const Ty*> argTypesOf(Span<Expr*> args)
     {
       std::vector<const Ty*> out;
       for (Expr* a : args)
+      {
+        if (a && isPackExpansion(a))
+        {
+          // `args...`: one argument per element of the pack, under the current instantiation.
+          Decl* param = packIn(a);
+          Decl* tp = param ? templatePackOf(param) : nullptr;
+          const Ty* pack = nullptr;
+          if (tp && currentArgs)
+            for (auto& [d, t] : currentArgs->pairs)
+              if (d == tp)
+                pack = t;
+          if (pack && pack->kind == TyKind::Pack)
+          {
+            for (const Ty* element : pack->args)
+              out.push_back(element);
+            continue;
+          }
+        }
         out.push_back(a ? a->ty : nullptr);
+      }
       return out;
     }
 
@@ -610,7 +629,7 @@ namespace
       ClassDecl* c = classDef(t->decl, at);
       bool result = findDestructor(c) != nullptr;
       for (const Ty* ft : std::vector<const Ty*>(info.fieldTypes))
-        result = result || needsDestruction(ft, at);
+        result = result || (!ft->isReference() && needsDestruction(ft, at)); // a reference member owns nothing
       structFor(t, at).needsDestruction = result;
       return result;
     }
@@ -666,7 +685,7 @@ namespace
       for (size_t i = fieldDecls.size(); i-- > 0;)
       {
         const Ty* ft = fieldTypes[fieldIndex[fieldDecls[i]]];
-        if (needsDestruction(ft, at))
+        if (!ft->isReference() && needsDestruction(ft, at))
           destroy(gep(name, addr, fieldIndex[fieldDecls[i]]), ft, at);
       }
       for (size_t i = bases.size(); i-- > 0;)
@@ -707,6 +726,16 @@ namespace
             return &init;
         return nullptr;
       };
+      if (isClass(t) && t->decl)
+      {
+        // `Frame(x) : Frame(x, "") {}`: a delegating constructor builds the whole object.
+        const QualifiedName& own = classDef(t->decl, at)->name;
+        if (const FunctionDecl::CtorInit* self = own.empty() ? nullptr : initFor(own.last().symbol))
+        {
+          constructInto(addr, t, self->args, at);
+          return;
+        }
+      }
       for (auto& [baseDef, index] : info.bases)
       {
         const Ty* bt = info.fieldTypes[index];
@@ -735,6 +764,16 @@ namespace
         const Ty* ft = info.fieldTypes[info.fieldIndex[d]];
         std::string fieldAddr = gep(info.name, addr, info.fieldIndex[d]);
         const FunctionDecl::CtorInit* init = v->name.empty() ? nullptr : initFor(v->name.last().symbol);
+        if (const Ty* declared = global.typeOfDecl(v); ft->isReference() || (declared && declared->isReference()))
+        {
+          // A reference member: the field holds the address of what it refers to.
+          Expr* source = init && init->args.size() == 1 ? init->args[0] : init ? nullptr : v->init;
+          if (!source)
+            unsupported(at, "a reference member without an initializer");
+          std::string target = isClass(types.stripRef(source->ty)) ? rvalue(source).text : lvalue(source);
+          fn += "  store ptr " + target + ", ptr " + fieldAddr + "\n";
+          continue;
+        }
         if (init)
         {
           if (isClass(ft))
@@ -2142,6 +2181,15 @@ namespace
           }
           if (d->kind == NodeKind::EnumeratorDecl)
             return enumeratorValue(static_cast<EnumeratorDecl*>(d));
+          if (d->kind == NodeKind::TemplateParamDecl)
+          {
+            // A non-type template parameter: its value in the instantiation being emitted.
+            if (currentArgs)
+              for (auto& [p, t] : currentArgs->pairs)
+                if (p == d && t && t->kind == TyKind::Value)
+                  return t->value;
+            return std::nullopt;
+          }
           if (d->kind == NodeKind::VariableDecl)
           {
             auto* v = static_cast<VariableDecl*>(d);
@@ -2777,6 +2825,13 @@ namespace
           std::string addr;
           if (!fieldAddress(baseTy, d, object, addr, e))
             unsupported(e, "a member that is not a field of the object's class");
+          if (const Ty* ft = global.typeOfDecl(d); ft && ft->isReference())
+          {
+            // A reference member: the field holds the address of what it refers to.
+            std::string referenced = newTemp();
+            fn += "  " + referenced + " = load ptr, ptr " + addr + "\n";
+            return referenced;
+          }
           return addr;
         }
         case NodeKind::UnaryExpr:
@@ -2823,6 +2878,8 @@ namespace
         case NodeKind::BinaryExpr:
         {
           auto* b = static_cast<BinaryExpr*>(e);
+          if (!b->isKeyword && (P(b->op) == P::DotStar || P(b->op) == P::ArrowStar))
+            return memberPointerAddress(b);
           if (!b->isKeyword && isAssignment(P(b->op)))
           {
             Value v = rvalue(e);
@@ -3496,6 +3553,15 @@ namespace
               return {e->ty && e->ty->kind == TyKind::Bool ? std::string(*c ? "true" : "false") : std::to_string(*c), e->ty};
           if (d && d->kind == NodeKind::EnumeratorDecl)
             return {std::to_string(enumeratorValue(static_cast<EnumeratorDecl*>(d))), e->ty};
+          if (d && d->kind == NodeKind::TemplateParamDecl)
+          {
+            // A non-type template parameter is a constant of the instantiation.
+            std::optional<int64_t> v = evalConst(e);
+            const Ty* t = e->ty ? types.stripRef(e->ty) : nullptr;
+            if (!v || !t || !t->isKnown())
+              unsupported(e, "a template parameter whose value is not known here");
+            return {t->kind == TyKind::Bool ? std::string(*v ? "true" : "false") : std::to_string(*v), t};
+          }
           if (d && d->kind == NodeKind::FunctionDecl)
           {
             auto* f = static_cast<FunctionDecl*>(d);
@@ -3561,6 +3627,11 @@ namespace
           return {cStringConstant(text), e->ty};
         }
         case NodeKind::CastExpr:
+          if (e->ty && e->ty->kind == TyKind::Void)
+          {
+            rvalue(static_cast<CastExpr*>(e)->operand); // `(void)x`: evaluated, result dropped
+            return {"", types.voidType()};
+          }
           return convert(rvalue(static_cast<CastExpr*>(e)->operand), e->ty, e);
         case NodeKind::NamedCastExpr:
           return convert(rvalue(static_cast<NamedCastExpr*>(e)->operand), e->ty, e);
@@ -3644,11 +3715,24 @@ namespace
           if (!c->then)
             unsupported(e, "the ?: elvis operator");
           const Ty* t = types.stripRef(e->ty);
-          if (isClass(t))
-            unsupported(e, "a conditional expression of class type");
           Value cond = convert(rvalue(c->cond), types.boolType(), e);
           std::string tL = newLabel("cond.then"), eL = newLabel("cond.else"), jL = newLabel("cond.end");
           fn += "  br i1 " + cond.text + ", label %" + tL + ", label %" + eL + "\n";
+          if (isClass(t))
+          {
+            // Both branches build the one temporary (a copy of an lvalue, or the value itself).
+            std::string slot = newObjectSlot(t, e);
+            startBlock(tL);
+            initializeFrom(slot, t, c->then, e);
+            emitBranch(jL);
+            startBlock(eL);
+            initializeFrom(slot, t, c->else_, e);
+            emitBranch(jL);
+            startBlock(jL);
+            if (needsDestruction(t, e))
+              statementTemps.push_back({slot, t});
+            return {slot, t, true};
+          }
           startBlock(tL);
           Value a = t->kind == TyKind::Void ? rvalue(c->then) : convert(rvalue(c->then), t, e);
           std::string aEnd = currentBlock;
@@ -3741,6 +3825,22 @@ namespace
         unsupported(u, "this keyword operator");
       }
       P op = P(u->op);
+      if (op == P::Amp && u->ty && types.stripRef(u->ty)->kind == TyKind::MemberPointer)
+      {
+        // `&Style::field`: the field's offset within the class.
+        auto* n = static_cast<NameExpr*>(u->operand);
+        Decl* d = n->resolved;
+        const Ty* mp = types.stripRef(u->ty);
+        const Ty* cls = mp->args.empty() ? nullptr : mp->args[0];
+        if (!d || d->kind != NodeKind::VariableDecl || !cls || !isClass(cls))
+          unsupported(u, "a pointer to a member function");
+        std::string addr;
+        if (!fieldAddress(cls, d, "null", addr, u))
+          unsupported(u, "a pointer to a member that is not a field");
+        std::string r = newTemp();
+        fn += "  " + r + " = ptrtoint ptr " + addr + " to i64\n";
+        return {r, mp};
+      }
       if (op == P::Amp)
         return {lvalue(u->operand), u->ty};
       if (op == P::Star)
@@ -3768,7 +3868,18 @@ namespace
       }
       Value v = rvalue(u->operand);
       if (isClass(v.ty))
+      {
+        const Ty* in = nullptr;
+        if (op == P::Bang && !findMemberFunction(v.ty, "operator!", {}, v.ty, u, &in))
+        {
+          // No operator!: the class's conversion to bool, negated.
+          Value b = convert(v, types.boolType(), u);
+          std::string r = newTemp();
+          fn += "  " + r + " = xor i1 " + b.text + ", true\n";
+          return {r, types.boolType()};
+        }
         return callRvalue(operatorCall(v, operatorName(op), {}, u, true), u);
+      }
       switch (op)
       {
         case P::Bang:
@@ -3817,6 +3928,14 @@ namespace
       {
         rvalue(b->lhs);
         return rvalue(b->rhs);
+      }
+      if (op == P::DotStar || op == P::ArrowStar)
+      {
+        std::string addr = memberPointerAddress(b);
+        const Ty* mt = b->ty ? types.stripRef(b->ty) : nullptr;
+        if (!mt || !mt->isKnown())
+          unsupported(b, "a member pointer of unknown type");
+        return load(addr, mt, b);
       }
       const Ty* lt = types.stripRef(b->lhs->ty);
       const Ty* rt = b->rhs && b->rhs->ty ? types.stripRef(b->rhs->ty) : nullptr;
@@ -3876,6 +3995,26 @@ namespace
         default:
           return arithmetic(op, l, r, b);
       }
+    }
+
+    // The address `object.*member` / `pointer->*member` denotes: the object plus the offset.
+    std::string memberPointerAddress(BinaryExpr* b)
+    {
+      Value object = rvalue(b->lhs);
+      std::string base = object.text;
+      if (P(b->op) == P::ArrowStar)
+      {
+        if (object.ty->kind != TyKind::Pointer)
+          unsupported(b, "->* on something that is not a pointer");
+      }
+      else if (!isClass(object.ty))
+        unsupported(b, ".* on something that is not an object");
+      Value offset = rvalue(b->rhs);
+      if (!offset.ty || types.stripRef(offset.ty)->kind != TyKind::MemberPointer)
+        unsupported(b, "a member pointer of unknown type");
+      std::string r = newTemp();
+      fn += "  " + r + " = getelementptr inbounds i8, ptr " + base + ", i64 " + offset.text + "\n";
+      return r;
     }
 
     Value logical(bool isAnd, Expr* lhs, Expr* rhs, Node* at)

@@ -39,7 +39,8 @@ namespace
   const std::map<std::string, std::string> stdNames = {
     {"string", "String"}, {"string_view", "StringView"}, {"wstring", "WString"}, {"vector", "Vector"}, {"pair", "Pair"},
     {"optional", "Optional"}, {"map", "Map"}, {"set", "Set"}, {"unordered_map", "HashMap"}, {"unordered_set", "HashSet"},
-    {"deque", "Deque"}, {"list", "List"}, {"array", "Array"}, {"span", "Span"}, {"unique_ptr", "UniquePtr"},
+    {"deque", "Deque"}, {"list", "List"}, {"array", "Array"}, {"span", "Span"}, {"unique_ptr", "UniquePtr"}, {"queue", "Queue"},
+    {"replace", "replace"}, {"advance", "advance"}, {"make_optional", "makeOptional"}, {"clock", "::clock"}, {"abort", "::abort"},
     {"shared_ptr", "SharedPtr"}, {"weak_ptr", "WeakPtr"}, {"function", "Function"}, {"tuple", "Tuple"}, {"variant", "Variant"},
     {"initializer_list", "InitializerList"}, {"numeric_limits", "Limits"}, {"runtime_error", "RuntimeError"},
     {"logic_error", "LogicError"}, {"exception", "Exception"}, {"out_of_range", "OutOfRange"}, {"invalid_argument", "InvalidArgument"},
@@ -722,6 +723,12 @@ namespace
         {
           removeDefinition(d);
           counts.add("replaced by the override file");
+          continue;
+        }
+        if ((d->flags & DF_Friend) && (d->kind == NodeKind::ClassDecl || d->kind == NodeKind::FunctionDecl))
+        {
+          removeDecl(d); // no friends in Kov; `friend class X;` would read as a nested class
+          counts.add("friend declarations removed");
           continue;
         }
         switch (d->kind)

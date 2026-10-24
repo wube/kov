@@ -20,6 +20,7 @@ namespace
     h = mix(h, t.bits);
     h = mix(h, (t.isUnsigned << 0) | (t.isConst << 1) | (t.isVolatile << 2) | (t.variadic << 3));
     h = mix(h, t.count);
+    h = mix(h, uint64_t(t.value));
     h = mix(h, reinterpret_cast<uintptr_t>(t.inner));
     h = mix(h, reinterpret_cast<uintptr_t>(t.decl));
     h = mix(h, t.args.size());
@@ -31,7 +32,7 @@ namespace
   bool sameTy(const Ty& a, const Ty& b)
   {
     if (a.kind != b.kind || a.bits != b.bits || a.isUnsigned != b.isUnsigned || a.isConst != b.isConst ||
-        a.isVolatile != b.isVolatile || a.variadic != b.variadic || a.count != b.count || a.inner != b.inner ||
+        a.isVolatile != b.isVolatile || a.variadic != b.variadic || a.count != b.count || a.value != b.value || a.inner != b.inner ||
         a.decl != b.decl || a.args.size() != b.args.size())
       return false;
     for (size_t i = 0; i < a.args.size(); ++i)
@@ -210,6 +211,14 @@ const Ty* TypeTable::enumType(Decl* decl)
   return intern(t);
 }
 
+const Ty* TypeTable::valueType(const Ty* of, int64_t value)
+{
+  Ty t{TyKind::Value};
+  t.inner = of;
+  t.value = value;
+  return intern(t);
+}
+
 const Ty* TypeTable::param(Decl* decl)
 {
   Ty t{TyKind::Param};
@@ -226,11 +235,14 @@ const Ty* TypeTable::lambda(const Ty* result, Span<const Ty*> params, Decl* clos
   return intern(t);
 }
 
-const Ty* TypeTable::memberPointer(const Ty* member, Decl* cls)
+const Ty* TypeTable::memberPointer(const Ty* member, const Ty* cls)
 {
   Ty t{TyKind::MemberPointer};
   t.inner = member;
-  t.decl = cls;
+  t.decl = cls && cls->kind == TyKind::Class ? cls->decl : nullptr;
+  const Ty* args[1] = {cls};
+  if (cls)
+    t.args = Span<const Ty*>{args, 1};
   return intern(t);
 }
 
@@ -284,8 +296,10 @@ bool TypeTable::isDependent(const Ty* t) const
   switch (t->kind)
   {
     case TyKind::Param: case TyKind::Auto: return true;
-    case TyKind::Pointer: case TyKind::LRef: case TyKind::RRef: case TyKind::Array: case TyKind::MemberPointer:
+    case TyKind::Pointer: case TyKind::LRef: case TyKind::RRef: case TyKind::Array: case TyKind::Value:
       return isDependent(t->inner);
+    case TyKind::MemberPointer:
+      return isDependent(t->inner) || (!t->args.empty() && isDependent(t->args[0]));
     case TyKind::Function: case TyKind::Class: case TyKind::Lambda: case TyKind::Pack:
       if (isDependent(t->inner))
         return true;
@@ -366,7 +380,12 @@ std::string TypeTable::toString(const Ty* t, const SymbolTable* symbols) const
       break;
     case TyKind::Enum: s += declName(t->decl); break;
     case TyKind::Param: s += declName(t->decl); break;
-    case TyKind::MemberPointer: s += toString(t->inner, symbols) + " " + declName(t->decl) + "::*"; break;
+    case TyKind::Value:
+      s += t->inner && t->inner->kind == TyKind::Bool ? (t->value ? "true" : "false") : std::to_string(t->value);
+      break;
+    case TyKind::MemberPointer:
+      s += toString(t->inner, symbols) + " " + (t->args.empty() ? declName(t->decl) : toString(t->args[0], symbols)) + "::*";
+      break;
     case TyKind::Auto: s += "auto"; break;
     case TyKind::Pack:
       for (size_t i = 0; i < t->args.size(); ++i)

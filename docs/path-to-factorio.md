@@ -133,10 +133,42 @@ What it took, in the order it was found:
   family, explicit instantiation declarations go, `std::` names in `#else` branches the parser
   never tokenized are renamed by text.
 
-Still open before the next library (Agui, then the game): non-type template parameters
-(`Array<T, N>`, `std::array`), calls to function template specialisations, brace lists passed
-to `InitializerList` parameters, `thread_local`, destructors of globals at exit, wide string
+Still open from that round: calls to function template specialisations, brace lists passed to
+`InitializerList` parameters, `thread_local`, destructors of globals at exit, wide string
 literals (`L"..."`), and SDL as a linked library for the few CommonUtil functions that use it.
+
+## Towards Agui (2026-10-25, later)
+
+`libraries/Agui` (235 files, 132 Kov files after conversion) parses 100% clean and types 92.6%
+of its expressions; code generation started at 1,208 complaints and stands at 249 after one
+pass over the biggest categories (`compiler\build\tests\agui` is the scratch directory; the
+scouting command is the check step of convert.cmd pointed at the Agui output):
+
+- **Non-type template parameters** (`template<typename T, int N> struct Array`, `bool` defaults
+  as in CommonUtil's `UniquePointer`): a value argument is a type of a new kind (`Value`, the
+  constant and its type), so template argument lists, instantiation keys and substitution did
+  not change shape; `N` in the body is a constant of the instantiation; defaults for
+  parameters not written; `Array<char, bufferSize>` with a constant as the argument (the parser
+  reads a bare name as a type, the resolver evaluates it). Test: `valueparams.kov`.
+- **Alias templates** (`template<class T> using Ptr = UniquePointer<T>`), member typedefs
+  through instantiations (`Vector<int>::iterator`, also through an alias of the class),
+  out-of-line member definitions seeing their class scope for parameter types, reference
+  members (initialised with the address, never destroyed), friend declarations dropped by the
+  converter.
+- **Pointers to data members**: `&Style::field` is the field's offset (an `i64`), `.*`/`->*`
+  address it, `T C::*member` parameters deduce both the member and the class type: Agui's
+  Style properties (`getProperty(&Style::defaultGraphicalSet)`, 290 sites) compile.
+  Test: `memberptr.kov`. Pointers to member functions are not supported.
+- **Library**: `UniquePtr<T>` with `makeUnique` (what `std::unique_ptr` converts to; CommonUtil's
+  `UniquePointer` with a deleter exists beside it), `Queue<T>`, `Optional::emplace`, `at()`,
+  `insert` at a position (also of a range), `replace`, `advance`, `makeOptional`, iterator
+  typedefs; `!object` through the class's bool conversion, class-typed `?:`, `(void)x`,
+  delegating constructors.
+
+What is left in Agui, by count: ranges whose `begin()` returns an iterator object rather than a
+pointer (65), `std::function` parameters (63; 1,300 uses in the game: `Function<R(Args...)>`
+needs the compiler's help, since a library class cannot take a signature apart), reverse
+iterators (`rbegin`), ranges over brace lists, and single cases.
 
 ## The order that gets to a running game
 

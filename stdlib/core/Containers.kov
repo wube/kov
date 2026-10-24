@@ -105,3 +105,22 @@ struct Deque
     this->head = 0;
   }
 };
+
+// A first-in, first-out queue: push at the back, pop at the front (std::queue over a deque).
+template<typename T>
+struct Queue
+{
+  Deque<T> values;
+
+  int size() const { return this->values.size(); }
+  bool empty() const { return this->values.empty(); }
+  T& front() { return this->values.front(); }
+  T& back() { return this->values.back(); }
+  void push(const T& value) { this->values.push_back(value); }
+  void pop() { this->values.pop_front(); }
+  void clear()
+  {
+    while (!this->values.empty())
+      this->values.pop_front();
+  }
+};

@@ -231,6 +231,9 @@ struct Span
   T* items = nullptr;
   int length = 0;
 
+  using iterator = T*;
+  using value_type = T;
+
   Span() {}
   Span(T* items, int length) : items(items), length(length) {}
   implicit Span(Vector<T>& values) : items(values.items), length(values.length) {}
@@ -245,3 +248,16 @@ struct Span
   T& back() const { return this->items[this->length - 1]; }
   Span<T> subspan(int start, int count) const { return Span<T>(this->items + start, count); }
 };
+
+// Replaces every element equal to oldValue in [first, last) with newValue.
+template<typename T, typename V>
+void replace(T* first, T* last, const V& oldValue, const V& newValue)
+{
+  for (T* it = first; it != last; ++it)
+    if (*it == oldValue)
+      *it = newValue;
+}
+
+// Moves a pointer iterator n elements forward (backward for a negative n).
+template<typename T>
+void advance(T*& it, int n) { it += n; }

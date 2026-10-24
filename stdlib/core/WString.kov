@@ -6,6 +6,10 @@ struct WString
   int length = 0;
   int capacity = 0;
 
+  using iterator = wchar_t*;
+  using const_iterator = const wchar_t*;
+  using value_type = wchar_t;
+
   WString() {}
   implicit WString(const wchar_t* text)
   {

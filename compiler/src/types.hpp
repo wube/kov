@@ -27,6 +27,7 @@ enum class TyKind : uint8_t
   MemberPointer, // inner = member type, decl = owning class decl (may be null)
   Auto,    // Placeholder inside a declared type, replaced by deduction.
   Pack,    // args = the types a parameter pack was deduced to.
+  Value,   // A non-type template argument: inner = its type, value = the constant.
   Unknown, // Could not be determined; reason is tracked in the statistics, not in the type.
 };
 
@@ -39,6 +40,7 @@ struct Ty
   bool isVolatile = false;
   bool variadic = false;
   uint32_t count = 0;
+  int64_t value = 0; // Value kinds only.
   const Ty* inner = nullptr;
   Span<const Ty*> args;
   Decl* decl = nullptr;
@@ -74,8 +76,9 @@ public:
   const Ty* classType(Decl* decl, Span<const Ty*> args);
   const Ty* enumType(Decl* decl);
   const Ty* param(Decl* decl);
+  const Ty* valueType(const Ty* of, int64_t value); // a non-type template argument
   const Ty* lambda(const Ty* result, Span<const Ty*> params, Decl* closure = nullptr);
-  const Ty* memberPointer(const Ty* member, Decl* cls);
+  const Ty* memberPointer(const Ty* member, const Ty* cls); // args[0] = the class (may be a parameter), decl = its declaration
   const Ty* pack(Span<const Ty*> elements);
   // Same type with qualifiers added (references and functions ignore them).
   const Ty* qualified(const Ty* t, bool isConst, bool isVolatile);

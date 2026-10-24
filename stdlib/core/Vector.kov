@@ -7,6 +7,10 @@ struct Vector
   int length = 0;
   int capacity = 0;
 
+  using iterator = T*;
+  using const_iterator = const T*;
+  using value_type = T;
+
   Vector() {}
   // count default-constructed elements.
   explicit Vector(int count) { this->resize(count); }
@@ -74,6 +78,22 @@ struct Vector
       this->pop_back();
     while (this->length < newLength)
       this->push_back(T());
+  }
+  T& at(int index) { return this->items[index]; }
+  const T& at(int index) const { return this->items[index]; }
+  // Inserts before the element position points at (begin()/end() and what find functions return).
+  T* insert(T* position, const T& value)
+  {
+    int index = int(position - this->items);
+    this->insert(index, value);
+    return this->items + index;
+  }
+  T* insert(T* position, const T* first, const T* last)
+  {
+    int index = int(position - this->items);
+    for (const T* it = first; it != last; ++it)
+      this->insert(index++, *it);
+    return this->items + index;
   }
   void insert(int index, const T& value)
   {

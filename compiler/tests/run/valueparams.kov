@@ -1,0 +1,52 @@
+// Non-type template parameters: integer and bool arguments, defaults, use in array bounds,
+// expressions and nested names; instantiations with different values are different types.
+extern "C" int printf(const char* format, ...);
+
+template<typename T, int N>
+struct Array
+{
+  T items[N];
+
+  using iterator = T*;
+
+  int size() const { return N; }
+  T* data() { return this->items; }
+  T& operator[](int i) { return this->items[i]; }
+  T* begin() { return this->items; }
+  T* end() { return this->items + N; }
+  int bytes() const { return (int)sizeof(this->items); }
+};
+
+template<typename T, bool Checked = true, int Scale = 2>
+struct Scaler
+{
+  T apply(T value) const
+  {
+    if (Checked && value < 0)
+      return 0;
+    return value * Scale;
+  }
+};
+
+template<int N>
+int twice() { return N * 2; }
+
+constexpr int bufferSize = 8;
+
+int main()
+{
+  Array<int, 4> a;
+  for (int i = 0; i < a.size(); ++i)
+    a[i] = i * i;
+  int total = 0;
+  for (int v : a)
+    total += v;
+  Array<char, bufferSize> buffer;
+  Array<int, 4>::iterator it = a.begin();
+  printf("%d %d %d %d %d\n", a.size(), total, a.bytes(), buffer.size(), (int)(a.end() - it));
+  Scaler<int> checked;
+  Scaler<int, false> unchecked;
+  Scaler<int, true, 10> tens;
+  printf("%d %d %d %d\n", checked.apply(-3), unchecked.apply(-3), tens.apply(4), twice<21>());
+  return 0;
+}

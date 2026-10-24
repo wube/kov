@@ -776,7 +776,8 @@ struct GlobalScope::Impl
       for (size_t i = 0; i < args.size() && same; ++i)
       {
         Node* a = part.templateArgs[i];
-        same = uint8_t(a->kind) <= uint8_t(NodeKind::PackType) && convertType(static_cast<Type*>(a), sctx, depth + 1) == args[i];
+        Decl* param = l.decl && i < l.decl->templateParams.size() ? l.decl->templateParams[i] : nullptr;
+        same = templateArgument(a, param, sctx, depth) == args[i];
       }
       if (same)
         return c;
@@ -1062,15 +1063,80 @@ struct GlobalScope::Impl
   }
 
   // Minimal constant evaluation for array bounds: literals and arithmetic on them.
+  // The value of a declaration used as a constant: a const/constexpr variable with an
+  // initializer, an enumerator, or a non-type template parameter under the substitution.
+  std::optional<int64_t> constOfDecl(Decl* d, const TypeContext& ctx, int depth)
+  {
+    if (!d || depth > 16)
+      return std::nullopt;
+    if (d->kind == NodeKind::TemplateParamDecl)
+    {
+      if (ctx.subst)
+        if (const Ty* t = ctx.subst->find(d); t && t->kind == TyKind::Value)
+          return t->value;
+      return std::nullopt;
+    }
+    if (d->kind == NodeKind::VariableDecl)
+    {
+      auto* v = static_cast<VariableDecl*>(d);
+      if (!v->init)
+        return std::nullopt;
+      TypeContext vctx{lexicalScopeOf(v), nullptr, nullptr, v->file ? v->file->tokens : nullptr, v->file ? v->file->text : std::string_view()};
+      const Ty* t = convertType(v->type, vctx, depth + 1);
+      if (!(v->flags & DF_Constexpr) && !(t && t->isConst))
+        return std::nullopt;
+      return constEval(v->init, vctx, depth + 1);
+    }
+    if (d->kind == NodeKind::EnumeratorDecl)
+    {
+      // Enumerators count up from zero, or from the last written value.
+      auto* e = static_cast<EnumDecl*>(d->parent);
+      if (!e || e->kind != NodeKind::EnumDecl)
+        return std::nullopt;
+      TypeContext ectx{lexicalScopeOf(e), nullptr, nullptr, e->file ? e->file->tokens : nullptr, e->file ? e->file->text : std::string_view()};
+      int64_t next = 0;
+      for (Decl* m : e->enumerators)
+      {
+        if (m->kind != NodeKind::EnumeratorDecl)
+          continue;
+        auto* cur = static_cast<EnumeratorDecl*>(m);
+        if (cur->value)
+        {
+          std::optional<int64_t> v = constEval(cur->value, ectx, depth + 1);
+          if (!v)
+            return std::nullopt;
+          next = *v;
+        }
+        if (cur == d)
+          return next;
+        ++next;
+      }
+    }
+    return std::nullopt;
+  }
+
   std::optional<int64_t> constEval(Expr* e, const TypeContext& ctx, int depth = 0)
   {
     if (!e || depth > 16)
       return std::nullopt;
     switch (e->kind)
     {
+      case NodeKind::NameExpr:
+      {
+        auto* n = static_cast<NameExpr*>(e);
+        Lookup l = lookupQualified(n->name, ctx.scope, ctx.locals, depth + 1, ctx.subst);
+        return constOfDecl(l.decl, ctx, depth);
+      }
+      case NodeKind::MemberExpr:
+      {
+        // `Enum::Value` is parsed as a name; `object.member` is never constant.
+        return std::nullopt;
+      }
       case NodeKind::LiteralExpr:
       {
         auto* l = static_cast<LiteralExpr*>(e);
+        if (l->literalKind == TokenKind::Keyword)
+          return l->keyword == Kw::true_ ? 1 : l->keyword == Kw::false_ ? 0 : std::optional<int64_t>();
         if (l->literalKind != TokenKind::Number || !ctx.tokens)
           return std::nullopt;
         const Token& t = (*ctx.tokens)[std::min<size_t>(l->token, ctx.tokens->size() - 1)];
@@ -1158,6 +1224,56 @@ struct GlobalScope::Impl
     return s;
   }
 
+  // For `Vector<int>::iterator`: the substitution of the instantiation the qualifier names
+  // (its innermost part with template arguments), empty when there is none.
+  Subst qualifierSubst(const QualifiedName& name, const TypeContext& ctx, int depth)
+  {
+    Subst s;
+    if (name.parts.size() < 2 || depth > 20)
+      return s;
+    // The qualifier as a type: `Vector<int>::`, or `VT::` with `using VT = Vector<int>`.
+    QualifiedName prefix = name;
+    prefix.parts.count -= 1;
+    Lookup l = lookupQualified(prefix, ctx.scope, ctx.locals, depth + 1, ctx.subst);
+    if (!l.decl || (l.decl->kind != NodeKind::ClassDecl && l.decl->kind != NodeKind::UsingAliasDecl))
+      return s;
+    const Ty* qualifier = typeOfTypeDecl(l.decl, l, prefix.last(), ctx, depth + 1);
+    if (!qualifier || qualifier->kind != TyKind::Class || qualifier->args.empty())
+      return s;
+    return substFor(qualifier);
+  }
+
+  // A written template argument: a type, or a constant expression for a non-type parameter
+  // (a Value type of the parameter's declared type), or unknown.
+  const Ty* templateArgument(Node* arg, Decl* param, const TypeContext& ctx, int depth)
+  {
+    if (!arg)
+      return types.unknown();
+    std::optional<int64_t> v;
+    if (arg->kind == NodeKind::NamedType)
+    {
+      // `Array<char, bufferSize>`: a bare name is a type to the parser; it may be a constant.
+      Lookup l = lookupQualified(static_cast<NamedType*>(arg)->name, ctx.scope, ctx.locals, depth + 1, ctx.subst);
+      bool constant = l.decl && ((l.decl->kind == NodeKind::VariableDecl && !(l.decl->flags & DF_Typedef)) || l.decl->kind == NodeKind::EnumeratorDecl ||
+                                 (l.decl->kind == NodeKind::TemplateParamDecl && !static_cast<TemplateParamDecl*>(l.decl)->isType));
+      if (constant)
+        v = constOfDecl(l.decl, ctx, depth);
+      else
+        return convertType(static_cast<Type*>(arg), ctx, depth + 1);
+    }
+    else if (uint8_t(arg->kind) <= uint8_t(NodeKind::PackType))
+      return convertType(static_cast<Type*>(arg), ctx, depth + 1);
+    else
+      v = constEval(static_cast<Expr*>(arg), ctx, depth + 1);
+    if (!v)
+      return types.unknown();
+    const Ty* of = types.intType();
+    if (param && param->kind == NodeKind::TemplateParamDecl)
+      if (auto* p = static_cast<TemplateParamDecl*>(param); !p->isType && p->valueType)
+        of = convertType(p->valueType, TypeContext{lexicalScopeOf(param), nullptr, nullptr}, depth + 1);
+    return types.valueType(of, *v);
+  }
+
   // The canonical type a resolved name denotes when used as a type.
   const Ty* typeOfTypeDecl(Decl* d, const Lookup& l, const NamePart& lastPart, const TypeContext& ctx, int depth)
   {
@@ -1170,12 +1286,21 @@ struct GlobalScope::Impl
         std::vector<const Ty*> args;
         Span<Decl*> params = def->templateParams;
         for (size_t i = 0; i < lastPart.templateArgs.size(); ++i)
+          args.push_back(templateArgument(lastPart.templateArgs[i], i < params.size() ? params[i] : nullptr, ctx, depth));
+        if (!args.empty())
         {
-          Node* arg = lastPart.templateArgs[i];
-          if (uint8_t(arg->kind) <= uint8_t(NodeKind::PackType))
-            args.push_back(convertType(static_cast<Type*>(arg), ctx, depth + 1));
-          else
-            args.push_back(types.unknown()); // Non-type arguments are not modelled.
+          // Parameters not written take their defaults, which may use the earlier arguments.
+          for (size_t i = args.size(); i < params.size(); ++i)
+          {
+            auto* p = static_cast<TemplateParamDecl*>(params[i]);
+            if (!p->defaultArg)
+              break;
+            Subst s;
+            for (size_t k = 0; k < i; ++k)
+              s.pairs.push_back({params[k], args[k]});
+            TypeContext dctx{lexicalScopeOf(def), nullptr, &s, def->file ? def->file->tokens : nullptr, def->file ? def->file->text : std::string_view()};
+            args.push_back(templateArgument(p->defaultArg, p, dctx, depth));
+          }
         }
         if (args.empty() && !params.empty() && ctx.subst)
         {
@@ -1205,12 +1330,36 @@ struct GlobalScope::Impl
       {
         auto* u = static_cast<UsingAliasDecl*>(d);
         if (!u->templateParams.empty())
-          return types.unknown(); // Alias templates: not modelled yet.
-        return declaredTypeOf(d, nullptr, depth + 1);
+        {
+          // An alias template: its type with the written arguments (and defaults) substituted.
+          Span<Decl*> params = u->templateParams;
+          Subst s;
+          std::vector<const Ty*> args;
+          for (size_t i = 0; i < lastPart.templateArgs.size() && i < params.size(); ++i)
+          {
+            args.push_back(templateArgument(lastPart.templateArgs[i], params[i], ctx, depth));
+            s.pairs.push_back({params[i], args.back()});
+          }
+          for (size_t i = args.size(); i < params.size(); ++i)
+          {
+            auto* p = static_cast<TemplateParamDecl*>(params[i]);
+            if (!p->defaultArg)
+              break;
+            TypeContext dctx{lexicalScopeOf(u), nullptr, &s, u->file ? u->file->tokens : nullptr, u->file ? u->file->text : std::string_view()};
+            args.push_back(templateArgument(p->defaultArg, p, dctx, depth));
+            s.pairs.push_back({params[i], args.back()});
+          }
+          if (ctx.subst)
+            for (const Subst::Pair& p : ctx.subst->pairs)
+              s.pairs.push_back(p);
+          TypeContext actx{lexicalScopeOf(u), nullptr, &s, u->file ? u->file->tokens : nullptr, u->file ? u->file->text : std::string_view()};
+          return convertType(u->type, actx, depth + 1);
+        }
+        return declaredTypeOf(d, ctx.subst, depth + 1); // under the instantiation's arguments, if any
       }
       case NodeKind::VariableDecl:
         if (d->flags & DF_Typedef)
-          return declaredTypeOf(d, nullptr, depth + 1);
+          return declaredTypeOf(d, ctx.subst, depth + 1);
         return types.unknown();
       case NodeKind::UsingNameDecl:
       {
@@ -1300,6 +1449,20 @@ struct GlobalScope::Impl
         }
         if (!l.decl)
           return types.unknown();
+        if (n->name.parts.size() > 1 &&
+            (l.decl->kind == NodeKind::UsingAliasDecl || (l.decl->kind == NodeKind::VariableDecl && (l.decl->flags & DF_Typedef))))
+        {
+          // `Vector<int>::iterator`: the alias as the instantiation named by the qualifier has it.
+          Subst qs = qualifierSubst(n->name, ctx, depth);
+          if (!qs.empty())
+          {
+            if (ctx.subst)
+              for (const Subst::Pair& p : ctx.subst->pairs)
+                qs.pairs.push_back(p);
+            TypeContext c2{ctx.scope, ctx.locals, &qs, ctx.tokens, ctx.text};
+            return typeOfTypeDecl(l.decl, l, n->name.last(), c2, depth);
+          }
+        }
         return typeOfTypeDecl(l.decl, l, n->name.last(), ctx, depth);
       }
       case NodeKind::PointerType: return types.pointer(convertType(static_cast<PointerType*>(t)->pointee, ctx, depth + 1));
@@ -1334,7 +1497,7 @@ struct GlobalScope::Impl
       {
         auto* m = static_cast<MemberPointerType*>(t);
         const Ty* cls = convertType(m->classType, ctx, depth + 1);
-        return types.memberPointer(convertType(m->pointee, ctx, depth + 1), cls->kind == TyKind::Class ? cls->decl : nullptr);
+        return types.memberPointer(convertType(m->pointee, ctx, depth + 1), cls);
       }
       case NodeKind::PackType: return convertType(static_cast<PackType*>(t)->pattern, ctx, depth + 1);
       default: return types.unknown();
@@ -1351,6 +1514,25 @@ struct GlobalScope::Impl
   void declContextFor(Decl* d, DeclContext& out)
   {
     out.scope = lexicalScopeOf(d);
+    for (Decl* p = d; p; p = p->parent)
+      if (p->kind == NodeKind::FunctionDecl)
+      {
+        // `int Box::f(const Terminal t) const` outside its class: the class scope, as C++ has it,
+        // for the function and everything declared inside it.
+        auto* f = static_cast<FunctionDecl*>(p);
+        if (f->name.parts.size() > 1)
+        {
+          QualifiedName qualifier = f->name;
+          qualifier.parts.count -= 1;
+          LocalStack params;
+          for (Decl* tp : f->templateParams)
+            params.push(static_cast<TemplateParamDecl*>(tp)->name, tp);
+          Lookup l = lookupQualified(qualifier, lexicalScopeOf(f), &params, 0);
+          if (l.scope && l.scope->kind == ScopeKind::Class)
+            out.scope = l.scope;
+        }
+        break;
+      }
     std::vector<Decl*> chain;
     for (Decl* p = d; p; p = p->parent)
       chain.push_back(p);
@@ -1441,7 +1623,7 @@ struct GlobalScope::Impl
         auto* p = static_cast<TemplateParamDecl*>(d);
         if (subst)
           if (const Ty* t = subst->find(d))
-            return p->isType ? t : t;
+            return p->isType || t->kind != TyKind::Value ? t : t->inner; // a value parameter has its type
         if (p->isType)
           return types.param(d);
         return p->valueType ? convertType(p->valueType, ctx, depth + 1) : types.intType();
@@ -1559,6 +1741,14 @@ struct GlobalScope::Impl
         if (a->kind == TyKind::Array || a->kind == TyKind::Pointer)
           deduce(pattern->inner, a->inner, out, depth + 1);
         break;
+      case TyKind::MemberPointer:
+        if (a->kind == TyKind::MemberPointer)
+        {
+          deduce(pattern->inner, a->inner, out, depth + 1);
+          if (!pattern->args.empty() && !a->args.empty())
+            deduce(pattern->args[0], a->args[0], out, depth + 1);
+        }
+        break;
       case TyKind::Class:
         if (a->kind == TyKind::Class && a->decl == pattern->decl)
           for (size_t i = 0; i < pattern->args.size() && i < a->args.size(); ++i)
@@ -1651,6 +1841,8 @@ struct GlobalScope::Impl
       case TyKind::LRef: return types.lref(substitute(t->inner, s, depth + 1));
       case TyKind::RRef: return types.rref(substitute(t->inner, s, depth + 1));
       case TyKind::Array: return types.array(substitute(t->inner, s, depth + 1), t->count);
+      case TyKind::MemberPointer:
+        return types.memberPointer(substitute(t->inner, s, depth + 1), t->args.empty() ? nullptr : substitute(t->args[0], s, depth + 1));
       case TyKind::Function:
       case TyKind::Class:
       case TyKind::Lambda:
@@ -1769,6 +1961,12 @@ struct GlobalScope::Impl
       case TyKind::Enum:
         if (a->kind == TyKind::Enum && a->decl == p->decl)
           return 0;
+        break;
+      case TyKind::MemberPointer:
+        if (a->kind == TyKind::MemberPointer && types.unqualified(a->inner) == types.unqualified(p->inner) && a->decl == p->decl)
+          return 0;
+        if (a->kind == TyKind::Nullptr)
+          return 3;
         break;
       case TyKind::Pointer:
         if (a->kind == TyKind::Nullptr)
@@ -2563,11 +2761,7 @@ struct GlobalScope::Impl
           const Ty* fnTy = impl.declaredTypeOf(f, classSubst, 0);
           if (namePart)
             for (size_t i = 0; i < namePart->templateArgs.size() && i < f->templateParams.size(); ++i)
-            {
-              Node* arg = namePart->templateArgs[i];
-              if (uint8_t(arg->kind) <= uint8_t(NodeKind::PackType))
-                s.pairs.push_back({f->templateParams[i], typeOf(static_cast<Type*>(arg))});
-            }
+              s.pairs.push_back({f->templateParams[i], impl.templateArgument(namePart->templateArgs[i], f->templateParams[i], ctx(), 0)});
           impl.deduceCall(f, fnTy, argTypesOf(args), s);
           if (const Ty* r = instantiateFunction(f, s, true, classSubst))
             return r;
@@ -2585,11 +2779,7 @@ struct GlobalScope::Impl
         // Explicit template arguments first, then deduction from the arguments.
         if (namePart)
           for (size_t i = 0; i < namePart->templateArgs.size() && i < f->templateParams.size(); ++i)
-          {
-            Node* arg = namePart->templateArgs[i];
-            if (uint8_t(arg->kind) <= uint8_t(NodeKind::PackType))
-              subst.pairs.push_back({f->templateParams[i], typeOf(static_cast<Type*>(arg))});
-          }
+            subst.pairs.push_back({f->templateParams[i], impl.templateArgument(namePart->templateArgs[i], f->templateParams[i], ctx(), 0)});
         impl.deduceCall(f, fnTy, argTypesOf(args), subst);
         if (call)
         {
@@ -2890,6 +3080,8 @@ struct GlobalScope::Impl
       const Ty* rs = types.stripRef(r);
       if (!ls || !rs)
         return types.unknown();
+      if (op == P::DotStar || op == P::ArrowStar)
+        return rs->kind == TyKind::MemberPointer ? types.lref(rs->inner) : types.unknown();
       if (ls->kind == TyKind::Class || rs->kind == TyKind::Class)
       {
         if (!ls->isKnown() || !rs->isKnown())
@@ -2944,7 +3136,7 @@ struct GlobalScope::Impl
         case P::Star: case P::Slash: case P::Percent: case P::Amp: case P::Pipe: case P::Caret:
           return arithmetic(l, r);
         case P::DotStar: case P::ArrowStar:
-          return rs->kind == TyKind::MemberPointer ? rs->inner : types.unknown();
+          return rs->kind == TyKind::MemberPointer ? types.lref(rs->inner) : types.unknown();
         default:
           return unknown(Why::Unsupported);
       }
@@ -2961,6 +3153,15 @@ struct GlobalScope::Impl
         return t;
       if (!s || !s->isKnown())
         return op == P::Bang ? types.boolType() : types.unknown();
+      if (op == P::Amp && u->operand->kind == NodeKind::NameExpr)
+      {
+        // `&Style::field`: a pointer to a member of the class, not to the field of some object.
+        auto* n = static_cast<NameExpr*>(u->operand);
+        Decl* d = n->resolved;
+        if (n->name.parts.size() > 1 && d && (d->kind == NodeKind::VariableDecl || d->kind == NodeKind::FunctionDecl) &&
+            !(d->flags & DF_Static) && d->parent && d->parent->kind == NodeKind::ClassDecl)
+          return types.memberPointer(s, impl.selfType(d->parent));
+      }
       if (s->kind == TyKind::Param)
         return op == P::Bang ? types.boolType() : op == P::Amp ? types.pointer(s) : s;
       if (s->kind == TyKind::Class)

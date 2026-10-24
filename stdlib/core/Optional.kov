@@ -43,6 +43,14 @@ struct Optional
       return this->stored;
     return fallback;
   }
+  // Builds the value in place from the arguments (std::optional's emplace).
+  template<typename... Args>
+  T& emplace(Args&&... args)
+  {
+    this->stored = T(forward<Args>(args)...);
+    this->present = true;
+    return this->stored;
+  }
   void set(const T& v)
   {
     this->stored = v;
@@ -50,3 +58,6 @@ struct Optional
   }
   void reset() { this->present = false; }
 };
+
+template<typename T>
+Optional<T> makeOptional(const T& value) { return Optional<T>(value); }

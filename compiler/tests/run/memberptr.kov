@@ -1,0 +1,39 @@
+// Pointers to data members: taken with &Class::field, applied with .* and ->*, deduced through
+// template parameters (the shape Agui's Style properties use), stored and compared.
+extern "C" int printf(const char* format, ...);
+
+struct Style
+{
+  int padding = 1;
+  int margin = 2;
+  UniquePtr<String> title;
+  double scale = 1.5;
+
+  template<typename StyleType, typename PropertyType>
+  const PropertyType* getProperty(UniquePtr<PropertyType> StyleType::*property) const
+  {
+    return (static_cast<const StyleType*>(this)->*property).get();
+  }
+};
+
+template<typename T, typename C>
+void bump(C& object, T C::*member, T by)
+{
+  object.*member += by;
+}
+
+int main()
+{
+  Style style;
+  auto member = &Style::margin;
+  style.*member = 20;
+  Style* p = &style;
+  p->*member += 2;
+  bump(style, &Style::padding, 10);
+  bump(style, &Style::scale, 0.25);
+  printf("%d %d %.2f\n", style.padding, style.margin, style.scale);
+  style.title.reset(new String("hello"));
+  const String* title = style.getProperty(&Style::title);
+  printf("%s %d\n", title->c_str(), member == &Style::margin ? 1 : 0);
+  return 0;
+}

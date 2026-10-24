@@ -1,0 +1,62 @@
+// Kov standard library: UniquePtr<T>, sole ownership of a heap object: deleted when the pointer
+// goes away or is reset, moved but never copied. The shape of std::unique_ptr, without deleters.
+template<typename T>
+struct UniquePtr
+{
+  T* pointer = nullptr;
+
+  UniquePtr() {}
+  explicit UniquePtr(T* pointer) : pointer(pointer) {}
+  UniquePtr(const UniquePtr<T>& other) = delete;
+  UniquePtr(UniquePtr<T>&& other) : pointer(other.pointer) { other.pointer = nullptr; }
+  ~UniquePtr()
+  {
+    if (this->pointer)
+      delete this->pointer;
+  }
+
+  UniquePtr<T>& operator=(const UniquePtr<T>& other) = delete;
+  UniquePtr<T>& operator=(UniquePtr<T>&& other)
+  {
+    if (this != &other)
+    {
+      this->reset(other.pointer);
+      other.pointer = nullptr;
+    }
+    return *this;
+  }
+
+  T* get() const { return this->pointer; }
+  T& operator*() const { return *this->pointer; }
+  T* operator->() const { return this->pointer; }
+  explicit operator bool() const { return this->pointer != nullptr; }
+  bool operator!() const { return this->pointer == nullptr; }
+  bool operator==(const UniquePtr<T>& other) const { return this->pointer == other.pointer; }
+  bool operator!=(const UniquePtr<T>& other) const { return this->pointer != other.pointer; }
+
+  // Deletes the owned object (if any) and owns newPointer instead.
+  void reset(T* newPointer)
+  {
+    T* old = this->pointer;
+    this->pointer = newPointer;
+    if (old)
+      delete old;
+  }
+  void reset() { this->reset(nullptr); }
+  // Gives the object up without deleting it.
+  T* release()
+  {
+    T* result = this->pointer;
+    this->pointer = nullptr;
+    return result;
+  }
+  void swap(UniquePtr<T>& other)
+  {
+    T* tmp = this->pointer;
+    this->pointer = other.pointer;
+    other.pointer = tmp;
+  }
+};
+
+template<typename T, typename... Args>
+UniquePtr<T> makeUnique(Args&&... args) { return UniquePtr<T>(new T(forward<Args>(args)...)); }

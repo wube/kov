@@ -5,6 +5,10 @@ struct StringView
   const char* chars = nullptr;
   int length = 0;
 
+  using iterator = const char*;
+  using const_iterator = const char*;
+  using value_type = char;
+
   static const int npos = -1;
 
   StringView() {}

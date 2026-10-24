@@ -7,6 +7,10 @@ struct String
   int length = 0;
   int capacity = 0;
 
+  using iterator = char*;
+  using const_iterator = const char*;
+  using value_type = char;
+
   String() {}
   implicit String(const char* text) { this->append(text); }
   implicit String(StringView text) { this->append(text.chars, text.length); }
@@ -89,6 +93,13 @@ struct String
     this->length += count;
   }
   void insert(int index, const char* text) { this->insert(index, text, (int)strlen(text)); }
+  // Inserts [first, last) before the character position points at.
+  char* insert(char* position, const char* first, const char* last)
+  {
+    int index = int(position - this->chars);
+    this->insert(index, first, int(last - first));
+    return this->chars + index;
+  }
   void insert(int index, const String& text) { this->insert(index, text.chars, text.length); }
   // Replaces count bytes at index with text.
   void replace(int index, int count, const char* text)
