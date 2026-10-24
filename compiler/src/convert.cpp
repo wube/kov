@@ -30,7 +30,7 @@ namespace
   const std::map<std::string, std::string> knownMacros = {
     {"FORMAT_ATTR", ""}, {"TAG_FORMAT_ATTR", ""}, {"VCALL", ""}, {"NO_INLINE", "[[noinline]]"}, {"ALWAYS_INLINE", "[[forceinline]]"},
     {"DEV_TOOL_VARIABLE", ""}, {"BEGIN_SUPPRESS_CONVERSIONS", ""}, {"END_SUPPRESS_CONVERSIONS", ""}, {"BEGIN_FORCE_OPTIMIZE", ""},
-    {"END_FORCE_OPTIMIZE", ""}, {"SUPPRESS_UBSAN", ""}, {"PADDING_WARNING", ""}};
+    {"END_FORCE_OPTIMIZE", ""}, {"SUPPRESS_UBSAN", ""}, {"PADDING_WARNING", ""}, {"errno", "(*_errno())"}};
   const std::map<std::string, std::string> knownFunctionMacros = {{"FORMAT_STRING", "$1"}, {"WHEN_ASSERT", "$1"}, {"FOR_DEVELOPER", "$1"}};
 
   // std:: names and their Kov library spelling. Names not here keep their name and are counted.
@@ -80,6 +80,7 @@ namespace
     const SymbolTable& symbols;
     std::vector<Edit> edits;
     Counts counts;
+    bool importedCommon = false;    // stdlib.h and string.h added next to the first C import
     std::vector<std::string> todos; // "line: text"
     std::string_view text;
     const std::vector<Token>& toks;
@@ -466,9 +467,26 @@ namespace
           auto cxx = cxxToC.find(base);
           if (cxx != cxxToC.end())
             base = cxx->second;
-          if (cHeaders.count(base))
+          // C libraries the game uses, by their include path prefix.
+          static const char* cLibraries[] = {"SDL3/", "SDL2/", "SDL", "lua", "zlib", "zconf", "curl/", "png", "jpeg", "zstd", "opus", "ogg",
+                                             "vorbis", "minizip", "stb_image", "fontstash"};
+          bool cLibrary = false;
+          for (const char* prefix : cLibraries)
+            if (header.rfind(prefix, 0) == 0)
+              cLibrary = true;
+          if (cHeaders.count(base) || cLibrary)
           {
-            replace(offset, length, "extern \"C\" import \"" + base + "\";");
+            std::string imports = "extern \"C\" import \"" + (cLibrary ? header : base) + "\";";
+            if (!importedCommon)
+            {
+              // The C++ standard headers brought these in transitively; converted code expects them.
+              importedCommon = true;
+              if (base != "stdlib.h")
+                imports += "\nextern \"C\" import \"stdlib.h\";";
+              if (base != "string.h")
+                imports += "\nextern \"C\" import \"string.h\";";
+            }
+            replace(offset, length, imports);
             counts.add("includes to imports");
             continue;
           }

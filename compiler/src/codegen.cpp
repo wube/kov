@@ -2691,6 +2691,8 @@ namespace
         }
         else if (c && st->kind == TyKind::Bool)
           init = *c ? "true" : "false";
+        else if (st->kind == TyKind::Pointer && v->init->kind == NodeKind::LiteralExpr && static_cast<LiteralExpr*>(v->init)->keyword == Kw::nullptr_)
+          init = "null";
         else if (v->init->kind == NodeKind::LiteralExpr && static_cast<LiteralExpr*>(v->init)->literalKind == TokenKind::String &&
                  st->kind == TyKind::Pointer)
           init = stringConstant(static_cast<LiteralExpr*>(v->init));
@@ -2962,7 +2964,7 @@ namespace
           return callFunction(f, calleeArgs(f, classTy, c, c), classTy, thisArg, sret, c->args, c, indirect);
         }
         if (!d || d->kind == NodeKind::ClassDecl || d->kind == NodeKind::EnumDecl || d->kind == NodeKind::UsingAliasDecl ||
-            d->kind == NodeKind::TemplateParamDecl)
+            d->kind == NodeKind::TemplateParamDecl || (d->kind == NodeKind::VariableDecl && (d->flags & DF_Typedef)))
         {
           const Ty* t = c->ty;
           if (!t || !t->isKnown())

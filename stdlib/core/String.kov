@@ -9,6 +9,8 @@ struct String
 
   String() {}
   implicit String(const char* text) { this->append(text); }
+  implicit String(StringView text) { this->append(text.data, text.length); }
+  String(const char* text, int count) { this->append(text, count); }
   String(const String& other) { this->append(other.data, other.length); }
   ~String()
   {

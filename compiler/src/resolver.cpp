@@ -2648,9 +2648,10 @@ struct GlobalScope::Impl
         // Constructor call, functional cast, callable variable...
         const Ty* t = typeOfResolvedName(l, n->name.last(), n);
         record(n, t);
-        if (d && (d->kind == NodeKind::ClassDecl || d->kind == NodeKind::EnumDecl || d->kind == NodeKind::UsingAliasDecl))
+        if (d && (d->kind == NodeKind::ClassDecl || d->kind == NodeKind::EnumDecl || d->kind == NodeKind::UsingAliasDecl ||
+                  (d->kind == NodeKind::VariableDecl && (d->flags & DF_Typedef))))
         {
-          ++stats.callsResolved;
+          ++stats.callsResolved; // a functional cast, `int64_t(x)` included when int64_t is an imported typedef
           return t;
         }
         return callResultOfValue(t, c);

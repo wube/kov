@@ -194,7 +194,9 @@ namespace
     }
     static const std::set<std::string> typeWords = {"float", "double", "int", "long", "short", "char", "unsigned", "signed", "const",
                                                     "sizeof", "size_t", "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t", "uint16_t",
-                                                    "uint32_t", "uint64_t", "intptr_t", "uintptr_t", "wchar_t", "bool", "true", "false"};
+                                                    "uint32_t", "uint64_t", "intptr_t", "uintptr_t", "wchar_t", "bool", "true", "false",
+                                                    "DWORD", "WORD", "BYTE", "HANDLE", "LONG", "ULONG", "UINT", "INT", "LONG_PTR", "ULONG_PTR",
+                                                    "LPVOID", "SIZE_T", "DWORD_PTR", "HRESULT", "BOOL", "LONGLONG", "ULONGLONG", "UINT_PTR", "INT_PTR"};
     size_t pos = 0;
     while (pos < defines.size())
     {
@@ -248,7 +250,27 @@ namespace
       }
       if (!ok || call || (quotes != 0 && quotes != 2) || !namesKnown || (!hasNumber && quotes == 0 && body.find('(') == std::string::npos))
         continue;
-      out += "const auto " + name + " = " + body + ";\n";
+      // A declared type where the body shows one: a cast, a string, a float or an integer literal.
+      std::string type = "auto";
+      if (body.rfind("((", 0) == 0 && body.find(')') != std::string::npos)
+      {
+        std::string cast = body.substr(2, body.find(')') - 2);
+        bool word = !cast.empty();
+        for (char ch : cast)
+          if (!(isalnum((unsigned char)ch) || ch == '_' || ch == ' '))
+            word = false;
+        if (word && cast.find(' ') == std::string::npos)
+          type = cast;
+      }
+      else if (quotes == 2)
+        type = "char*";
+      else if (hasNumber && body.find_first_of("\"") == std::string::npos && body.find_first_of("xX") == std::string::npos &&
+               body.find_first_of(".eE") != std::string::npos)
+        type = body.back() == 'f' || body.back() == 'F' ? "float" : "double";
+      else if (hasNumber && body.find_first_not_of("0123456789xXabcdefABCDEFuUlL()- +") == std::string::npos)
+        type = body.find_first_of("lL") != std::string::npos ? (body.find_first_of("uU") != std::string::npos ? "unsigned long long" : "long long")
+                                                            : (body.find_first_of("uU") != std::string::npos ? "unsigned int" : "int");
+      out += "const " + type + " " + name + " = " + body + ";\n";
     }
     return out;
   }
