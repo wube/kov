@@ -1040,7 +1040,8 @@ namespace
 }
 
 std::string convertToKov(const std::vector<ConvertInput>& inputs, GlobalScope& global, const SymbolTable& symbols,
-                         const std::vector<std::filesystem::path>& roots, const std::filesystem::path& outDir)
+                         const std::vector<std::filesystem::path>& roots, const std::filesystem::path& outDir,
+                         const std::filesystem::path& overridesDir)
 {
   struct Piece
   {
@@ -1080,6 +1081,15 @@ std::string convertToKov(const std::vector<ConvertInput>& inputs, GlobalScope& g
     std::filesystem::path outPath = outDir / key;
     std::error_code ec;
     std::filesystem::create_directories(outPath.parent_path(), ec);
+    if (!overridesDir.empty() && std::filesystem::exists(overridesDir / key, ec))
+    {
+      // Hand-written: copied as it is.
+      std::filesystem::copy_file(overridesDir / key, outPath, std::filesystem::copy_options::overwrite_existing, ec);
+      ++files;
+      report += "## " + key + "\n- overridden by " + (overridesDir / key).generic_string() + "\n";
+      total.add("files overridden");
+      continue;
+    }
     std::string text = "// Converted from";
     for (const Piece& p : pieces)
       text += " " + std::filesystem::path(p.source).filename().string();

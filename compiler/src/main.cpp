@@ -53,6 +53,7 @@ namespace
     bool debug = true;             // config::debug
     unsigned modules = 0;          // --modules N: IR modules compiled in parallel (0: 2 per thread, 1: one module)
     std::string convertDir;        // --convert DIR: write the inputs as Kov sources there
+    std::string overridesDir;      // --overrides DIR: hand-written files that replace converted ones
     int repeat = 1;
   };
 
@@ -648,7 +649,7 @@ namespace
       for (size_t i = 0; i < parsed.size(); ++i)
         inputs.push_back({files[i].path, files[i].text, &lexed[i].tokens, parsed[i].get()});
       std::vector<std::filesystem::path> roots(options.roots.begin(), options.roots.end());
-      std::string summary = convertToKov(inputs, global, symbols, roots, options.convertDir);
+      std::string summary = convertToKov(inputs, global, symbols, roots, options.convertDir, options.overridesDir);
       report("convert: %s\n%s", options.convertDir.c_str(), summary.c_str());
     }
     for (size_t i = 0; i < top.size() && int(i) < options.showUnresolved; ++i)
@@ -737,6 +738,8 @@ int main(int argc, char** argv)
       options.modules = unsigned(atoi(argv[++i]));
     else if (arg == "--convert" && i + 1 < argc)
       options.convertDir = argv[++i];
+    else if (arg == "--overrides" && i + 1 < argc)
+      options.overridesDir = argv[++i];
     else if (arg[0] == '-')
     {
       usage();

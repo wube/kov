@@ -21,6 +21,9 @@ struct ConvertInput
 };
 
 // Writes one .kov file per input (a header and its source of the same stem merged into one)
-// under outDir, mirroring the paths below `roots`. Returns the conversion report.
+// under outDir, mirroring the paths below `roots`. A file of the same relative path under
+// overridesDir replaces the generated one: the hand-written conversion of what the tool cannot
+// do. Returns the conversion report.
 std::string convertToKov(const std::vector<ConvertInput>& inputs, GlobalScope& global, const SymbolTable& symbols,
-                         const std::vector<std::filesystem::path>& roots, const std::filesystem::path& outDir);
+                         const std::vector<std::filesystem::path>& roots, const std::filesystem::path& outDir,
+                         const std::filesystem::path& overridesDir = {});
