@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**131 pass, 6 pending, 0 failing, 0 fixed** (137 snippets, 2.4 s).
+**133 pass, 5 pending, 0 failing, 0 fixed** (138 snippets, 2.4 s).
 
 ## Language: statements, expressions, declarations
 
@@ -146,7 +146,6 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
 | `kov/for_constexpr_switch.kov` | for constexpr inside a switch, one case per type (design.md 8.2) | pending |  | case labels produced inside a for constexpr body are not implemented; C:\kov\compiler\tests\spec\kov\for_constexpr_switch.kov:10: codegen does not support a case label outside a switch body yet (in @"nameOf(int32)") |
-| `kov/typed_unions.kov` | typed unions (`union enum`) | pending |  | typed unions are not implemented; C:\kov\compiler\tests\spec\kov\typed_unions.kov:10: codegen does not support a local of unknown type (p) yet (in @kov.main) |
 | `kov/asserts_and_config.kov` | assert and release_assert statements, config constants with if constexpr, conditional functions, CallerLocation | pass |  |  |
 | `kov/attributes_inline.kov` | [[noinline]] and [[forceinline]] attributes | pass |  |  |
 | `kov/config_values.kov` | config constants from the command line (`--config name=value`, `--release`) as compile-time values | pass |  |  |
@@ -162,6 +161,8 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `kov/reflection_members.kov` | members(T) with m.name, m.type and object.[m] | pass |  |  |
 | `kov/requires_file.kov` | `requires <condition>;` at the top of a file (compiled only when the config says so) | pass |  |  |
 | `kov/tests_in_compiler.kov` | `test "name" { check(...); }` declarations are accepted and cost nothing without --tests | pass |  |  |
+| `kov/typed_unions.kov` | typed unions (`union enum`) | pass |  |  |
+| `kov/typed_unions_switch_copy.kov` | typed unions: switch on the union, methods, copying and assignment carry the alternative, destruction follows the tag | pass |  |  |
 | `kov/underscore_locals.kov` | `_` as a repeatable unnamed local living to the end of its scope | pass |  |  |
 
 ## C interop

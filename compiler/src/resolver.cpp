@@ -2871,6 +2871,15 @@ struct GlobalScope::Impl
     // Return statements inside lambdas / auto functions record their type here.
     std::vector<const Ty*> returnFrames;
 
+    // A typed union (`union enum`, design.md 8.5), given its class type; null for anything else.
+    static ClassDecl* typedUnionOf(const Ty* t)
+    {
+      if (!t || t->kind != TyKind::Class || !t->decl || t->decl->kind != NodeKind::ClassDecl)
+        return nullptr;
+      auto* c = static_cast<ClassDecl*>(t->decl);
+      return c->isTypedUnion && c->isDefinition ? c : nullptr;
+    }
+
     // `types<A, B, C>`: the compile-time list of types of design.md 8.1 (a builtin name).
     bool isTypesList(const NamedType* n) const
     {
@@ -4051,6 +4060,9 @@ struct GlobalScope::Impl
         return types.unknown();
       if (op == P::DotStar || op == P::ArrowStar)
         return rs->kind == TyKind::MemberPointer ? types.lref(rs->inner) : types.unknown();
+      if ((op == P::EqEq || op == P::NotEq) &&
+          ((typedUnionOf(ls) && rs->kind == TyKind::Enum) || (typedUnionOf(rs) && ls->kind == TyKind::Enum)))
+        return types.boolType(); // `p == Property::Integer`: the typed union's tag (design.md 8.5)
       if (ls->kind == TyKind::Class || rs->kind == TyKind::Class)
       {
         if (!ls->isKnown() || !rs->isKnown())
@@ -4824,6 +4836,18 @@ struct GlobalScope::Impl
             return record(e, b);
           if (b->kind == TyKind::Class)
           {
+            if (ClassDecl* u = typedUnionOf(b); u && i->args.size() == 1)
+            {
+              // `p[Property::Integer]`: the alternative the enumerator names (design.md 8.5).
+              std::optional<int64_t> v = impl.constEval(i->args[0], ctx());
+              if (!v || *v < 0 || size_t(*v) >= u->alternatives.size())
+                return record(e, unknown(Why::Operator));
+              Subst s = b->args.empty() ? Subst{} : impl.substFor(b);
+              const Ty* alt = impl.declaredTypeOf(u->alternatives[size_t(*v)], s.pairs.empty() ? nullptr : &s, 0);
+              if (!alt || !alt->isKnown())
+                return record(e, types.unknown());
+              return record(e, types.lref(b->isConst ? types.qualified(alt, true, false) : alt));
+            }
             if (types.isDependent(b))
               return record(e, types.unknown());
             MemberResult r = memberOf(b, impl.opSymbols[uint32_t(P::LBracket)], nullptr, i->token, false);

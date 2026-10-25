@@ -45,6 +45,8 @@ namespace
       kwFromStr = symbols.intern("fromStr");
       kwOptional = symbols.intern("Optional");
       kwText = symbols.intern("text");
+      kwTag = symbols.intern("Tag");
+      kwTagField = symbols.intern("tag");
       kwImplicit = symbols.intern("implicit");
       kwFallthrough = symbols.intern("fallthrough");
       kwBothConst = symbols.intern("both_const");
@@ -52,7 +54,7 @@ namespace
       kwAccumulate = symbols.intern("accumulate");
     }
     uint32_t kwImplicit, kwFallthrough, kwBothConst, kwClassConst, kwAccumulate, kwImport, kwAssert, kwReleaseAssert, kwCaller,
-             kwConditional, kwUnderscore, kwConfig, kwNameof, kwCount, kwValues, kwStr, kwTypes, kwFromStr, kwOptional, kwText;
+             kwConditional, kwUnderscore, kwConfig, kwNameof, kwCount, kwValues, kwStr, kwTypes, kwFromStr, kwOptional, kwText, kwTag, kwTagField;
     uint8_t pendingAttributes = 0;   // [[noinline]] and friends seen before the current declaration.
     Expr* pendingAlignment = nullptr; // alignas(N) seen before the current class.
     Expr* pendingCondition = nullptr; // conditional(expr) seen in the current specifiers.
@@ -2286,8 +2288,144 @@ namespace
 
     // Returns true if a declaration was produced; false if this is an elaborated type specifier
     // that the caller should parse as a normal declaration (`struct X* p;`).
+    // `union enum Property : u8 { { {int, Integer}, {double, Double}, {String, Text} } members... };`
+    // (design.md 8.5): a class holding a tag and one alternative at a time. Desugared here into a
+    // class with a nested Kov enum `Tag` of the alternatives' names (unscoped, so `Property::Integer`
+    // names the tag value), a `tag` member and an anonymous union of one storage member per
+    // alternative; the type checker and code generator add the tag-aware operations (p[Integer],
+    // p == Integer, switch (p), construction, copying, destruction).
+    bool parseTypedUnion(Scope scope, uint32_t flags, TemplateHeader templ)
+    {
+      uint32_t start = pos;
+      advance(); // union
+      advance(); // enum
+      skipAttributes();
+      ClassDecl* c = decl<ClassDecl>(start);
+      c->keyword = Kw::struct_;
+      c->flags |= flags;
+      c->templateParams = templ.params;
+      c->isTemplate = templ.present;
+      c->isTypedUnion = true;
+      if (!(atIdent() || at(P::ColonColon)) || !parseQualifiedName(c->name, true, false))
+      {
+        error("expected the name of the union enum");
+        return true;
+      }
+      Type* underlying = nullptr;
+      if (accept(P::Colon))
+        underlying = parseType();
+      if (at(P::Semi))
+      {
+        advance();
+        pushDecl(c);
+        return true;
+      }
+      if (!expect(P::LBrace, "expected '{' after union enum"))
+        return true;
+      c->isDefinition = true;
+      Decl* savedParent = currentParent;
+      Access savedAccess = currentAccess;
+      uint32_t savedClassName = currentClassName;
+      currentParent = c;
+      currentAccess = Access::Public;
+      currentClassName = c->name.last().symbol;
+      size_t mark = scratch.size();
+      EnumDecl* tag = decl<EnumDecl>(start);
+      tag->isKov = true;
+      tag->isDefinition = true;
+      tag->underlying = underlying;
+      NamePart tagPart;
+      tagPart.symbol = kwTag;
+      tag->name.parts = makeSpanOf(std::vector<NamePart>{tagPart});
+      ClassDecl* storage = decl<ClassDecl>(start); // the anonymous union of the alternatives
+      storage->keyword = Kw::union_;
+      storage->isDefinition = true;
+      std::vector<Decl*> enumerators, alternatives;
+      if (expect(P::LBrace, "expected '{' before the alternatives of the union enum"))
+      {
+        while (!at(P::RBrace) && !at(TokenKind::End))
+        {
+          if (!expect(P::LBrace, "expected '{' before an alternative"))
+            break;
+          Type* type = parseType();
+          if (!type)
+          {
+            error("expected the type of the alternative");
+            break;
+          }
+          type = parseTypeSuffixes(type);
+          expect(P::Comma, "expected ',' between the type and the name of the alternative");
+          if (!atIdent())
+          {
+            error("expected the name of the alternative");
+            break;
+          }
+          uint32_t name = tok().id;
+          uint32_t nameToken = pos;
+          advance();
+          expect(P::RBrace, "expected '}' after the alternative");
+          currentParent = tag;
+          EnumeratorDecl* en = decl<EnumeratorDecl>(nameToken);
+          en->name = name;
+          currentParent = storage;
+          VariableDecl* field = decl<VariableDecl>(nameToken);
+          field->type = type;
+          NamePart fieldPart;
+          fieldPart.symbol = symbols.intern("__alt_" + std::string(symbols.name(name)));
+          field->name.parts = makeSpanOf(std::vector<NamePart>{fieldPart});
+          currentParent = c;
+          enumerators.push_back(en);
+          alternatives.push_back(field);
+          if (!accept(P::Comma))
+            break;
+        }
+        expect(P::RBrace, "expected '}' after the alternatives of the union enum");
+      }
+      tag->enumerators = makeSpanOf(enumerators);
+      {
+        currentParent = tag;
+        size_t tagMark = scratch.size();
+        addEnumBuiltins(tag, start, tagMark);
+        tag->members = makeSpan<Decl*>(tagMark);
+        currentParent = c;
+      }
+      storage->members = makeSpanOf(alternatives);
+      c->tagEnum = tag;
+      c->alternatives = storage->members;
+      pushDecl(tag);
+      VariableDecl* tagField = decl<VariableDecl>(start);
+      NamedType* tagType = node<NamedType>(start);
+      tagType->name.parts = makeSpanOf(std::vector<NamePart>{tagPart});
+      tagField->type = tagType;
+      NamePart tagFieldPart;
+      tagFieldPart.symbol = kwTagField;
+      tagField->name.parts = makeSpanOf(std::vector<NamePart>{tagFieldPart});
+      c->tagField = tagField;
+      pushDecl(tagField);
+      pushDecl(storage);
+      while (!at(P::RBrace) && !at(TokenKind::End))
+      {
+        if (accept(P::Semi))
+          continue;
+        parseDeclaration(Scope::Class);
+        if (inRecovery)
+          break;
+      }
+      c->members = makeSpan<Decl*>(mark);
+      currentParent = savedParent;
+      currentAccess = savedAccess;
+      currentClassName = savedClassName;
+      expect(P::RBrace, "expected '}' to close the union enum");
+      skipAttributes();
+      pushDecl(c);
+      accept(P::Semi);
+      return true;
+    }
+
     bool parseClassOrElaborated(Scope scope, uint32_t flags, TemplateHeader templ)
     {
+      if (at(Kw::union_) && at(Kw::enum_, 1))
+        return parseTypedUnion(scope, flags, templ);
       uint32_t start = pos;
       uint32_t save = pos;
       Kw keyword = Kw(tok().id);

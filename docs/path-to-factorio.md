@@ -381,13 +381,23 @@ checked against the suite, the 40 end-to-end tests and the CommonUtil and Agui s
    bound to an enum (`E::values`, `E::count` with E = Direction) stayed dependent; the lookup now
    follows enum substitutions as it did class ones. Spec: `kov/enum_from_str`,
    `templates/enum_through_parameter`.
+10. **Typed unions** (design.md 8.5), the shape of `InputAction` and `std::variant` uses. The
+    parser desugars `union enum Property : u8 { { {int, Integer}, {String, Text} } ... }` to a
+    class with a nested Kov enum `Tag` (unscoped, so `Property::Integer` is the tag value), a `tag`
+    member and an anonymous union of one storage member per alternative; the type checker gives
+    `p[Property::Integer]` the alternative's type and `p == Property::Integer` bool; the code
+    generator makes `p[E] = v` destroy the alternative held, set the tag and construct the value,
+    checks the tag on every other `p[E]` (release_assert), switches on the tag for `switch (p)`
+    (exhaustive like a Kov enum), and copies, assigns and destroys by the tag. Spec:
+    `kov/typed_unions`, `kov/typed_unions_switch_copy`.
 
-The suite went from 80 pass / 49 pending to 131 pass / 6 pending; the Factorio front end stayed
+The suite went from 80 pass / 49 pending to 133 pass / 5 pending; the Factorio front end stayed
 at 99.27% parsed and 77.6-77.8% typed (members of dependent qualifiers now count as dependent
 instead of being guessed from the primary template). Left pending, in order of Factorio use:
-the rest of design.md section 8 (typed unions, `case` labels from `for constexpr`, `m.type`,
-`enumerators(E)`, tests), `Variant` (superseded by typed unions), pointers to member functions,
-template template parameters, and the SDL header import.
+the rest of design.md section 8 (`case` labels from `for constexpr`, `m.type`, `enumerators(E)`,
+`alternatives(U)`, tests), `Variant` (superseded by typed unions; the converter will need a
+mapping for the 24 `std::variant` uses), pointers to member functions, template template
+parameters, and the SDL header import.
 
 ## The order that gets to a running game
 

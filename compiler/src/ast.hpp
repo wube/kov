@@ -206,6 +206,12 @@ struct ClassDecl : Decl
   bool isClosure = false;         // Synthetic class standing for a lambda's closure type.
   Expr* alignment = nullptr;      // `struct alignas(16) X`: the alignment written.
   LambdaExpr* lambda = nullptr;   // The lambda, for closures.
+  // `union enum` (design.md 8.5): a tag and one live alternative. The parser desugars it to the
+  // members below; the compiler adds the tag-aware operations.
+  bool isTypedUnion = false;
+  Decl* tagEnum = nullptr;        // the nested Kov enum `Tag` naming the alternatives (unscoped: `Property::Integer`)
+  Decl* tagField = nullptr;       // the `tag` data member
+  Span<Decl*> alternatives;       // the storage member of each alternative, in tag order (inside an anonymous union)
 };
 struct EnumeratorDecl : Decl { uint32_t name; Expr* value = nullptr; };
 struct EnumDecl : Decl

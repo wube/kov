@@ -800,6 +800,15 @@ namespace
         return *info.needsDestruction;
       info.needsDestruction = false; // Guard against recursion.
       ClassDecl* c = classDef(t->decl, at);
+      if (c->isTypedUnion)
+      {
+        // A typed union destroys whichever alternative it holds.
+        bool any = false;
+        for (size_t i = 0; i < c->alternatives.size(); ++i)
+          any = any || needsDestruction(alternativeType(c, t, i, at), at);
+        structFor(t, at).needsDestruction = any;
+        return any;
+      }
       bool result = findDestructor(c) != nullptr;
       for (const Ty* ft : std::vector<const Ty*>(info.fieldTypes))
         result = result || (!ft->isReference() && needsDestruction(ft, at)); // a reference member owns nothing
@@ -838,6 +847,11 @@ namespace
             return;
           }
       }
+      if (c->isTypedUnion)
+      {
+        destroyAlternative(c, t, addr, at);
+        return;
+      }
       if (FunctionDecl* dtor = findDestructor(c))
       {
         TemplateArgs args = global.classArgsOf(canonicalClass(t, at));
@@ -874,6 +888,14 @@ namespace
     void defaultConstruct(const std::string& addr, const Ty* t, Node* at)
     {
       ClassDecl* c = classDef(t->decl, at);
+      if (c->isTypedUnion)
+      {
+        // `Property p;`: the first alternative, default-constructed.
+        fn += "  store " + llType(t, at) + " zeroinitializer, ptr " + addr + "\n";
+        if (!c->alternatives.empty())
+          constructAlternative(c, t, addr, 0, nullptr, at);
+        return;
+      }
       if (hasUserConstructors(c))
       {
         FunctionDecl* ctor = findConstructor(t, {}, at);
@@ -1392,6 +1414,11 @@ namespace
     void copyConstruct(const std::string& dst, const std::string& src, const Ty* t, Node* at, bool move = false)
     {
       ClassDecl* c = classDef(t->decl, at);
+      if (c->isTypedUnion)
+      {
+        copyAlternative(c, t, dst, src, move, at);
+        return;
+      }
       TemplateArgs args = global.classArgsOf(canonicalClass(t, at));
       FunctionDecl* copy = nullptr;
       bool hasMove = false;
@@ -1475,6 +1502,13 @@ namespace
     // Implicit copy assignment: user operator= where one exists, memberwise otherwise.
     void assignObject(const std::string& dst, const std::string& src, const Ty* t, Node* at, bool move = false)
     {
+      if (ClassDecl* c = typedUnionOf(t, at))
+      {
+        // The alternative held goes, the source's alternative and tag come.
+        destroyAlternative(c, t, dst, at);
+        copyAlternative(c, t, dst, src, move, at);
+        return;
+      }
       const Ty* foundIn = nullptr;
       // From an lvalue: operator=(const T&). From a temporary or `move(x)`: operator=(T&&) if there is one.
       std::vector<const Ty*> argTypes{move ? types.rref(types.unqualified(t)) : types.lref(types.qualified(t, true, false))};
@@ -4050,6 +4084,8 @@ namespace
           if (i->args.size() != 1)
             unsupported(e, "multi-argument indexing");
           Value base = rvalue(i->base);
+          if (ClassDecl* c = typedUnionOf(base.ty, e))
+            return alternativeLvalue(c, base, i, e, true); // p[Integer]: the alternative, if held
           if (isClass(base.ty))
           {
             Value v = operatorCall(base, operatorName(P::LBracket), i->args, e, true);
@@ -5060,6 +5096,12 @@ namespace
         {
           auto* i = static_cast<IndexExpr*>(e);
           Value base = rvalue(i->base);
+          if (ClassDecl* c = typedUnionOf(base.ty, e))
+          {
+            std::string addr = alternativeLvalue(c, base, i, e, true);
+            const Ty* altTy = types.stripRef(e->ty);
+            return isClass(altTy) ? Value{addr, altTy, false} : load(addr, altTy, e);
+          }
           if (isClass(base.ty))
             return callRvalue(operatorCall(base, operatorName(P::LBracket), i->args, e, true), e);
           Value index = convert(rvalue(i->args[0]), types.intType(64), e);
@@ -5497,6 +5539,12 @@ namespace
       }
       const Ty* lt = types.stripRef(b->lhs->ty);
       const Ty* rt = b->rhs && b->rhs->ty ? types.stripRef(b->rhs->ty) : nullptr;
+      if (op == P::Assign && b->lhs->kind == NodeKind::IndexExpr && static_cast<IndexExpr*>(b->lhs)->base->ty &&
+          typedUnionOf(types.stripRef(static_cast<IndexExpr*>(b->lhs)->base->ty), b))
+        return assignAlternative(static_cast<IndexExpr*>(b->lhs), b->rhs, b); // `p[Integer] = 5`: the tag and the value
+      if ((op == P::EqEq || op == P::NotEq) &&
+          ((typedUnionOf(lt, b) && rt && rt->kind == TyKind::Enum) || (typedUnionOf(rt, b) && lt && lt->kind == TyKind::Enum)))
+        return compareTag(b, op == P::NotEq);
       if (isClass(lt) || isClass(rt))
       {
         std::string name = operatorName(op);
@@ -6570,6 +6618,182 @@ namespace
       startBlock(eL);
     }
 
+    // --- typed unions (design.md 8.5): a tag and the storage of one alternative ---
+
+    ClassDecl* typedUnionOf(const Ty* t, Node* at)
+    {
+      t = t ? types.unqualified(types.stripRef(t)) : nullptr;
+      if (!isClass(t))
+        return nullptr;
+      ClassDecl* c = classDef(t->decl, at);
+      return c && c->isTypedUnion ? c : nullptr;
+    }
+    const Ty* tagType(ClassDecl* c) { return types.enumType(c->tagEnum); }
+    std::string tagAddress(ClassDecl* c, const Ty* t, const std::string& obj, Node* at)
+    {
+      std::string addr;
+      if (!fieldAddress(types.unqualified(types.stripRef(t)), c->tagField, obj, addr, at))
+        unsupported(at, "a typed union without its tag");
+      return addr;
+    }
+    std::string loadTag(ClassDecl* c, const Ty* t, const std::string& obj, Node* at)
+    {
+      return load(tagAddress(c, t, obj, at), tagType(c), at).text;
+    }
+    const Ty* alternativeType(ClassDecl* c, const Ty* t, size_t index, Node* at)
+    {
+      const Ty* cls = canonicalClass(types.unqualified(types.stripRef(t)), at);
+      const Ty* alt = global.typeOfDeclIn(c->alternatives[index], global.classArgsOf(cls));
+      if (!alt || !alt->isKnown())
+        unsupported(at, "an alternative of a typed union whose type is unknown");
+      return alt;
+    }
+    std::string alternativeAddress(ClassDecl* c, const Ty* t, const std::string& obj, size_t index, Node* at)
+    {
+      std::string addr;
+      if (!fieldAddress(types.unqualified(types.stripRef(t)), c->alternatives[index], obj, addr, at))
+        unsupported(at, "a typed union without its storage");
+      return addr;
+    }
+    // The alternative an index names: `p[Property::Integer]`, a constant enumerator of the tag.
+    size_t alternativeIndex(ClassDecl* c, IndexExpr* i, Node* at)
+    {
+      if (i->args.size() != 1)
+        unsupported(at, "a typed union indexed with more than one alternative");
+      std::optional<int64_t> v = evalConst(i->args[0]);
+      if (!v || *v < 0 || size_t(*v) >= c->alternatives.size())
+        unsupported(at, "a typed union indexed with something other than one of its alternatives");
+      return size_t(*v);
+    }
+    // The address of the alternative p[E] names; with check, a release_assert that p holds it.
+    std::string alternativeLvalue(ClassDecl* c, Value base, IndexExpr* i, Node* at, bool check)
+    {
+      size_t index = alternativeIndex(c, i, at);
+      if (check)
+      {
+        std::string tag = loadTag(c, base.ty, base.text, at);
+        std::string same = newTemp();
+        fn += "  " + same + " = icmp eq " + llType(tagType(c), at) + " " + tag + ", " + std::to_string(index) + "\n";
+        std::string okL = newLabel("alt.ok"), failL = newLabel("alt.fail");
+        fn += "  br i1 " + same + ", label %" + okL + ", label %" + failL + "\n";
+        startBlock(failL);
+        auto [line, column] = lineColumnOf(at->token);
+        emitCall("", "void @kov_assert_failed(ptr " + cStringConstant(currentFile->path) + ", i32 " + std::to_string(line) + ", i32 " +
+                         std::to_string(column) + ", ptr " + cStringConstant("the typed union holds another alternative") + ")", false);
+        fn += "  unreachable\n";
+        usesAssert = true;
+        startBlock(okL);
+      }
+      return alternativeAddress(c, base.ty, base.text, index, at);
+    }
+    void setTag(ClassDecl* c, const Ty* t, const std::string& obj, size_t index, Node* at)
+    {
+      fn += "  store " + llType(tagType(c), at) + " " + std::to_string(index) + ", ptr " + tagAddress(c, t, obj, at) + "\n";
+    }
+    // Sets the tag and builds the alternative from init (default-constructed without one).
+    void constructAlternative(ClassDecl* c, const Ty* t, const std::string& obj, size_t index, Expr* init, Node* at)
+    {
+      setTag(c, t, obj, index, at);
+      const Ty* altTy = alternativeType(c, t, index, at);
+      std::string addr = alternativeAddress(c, t, obj, index, at);
+      if (init)
+        initializeFrom(addr, altTy, init, at);
+      else if (isClass(altTy))
+        defaultConstruct(addr, altTy, at);
+      else if (altTy->kind == TyKind::Array && needsDestruction(altTy, at))
+        constructArray(addr, altTy, at);
+      else
+        fn += "  store " + llType(altTy, at) + " zeroinitializer, ptr " + addr + "\n";
+    }
+    // Runs body(index) for the alternative the object holds, among those `wanted` selects: a
+    // switch on the tag.
+    template<typename Wanted, typename Body>
+    void forHeldAlternative(ClassDecl* c, const Ty* t, const std::string& obj, Node* at, Wanted&& wanted, Body&& body)
+    {
+      std::vector<size_t> indices;
+      for (size_t i = 0; i < c->alternatives.size(); ++i)
+        if (wanted(i))
+          indices.push_back(i);
+      if (indices.empty())
+        return;
+      std::string tag = loadTag(c, t, obj, at);
+      std::string k = llType(tagType(c), at);
+      std::string endL = newLabel("alt.end");
+      std::vector<std::string> labels;
+      std::string cases;
+      for (size_t i : indices)
+      {
+        labels.push_back(newLabel("alt"));
+        cases += "    " + k + " " + std::to_string(i) + ", label %" + labels.back() + "\n";
+      }
+      fn += "  switch " + k + " " + tag + ", label %" + endL + " [\n" + cases + "  ]\n";
+      blockTerminated = true;
+      for (size_t n = 0; n < indices.size(); ++n)
+      {
+        startBlock(labels[n]);
+        body(indices[n]);
+        emitBranch(endL);
+      }
+      startBlock(endL);
+    }
+    void destroyAlternative(ClassDecl* c, const Ty* t, const std::string& obj, Node* at)
+    {
+      forHeldAlternative(c, t, obj, at,
+                         [&](size_t i) { return needsDestruction(alternativeType(c, t, i, at), at); },
+                         [&](size_t i) { destroy(alternativeAddress(c, t, obj, i, at), alternativeType(c, t, i, at), at); });
+    }
+    // Copies (or moves) the alternative src holds into dst, tag included.
+    void copyAlternative(ClassDecl* c, const Ty* t, const std::string& dst, const std::string& src, bool move, Node* at)
+    {
+      std::string tag = loadTag(c, t, src, at);
+      fn += "  store " + llType(tagType(c), at) + " " + tag + ", ptr " + tagAddress(c, t, dst, at) + "\n";
+      forHeldAlternative(c, t, src, at, [&](size_t) { return true; }, [&](size_t i)
+      {
+        const Ty* altTy = alternativeType(c, t, i, at);
+        std::string from = alternativeAddress(c, t, src, i, at), to = alternativeAddress(c, t, dst, i, at);
+        if (isClass(altTy))
+        {
+          if (move)
+            moveConstruct(to, from, altTy, at);
+          else
+            copyConstruct(to, from, altTy, at);
+        }
+        else
+        {
+          std::string v = newTemp();
+          fn += "  " + v + " = load " + llType(altTy, at) + ", ptr " + from + "\n";
+          fn += "  store " + llType(altTy, at) + " " + v + ", ptr " + to + "\n";
+        }
+      });
+    }
+    // `p[Integer] = 5`: destroys the alternative held, sets the tag, constructs the new value.
+    Value assignAlternative(IndexExpr* i, Expr* rhs, Node* at)
+    {
+      Value base = rvalue(i->base);
+      ClassDecl* c = typedUnionOf(base.ty, at);
+      size_t index = alternativeIndex(c, i, at);
+      destroyAlternative(c, base.ty, base.text, at);
+      constructAlternative(c, base.ty, base.text, index, rhs, at);
+      const Ty* altTy = alternativeType(c, base.ty, index, at);
+      std::string addr = alternativeAddress(c, base.ty, base.text, index, at);
+      return isClass(altTy) ? Value{addr, altTy, false} : load(addr, altTy, at);
+    }
+    // `p == Property::Integer`: the tag against the enumerator.
+    Value compareTag(BinaryExpr* b, bool negate)
+    {
+      bool unionLeft = typedUnionOf(types.stripRef(b->lhs->ty), b) != nullptr;
+      Expr* unionExpr = unionLeft ? b->lhs : b->rhs;
+      Expr* tagExpr = unionLeft ? b->rhs : b->lhs;
+      Value obj = rvalue(unionExpr);
+      ClassDecl* c = typedUnionOf(obj.ty, b);
+      const Ty* underlying = enumUnderlying(c->tagEnum);
+      Value tag = convert(Value{loadTag(c, obj.ty, obj.text, b), tagType(c), false}, underlying, b);
+      Value other = convert(rvalue(tagExpr), underlying, b);
+      std::string r = newTemp();
+      fn += "  " + r + " = icmp " + (negate ? "ne " : "eq ") + llType(underlying, b) + " " + tag.text + ", " + other.text + "\n";
+      return {r, types.boolType(), false};
+    }
+
     // `types<A, B, C>`: the compile-time list of types (design.md 8.1).
     bool isTypesList(const NamedType* n)
     {
@@ -6845,6 +7069,13 @@ namespace
       if (!sw->cond || sw->cond->kind == NodeKind::DeclStmt)
         unsupported(sw, "a switch on a declaration");
       Value cond = rvalue(static_cast<Expr*>(sw->cond));
+      const Ty* switchedTy = types.stripRef(static_cast<Expr*>(sw->cond)->ty); // the written type: a Kov enum's switch names every value
+      if (ClassDecl* c = typedUnionOf(cond.ty, sw))
+      {
+        // `switch (p)` on a typed union: its tag.
+        cond = Value{loadTag(c, cond.ty, cond.text, sw), tagType(c), false};
+        switchedTy = cond.ty;
+      }
       const Ty* ct = cond.ty->kind == TyKind::Enum ? enumUnderlying(cond.ty->decl) : cond.ty;
       if (ct->kind != TyKind::Int && ct->kind != TyKind::Char && ct->kind != TyKind::Bool)
         unsupported(sw, "a switch on a non-integer");
@@ -6878,7 +7109,7 @@ namespace
         }
       }
       std::string invalidL;
-      const Ty* condTy = types.stripRef(static_cast<Expr*>(sw->cond)->ty); // before the conversion to the underlying type
+      const Ty* condTy = switchedTy; // before the conversion to the underlying type
       if (condTy && condTy->kind == TyKind::Enum && defaultL.empty())
       {
         Decl* def = global.definitionOf(condTy->decl);

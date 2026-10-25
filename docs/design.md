@@ -209,6 +209,15 @@ switch (p) { case Integer: return format("{}", p[Integer]); case Text: return p[
 ```
 Alternatives are listed by `alternatives(Property)` for reflection. `InputAction`,
 `EditorAction`, `NetworkMessage`, `UpgradableEntity` in Factorio are this shape.
+Done 2026-10-25: `union enum` with methods; `p[Integer] = v` (destroys the alternative held, sets
+the tag, constructs the value), `p[Integer]` (a release_assert on another tag), `p == Integer`,
+`switch (p)` (exhaustive, as for a Kov enum), copying, assignment and destruction following the
+tag. Decided on the way: a default-constructed union holds its first alternative,
+default-constructed; the tag type is the nested Kov enum `Property::Tag` (so `tag.str()` and
+`Property::Tag::count` exist), and the alternatives' names are in the union's scope, as unscoped
+enumerators. The parser desugars the union to a class with the tag member and an anonymous union
+of the alternatives; the compiler adds the tag-aware operations. Not yet: `alternatives(U)`, a
+generated `str()`, constructing a union from a value in one expression.
 
 **8.6 Tests in the compiler.**
 ```
