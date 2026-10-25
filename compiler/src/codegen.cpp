@@ -105,6 +105,9 @@ namespace
     std::unordered_map<Decl*, std::vector<Local>> packLocals; // one local per element of a parameter pack
     std::unordered_map<const Ty*, StructInfo> structs;
     std::unordered_map<Decl*, std::string> globals;
+    Span<uint32_t> pendingDesignators;                        // of the brace list constructInto is about to consume
+    std::vector<std::pair<Decl*, int64_t>> constEnv;          // parameters bound while evalConst runs a constexpr call
+    std::unordered_map<std::string, std::string> instanceGlobals; // static members of class template instantiations, by name
     std::unordered_map<std::string, bool> declaredNames; // IR names with a declare/define line
     std::unordered_map<Decl*, int64_t> enumeratorValues;
 
@@ -920,9 +923,22 @@ namespace
       }
       if (args.size() == 1 && args[0]->kind == NodeKind::BraceInitExpr)
       {
+        pendingDesignators = static_cast<BraceInitExpr*>(args[0])->designators;
         constructInto(addr, t, static_cast<BraceInitExpr*>(args[0])->args, at);
         return;
       }
+      Span<uint32_t> designators = pendingDesignators;
+      pendingDesignators = {};
+      if (!hasUserConstructors(c))
+        if (std::optional<QualifiedName> base = inheritedConstructorBase(c))
+        {
+          // Inherited constructors: the arguments build that base, everything else is default.
+          FunctionDecl::CtorInit init{};
+          init.member = *base;
+          init.args = args;
+          initializeMembers(addr, t, Span<FunctionDecl::CtorInit>{&init, 1}, at);
+          return;
+        }
       if (args.size() == 1 && isPackExpansion(args[0]))
       {
         // `T(forward<Args>(args)...)`: the elements are the arguments. With one element the
@@ -1028,14 +1044,37 @@ namespace
           useVtable(info);
           fn += "  store ptr " + info.vtableName + ", ptr " + addr + "\n";
         }
+        // Which value goes to which field: in order, or by name for `.x = 1` designators.
+        std::vector<Expr*> valueOf(info.fieldDecls.size(), nullptr);
+        size_t next = 0;
+        for (size_t k = 0; k < args.size(); ++k)
+        {
+          uint32_t designator = k < designators.size() ? designators[k] : UINT32_MAX;
+          if (designator != UINT32_MAX)
+          {
+            size_t found = info.fieldDecls.size();
+            for (size_t j = 0; j < info.fieldDecls.size(); ++j)
+              if (info.fieldDecls[j]->kind == NodeKind::VariableDecl && !static_cast<VariableDecl*>(info.fieldDecls[j])->name.empty() &&
+                  static_cast<VariableDecl*>(info.fieldDecls[j])->name.last().symbol == designator)
+                found = j;
+            if (found == info.fieldDecls.size())
+              unsupported(at, "a designator naming no field of " + global.qualifiedName(c) + " (" + sym(designator) + ")");
+            valueOf[found] = args[k];
+            next = found + 1;
+            continue;
+          }
+          if (next >= valueOf.size())
+            unsupported(at, "more values than " + global.qualifiedName(c) + " has fields");
+          valueOf[next++] = args[k];
+        }
         size_t i = 0;
         for (Decl* d : info.fieldDecls)
         {
           std::string fieldAddr = gep(info.name, addr, info.fieldIndex[d]);
           const Ty* ft = info.fieldTypes[info.fieldIndex[d]];
-          if (i < args.size())
+          if (Expr* value = valueOf[i++])
           {
-            initializeFrom(fieldAddr, ft, args[i++], at);
+            initializeFrom(fieldAddr, ft, value, at);
             continue;
           }
           if (d->kind != NodeKind::VariableDecl)
@@ -1138,7 +1177,7 @@ namespace
             unsupported(e, "a member that is not a field");
           return addr;
         }
-        return globalAddress(static_cast<VariableDecl*>(d), e);
+        return globalAddress(static_cast<VariableDecl*>(d), e, qualifierClass(e, e));
       }
       unsupported(e, "taking the address of " + global.qualifiedName(d));
     }
@@ -1350,6 +1389,7 @@ namespace
         }
         if (init->kind == NodeKind::BraceInitExpr)
         {
+          pendingDesignators = static_cast<BraceInitExpr*>(init)->designators;
           constructInto(addr, t, static_cast<BraceInitExpr*>(init)->args, at);
           return;
         }
@@ -1366,6 +1406,14 @@ namespace
         if (init->ty && !isClass(types.stripRef(init->ty)) && isClass(t))
         {
           // A non-class value: through a converting constructor (`String s = "text"`).
+          Expr* one = init;
+          constructInto(addr, t, Span<Expr*>{&one, 1}, at);
+          return;
+        }
+        if (init->ty && isClass(types.stripRef(init->ty)) && classKey(init->ty) != classKey(t))
+        {
+          // Another class: through a converting constructor, a base, or its conversion operator
+          // (`String text = vec;` with `operator String()`), never by copying it as a t.
           Expr* one = init;
           constructInto(addr, t, Span<Expr*>{&one, 1}, at);
           return;
@@ -2757,10 +2805,50 @@ namespace
             default: return std::nullopt;
           }
         }
+        case NodeKind::CallExpr:
+        {
+          // `cells()`: a function whose body is one `return expression;`, evaluated with the
+          // arguments bound to its parameters.
+          auto* c = static_cast<CallExpr*>(e);
+          if (!c->callee || c->callee->kind != NodeKind::NameExpr)
+            return std::nullopt;
+          Decl* d = static_cast<NameExpr*>(c->callee)->resolved;
+          if (!d || d->kind != NodeKind::FunctionDecl)
+            return std::nullopt;
+          auto* f = static_cast<FunctionDecl*>(d);
+          if (!f->body || f->body->kind != NodeKind::BlockStmt || f->params.size() != c->args.size())
+            return std::nullopt;
+          auto* block = static_cast<BlockStmt*>(f->body);
+          if (block->stmts.size() != 1 || !block->stmts[0] || block->stmts[0]->kind != NodeKind::ReturnStmt)
+            return std::nullopt;
+          std::vector<std::pair<Decl*, int64_t>> bound;
+          for (size_t i = 0; i < c->args.size(); ++i)
+          {
+            auto v = evalConst(c->args[i], depth + 1);
+            if (!v)
+              return std::nullopt;
+            bound.push_back({f->params[i], *v});
+          }
+          size_t mark = constEnv.size();
+          constEnv.insert(constEnv.end(), bound.begin(), bound.end());
+          ParsedFile* saved = currentFile;
+          currentFile = f->file ? f->file : currentFile;
+          auto r = evalConst(static_cast<ReturnStmt*>(block->stmts[0])->value, depth + 1);
+          currentFile = saved;
+          constEnv.resize(mark);
+          return r;
+        }
         case NodeKind::NameExpr:
         {
           auto* n = static_cast<NameExpr*>(e);
           Decl* d = n->resolved;
+          if (d && d->kind == NodeKind::ParamDecl)
+          {
+            for (size_t i = constEnv.size(); i-- > 0;)
+              if (constEnv[i].first == d)
+                return constEnv[i].second;
+            return std::nullopt;
+          }
           if (!d)
           {
             // A builtin type trait, evaluated under the current instantiation.
@@ -3492,7 +3580,7 @@ namespace
                 unsupported(e, "a member that is not a field");
               return addr;
             }
-            return globalAddress(static_cast<VariableDecl*>(d), e);
+            return globalAddress(static_cast<VariableDecl*>(d), e, qualifierClass(e, e));
           }
           if (d->kind == NodeKind::EnumeratorDecl)
             break; // an enumerator bound to a reference: its value goes to a temporary (below)
@@ -3526,7 +3614,7 @@ namespace
           if (!baseTy || !isClass(baseTy))
             unsupported(e, "a member access on a non-class object");
           if (d->flags & DF_Static)
-            return globalAddress(static_cast<VariableDecl*>(d), e);
+            return globalAddress(static_cast<VariableDecl*>(d), e, baseTy); // `object.staticMember`: the object's instantiation
           std::string addr;
           if (!fieldAddress(baseTy, d, object, addr, e))
             unsupported(e, "a member that is not a field of the object's class");
@@ -3677,7 +3765,7 @@ namespace
       VariableDecl* def = variableDefinition(v);
       currentFile = def->file;
       emittingShared = false;
-      std::string fnName = "@\"kov.init." + global.qualifiedName(v) + "\"";
+      std::string fnName = "@\"kov.init." + name.substr(2, name.size() - 3) + "\""; // per instantiation for class template members
       try
       {
         pushScope();
@@ -3734,12 +3822,67 @@ namespace
       return d && d->kind == NodeKind::VariableDecl ? static_cast<VariableDecl*>(d) : v;
     }
 
-    // The address of the object a global names: the global itself, or, for a reference global,
-    // what it was bound to.
-    std::string globalAddress(VariableDecl* v, Node* at)
+    // `Counted<int>::instances`: the instantiation a qualified static member belongs to (null for
+    // an unqualified name or a class that is not a template).
+    const Ty* qualifierClass(Node* e, Node* at)
     {
-      std::string g = globalFor(v, at);
-      const Ty* t = global.typeOfDecl(v);
+      if (!e || e->kind != NodeKind::NameExpr)
+        return nullptr;
+      auto* n = static_cast<NameExpr*>(e);
+      if (n->name.parts.size() <= 1)
+        return nullptr;
+      QualifiedName qualifier = n->name;
+      qualifier.parts.count -= 1;
+      NamedType tmp{};
+      tmp.kind = NodeKind::NamedType;
+      tmp.token = n->token;
+      tmp.name = qualifier;
+      TemplateArgs none;
+      const Ty* q = global.typeOfAstIn(&tmp, currentFunction, currentArgs ? *currentArgs : none);
+      return q && isClass(q) && !q->args.empty() ? canonicalClass(q, at) : nullptr;
+    }
+
+    // The instantiation a static member of a class template is used with: the qualifier written,
+    // or the class of the method being emitted.
+    const Ty* staticMemberClass(VariableDecl* v, Node* e, Node* at, const Ty* classTy)
+    {
+      Decl* owner = global.owningClass(v);
+      if (!owner || owner->templateParams.empty())
+        return nullptr;
+      if (classTy)
+        return canonicalClass(classTy, at);
+      if (const Ty* q = qualifierClass(e, at))
+        return q;
+      if (currentClassTy && classDef(canonicalClass(currentClassTy, at)->decl, at) == classDef(owner, at))
+        return canonicalClass(currentClassTy, at);
+      return nullptr; // no instantiation in sight (an alias used as the qualifier): one shared object, as for a plain class
+    }
+
+    // `using EmptyWidget::EmptyWidget;` in a class without constructors of its own: the base whose
+    // constructors are inherited (its name, as a constructor initializer would spell it); null if none.
+    std::optional<QualifiedName> inheritedConstructorBase(ClassDecl* c)
+    {
+      for (Decl* m : c->members)
+      {
+        if (m->kind != NodeKind::UsingNameDecl)
+          continue;
+        const QualifiedName& q = static_cast<UsingNameDecl*>(m)->name;
+        if (q.parts.size() < 2 || q.parts[q.parts.size() - 1].symbol != q.parts[q.parts.size() - 2].symbol)
+          continue;
+        QualifiedName base = q;
+        base.parts.count -= 1;
+        return base;
+      }
+      return std::nullopt;
+    }
+
+    // The address of the object a global names: the global itself, or, for a reference global,
+    // what it was bound to. classTy: the instantiation, for a static member of a class template.
+    std::string globalAddress(VariableDecl* v, Node* at, const Ty* classTy = nullptr)
+    {
+      classTy = staticMemberClass(v, at, at, classTy);
+      std::string g = globalFor(v, at, classTy);
+      const Ty* t = classTy ? global.typeOfDeclIn(v, global.classArgsOf(classTy)) : global.typeOfDecl(v);
       if (!t || !t->isReference())
         return g;
       std::string p = newTemp();
@@ -3747,11 +3890,27 @@ namespace
       return p;
     }
 
-    std::string globalFor(VariableDecl* v, Node* at)
+    std::string globalFor(VariableDecl* v, Node* at, const Ty* classTy = nullptr)
     {
-      auto it = globals.find(v);
-      if (it != globals.end())
-        return it->second;
+      TemplateArgs classArgs;
+      std::string instanceName;
+      if (classTy)
+      {
+        // A static member of a class template: one global per instantiation, its initializer
+        // evaluated under the instantiation's arguments.
+        classArgs = global.classArgsOf(classTy);
+        instanceName = "@\"" + types.toString(classTy, &symbols) + "::" + sym(v->name.last().symbol) + "\"";
+        auto found = instanceGlobals.find(instanceName);
+        if (found != instanceGlobals.end())
+          return found->second;
+      }
+      else
+      {
+        auto it = globals.find(v);
+        if (it != globals.end())
+          return it->second;
+      }
+      ArgsScope argsScope(*this, classTy ? &classArgs : currentArgs);
       struct SharedScope
       {
         bool& flag;
@@ -3759,11 +3918,14 @@ namespace
         SharedScope(bool& f) : flag(f), saved(f) { flag = true; }
         ~SharedScope() { flag = saved; }
       } sharedScope(emittingShared); // a global's initializer belongs to every module
-      const Ty* t = global.typeOfDecl(v);
+      const Ty* t = classTy ? global.typeOfDeclIn(v, classArgs) : global.typeOfDecl(v);
       if (!t || !t->isKnown())
         unsupported(at, "a global of unknown type");
-      std::string name = "@\"" + global.qualifiedName(v) + "\"";
-      globals[v] = name;
+      std::string name = classTy ? instanceName : "@\"" + global.qualifiedName(v) + "\"";
+      if (classTy)
+        instanceGlobals[instanceName] = name;
+      else
+        globals[v] = name;
       if (v->builtin == BUILTIN_EnumValues && v->parent)
       {
         // E::values: a constant array of the enumerators in declaration order.

@@ -2268,6 +2268,8 @@ namespace
         }
       }
       skipAttributes();
+      if (templ.present && !c->name.empty() && c->name.last().hasTemplateArgs)
+        c->flags |= DF_Specialization; // `template<typename T> struct Describe<T*>`: a partial specialisation
       if (atIdent() && spelling() == "final")
       {
         advance();
@@ -3090,18 +3092,24 @@ namespace
       BraceInitExpr* b = node<BraceInitExpr>(start);
       expect(P::LBrace, "expected '{'");
       size_t mark = scratch.size();
+      std::vector<uint32_t> designators;
+      bool designated = false;
       while (!at(P::RBrace) && !at(TokenKind::End))
       {
-        // Designated initializer `.x = 1`.
+        // Designated initializer `.x = 1` (or `.x{...}`): the member's name is kept per argument.
+        uint32_t designator = UINT32_MAX;
         if (at(P::Dot) && atIdent(1))
         {
           advance();
+          designator = tok().id;
+          designated = true;
           advance();
           if (!accept(P::Assign))
           {
             if (at(P::LBrace))
             {
               scratch.push_back(parseBraceInit());
+              designators.push_back(designator);
               if (!accept(P::Comma))
                 break;
               continue;
@@ -3113,12 +3121,15 @@ namespace
         {
         }
         scratch.push_back(e);
+        designators.push_back(designator);
         if (!accept(P::Comma))
           break;
         if (inRecovery)
           break;
       }
       b->args = makeSpan<Expr*>(mark);
+      if (designated)
+        b->designators = makeSpanOf(designators);
       expect(P::RBrace, "expected '}' to close initializer");
       return b;
     }

@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**86 pass, 43 pending, 0 failing, 0 fixed** (129 snippets, 1.7 s).
+**92 pass, 38 pending, 0 failing, 0 fixed** (130 snippets, 1.7 s).
 
 ## Language: statements, expressions, declarations
 
@@ -14,8 +14,6 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 |---|---|---|---|---|
 | `language/alignas.kov` | alignas on a struct | pending | 68 alignas/alignof uses in 15 files | alignas is accepted and ignored, and alignof returns the size (12) instead of the alignment; line 1: got `12 12`, expected `16 16` |
 | `language/bitfields.kov` | bit fields | pending | 14 uses in 6 files | bit field values work but every field takes a whole unit (sizeof 12 instead of 4); line 1: got `1 6 0 12`, expected `1 6 0 4` |
-| `language/constexpr_function_bound.kov` | a constexpr function call as an array bound | pending |  | the bound evaluates to 0 (the array has no storage and writes into it crash the program); line 1: got `0`, expected `8` |
-| `language/designated_initializers.kov` | designated initializers | pending | 45 uses in 21 files | designators are ignored, the values are taken positionally (1 3 0 instead of 1 0 3); line 1: got `1 3 0`, expected `1 0 3` |
 | `language/generic_lambdas.kov` | generic lambdas (auto parameters) | pending | 330 uses in 168 files | generic lambdas are not implemented (Agui's one site is a hand-written override); C:\kov\compiler\tests\spec\language\generic_lambdas.kov:6: codegen does not support a local of unknown type (twice) yet (in @kov.main) |
 | `language/goto.kov` | goto | pending | 8 uses in 6 files | goto is parsed but not generated; C:\kov\compiler\tests\spec\language\goto.kov:12: codegen does not support the statement kind GotoStmt yet (in @kov.main) |
 | `language/sizeof_array_type.kov` | sizeof of an array type (sizeof(int[4])) | pending |  | sizeof of a written array type is not supported; C:\kov\compiler\tests\spec\language\sizeof_array_type.kov:5: codegen does not support this sizeof yet (in @kov.main) |
@@ -25,9 +23,11 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `language/attributes_noexcept.kov` | noexcept, [[nodiscard]], [[maybe_unused]] | pass | 802 noexcept, 215 [[nodiscard]], 46 [[maybe_unused]], 68 alignas/alignof |  |
 | `language/auto_variables.kov` | auto variables | pass | 6641 uses in 1428 files |  |
 | `language/binary_literals.kov` | binary integer literals (0b1010) | pass |  |  |
+| `language/constexpr_function_bound.kov` | a constexpr function call as an array bound | pass |  |  |
 | `language/constexpr_values.kov` | constexpr constants and constexpr functions | pass | 2643 uses in 808 files (variables), 361 (functions) |  |
 | `language/decltype.kov` | decltype | pass | 163 uses in 57 files |  |
 | `language/default_arguments.kov` | default arguments | pass | 32235 uses in 4539 files |  |
+| `language/designated_initializers.kov` | designated initializers | pass | 45 uses in 21 files |  |
 | `language/enum_class_cxx.kov` | C++-style enum class with underlying type, casts, flags with operators | pass | 961 uses in 701 files |  |
 | `language/exceptions.kov` | exceptions: throw, catch by reference and base, rethrow, cleanup of locals | pass | 3118 throw sites in 853 files, 457 try blocks |  |
 | `language/if_constexpr.kov` | if constexpr on type traits | pass | 411 uses in 107 files |  |
@@ -51,7 +51,6 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `classes/conversion_operators.kov` | two conversion operators on one class (operator bool and operator String) | pending | 376 conversion operators in 292 files | both conversion operators get the symbol `operator?() const` and the IR has a duplicate definition; C:\kov\compiler\build\spec\classes.conversion_operators.exe.21.ll:69:13: error: invalid redefinition of function 'Vec::operator?() const' |
 | `classes/dynamic_cast.kov` | dynamic_cast | pending | 443 uses in 244 files | dynamic_cast is not implemented (design.md section 9: single inheritance, type descriptor behind the vtable); line 1: got `true false`, expected `true true` |
 | `classes/member_function_pointers.kov` | pointers to member functions | pending | 3 uses in 3 files | pointers to member functions are not implemented; C:\kov\compiler\tests\spec\classes\member_function_pointers.kov:12: codegen does not support the statement kind ErrorStmt yet (in @kov.main) |
 | `classes/nested_struct_in_template.kov` | a struct nested in a class template, with members of the parameter type | pending |  | the nested struct's member of type T has an unknown type; C:\kov\compiler\tests\spec\classes\nested_struct_in_template.kov:6: codegen does not support a member of unknown type (value) yet (in @kov.main) |
@@ -60,9 +59,11 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `classes/anonymous_members.kov` | anonymous struct and union members | pass |  |  |
 | `classes/const_and_mutable.kov` | const member functions, const overloads, mutable members, const objects | pass | 198 mutable members in 127 files |  |
 | `classes/constructors.kov` | constructors: default, converting, explicit, copy, move, delegating, = default, = delete | pass | 2065 `= default`, 904 `= delete`, 1100 delegating, 2035 explicit |  |
+| `classes/conversion_operators.kov` | two conversion operators on one class (operator bool and operator String) | pass | 376 conversion operators in 292 files |  |
 | `classes/copy_semantics.kov` | copying and moving objects with owned resources, assignment, self-contained counts | pass |  |  |
 | `classes/destructors_raii.kov` | destructor order: scope exit, temporaries, members, early return | pass |  |  |
 | `classes/friends.kov` | friend functions and friend classes | pass | 459 uses in 269 files |  |
+| `classes/inherited_constructors.kov` | inherited constructors (using Base::Base;) in a class with members of its own | pass | Agui's Filler, Frame and others |  |
 | `classes/interfaces.kov` | abstract interfaces implemented by several classes, held through base pointers in containers | pass |  |  |
 | `classes/member_pointers.kov` | pointers to data members | pass |  |  |
 | `classes/multiple_inheritance.kov` | multiple inheritance (one polymorphic base), access to both bases, pointer conversions | pass | 264 uses in 261 files |  |
@@ -82,16 +83,15 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/alias_template_over_trait.kov` | an alias template whose target is a type trait (template<typename T> using Plain = RemoveReference<T>;) | pending |  | a variable of type Plain<int&> has an unknown type; C:\kov\compiler\tests\spec\templates\alias_template_over_trait.kov:6: codegen does not support a local of unknown type (y) yet (in @kov.main) |
 | `templates/alias_template_reference.kov` | an alias template producing a reference type | pending |  | `template<typename T> using Ref = RemoveReference<T>&;` gives a variable of unknown type; C:\kov\compiler\tests\spec\templates\alias_template_reference.kov:8: codegen does not support an assignment to an expression of unknown type yet (in @kov.main) |
 | `templates/class_template_outofline_members.kov` | members of a class template with a non-type parameter defined out of line | pending |  | `Ring<int, 3>::push` is referenced but never defined (link error); templates.class_template_outofline_members.exe.21.o : error LNK2019: unresolved external symbol Ring<int32, 3>::push(const int32&) referenced in function kov.main |
-| `templates/class_template_static_members.kov` | a static data member of a class template is one object per instantiation | pending |  | all instantiations share one object (3 3 instead of 2 1); line 1: got `3 3`, expected `2 1` |
 | `templates/dependent_return_in_variadic_call.kov` | a call whose return type is dependent (typename T::Unit) used directly as a variadic argument | pending |  | println("{}", scaled(m)) is "passing a non-class to a class parameter"; storing the result in an int first works; C:\kov\compiler\tests\spec\templates\dependent_return_in_variadic_call.kov:8: codegen does not support passing a non-class to a class parameter yet (in @kov.main) |
 | `templates/enum_template_parameters.kov` | enum values as non-type template arguments | pending |  | comparing the parameter in the body fails (`M == Mode::Fast` has no type under the instantiation); C:\kov\compiler\tests\spec\templates\enum_template_parameters.kov:4: codegen does not support the type 0 of BinaryExpr yet (in @"modeName<0>()", requested by @kov.main) |
 | `templates/nested_template_instantiation.kov` | a class template instantiated with another instantiation of itself (Stack<Stack<int>>) through a variadic push | pending |  | pushing into the inner stack is rejected ("passing a non-class to a class parameter" / int&& parameter); C:\kov\stdlib\core\Vector.kov:10: codegen does not support the type int32& of FunctionDecl yet (in @"Vector<int32>::emplace_back<int32&>(int32&)", requested by @"Stack<int32>::push<int32&>(int32&)") |
-| `templates/partial_specialisation.kov` | partial specialisation of class templates | pending | 8 uses in 5 files | partial specialisations are ignored, the primary template is used silently; line 1: got `value value value`, expected `value pointer vector` |
 | `templates/requires_clauses.kov` | constrained templates (requires clauses) | pending | 1274 requires/concept uses in 609 files | requires clauses are parsed but not enforced (the first overload is taken for both calls); concepts are not implemented; line 1: got `42 3`, expected `42 not integral` |
 | `templates/sfinae_enable_if.kov` | enable_if-style overload selection | pending | 1 use (Factorio uses requires clauses instead) | EnableIf substitution failure does not remove the overload; C:\kov\compiler\tests\spec\templates\sfinae_enable_if.kov:8: codegen does not support a call to kind whose template arguments could not be deduced yet (in @kov.main) |
 | `templates/template_template_parameters.kov` | template template parameters | pending |  | template template parameters are not implemented; C:\kov\compiler\tests\spec\templates\template_template_parameters.kov:10: codegen does not support a call to countAll whose template arguments could not be deduced yet (in @kov.main) |
 | `templates/variadic_recursion.kov` | the recursive variadic pattern: f(T first, Rest... rest) calling f(rest...) down to a non-template base case | pending |  | the recursive call's template arguments are not deduced inside the instantiation; C:\kov\compiler\tests\spec\templates\variadic_recursion.kov:4: codegen does not support a call to sum whose template arguments could not be deduced yet (in @"sum<int32, int32, int32, int32>(int32, int32, int32, int32)", requested by @kov.main) |
 | `templates/alias_templates_traits.kov` | type traits in if constexpr (isPointer, isSame) inside a deduced function template | pass | 169 type trait uses in 77 files |  |
+| `templates/class_template_static_members.kov` | a static data member of a class template is one object per instantiation | pass |  |  |
 | `templates/class_templates.kov` | class templates: members, nested typedefs, static constexpr functions, several instantiations | pass |  |  |
 | `templates/ctad.kov` | class template argument deduction from constructor arguments | pass |  |  |
 | `templates/dependent_member_typedef.kov` | a member typedef of a dependent instantiation as a return type (typename Vector<T>::iterator) | pass |  |  |
@@ -101,6 +101,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/member_template_in_class_template.kov` | a member function template of a class template converting its argument to T (names.add("a") into Stack<String>) | pass |  |  |
 | `templates/member_templates_explicit.kov` | member function templates called with explicit arguments, static member templates | pass |  |  |
 | `templates/non_type_parameters.kov` | non-type template parameters: ints, bools, defaults, used in the body | pass |  |  |
+| `templates/partial_specialisation.kov` | partial specialisation of class templates | pass | 8 uses in 5 files |  |
 | `templates/several_instantiations_in_one_call.kov` | three instantiations of one function template as arguments of a single variadic call | pass |  |  |
 | `templates/traits_as_values.kov` | type traits used as values (bool isSame<A, B> in an expression, not only in if constexpr) | pass |  |  |
 | `templates/variadic_templates.kov` | variadic templates: packs, sizeof..., forwarding, fold expressions | pass | 175 variadic templates in 59 files, 110 fold expressions, 218 std::forward |  |

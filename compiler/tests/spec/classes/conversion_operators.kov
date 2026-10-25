@@ -1,6 +1,5 @@
 // spec: two conversion operators on one class (operator bool and operator String)
 // factorio: 376 conversion operators in 292 files
-// pending: both conversion operators get the symbol `operator?() const` and the IR has a duplicate definition
 struct Vec
 {
   int x, y;

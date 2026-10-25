@@ -1,6 +1,5 @@
 // spec: partial specialisation of class templates
 // factorio: 8 uses in 5 files
-// pending: partial specialisations are ignored, the primary template is used silently
 template<typename T> struct Describe { static const char* name() { return "value"; } };
 template<typename T> struct Describe<T*> { static const char* name() { return "pointer"; } };
 template<typename T> struct Describe<Vector<T>> { static const char* name() { return "vector"; } };

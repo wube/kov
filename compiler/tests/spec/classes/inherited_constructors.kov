@@ -1,0 +1,23 @@
+// spec: inherited constructors (using Base::Base;) in a class with members of its own
+// factorio: Agui's Filler, Frame and others
+struct Widget
+{
+  int width, height;
+  const char* name;
+  Widget(int width, int height, const char* name = "widget") : width(width), height(height), name(name) {}
+  virtual int kind() const { return 1; }
+};
+struct Filler : Widget
+{
+  using Widget::Widget;
+  int weight = 7;
+  String label = "filler";
+  int kind() const override { return 2; }
+};
+int main()
+{
+  Filler f(3, 4);
+  Filler g(5, 6, "named");
+  println("{} {} {} {} {} {} {}", f.width, f.height, f.name, f.weight, f.label, f.kind(), g.name);
+  return 0;
+}

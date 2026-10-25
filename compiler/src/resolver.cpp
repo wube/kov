@@ -765,15 +765,19 @@ struct GlobalScope::Impl
     return out;
   }
 
-  // Among the entries a class template's name resolved to, the full specialisation whose
-  // arguments are exactly `args`; null when there is none or an argument is still dependent.
-  Decl* matchSpecialization(const Lookup& l, const std::vector<const Ty*>& args, int depth)
+  // Among the entries a class template's name resolved to, the specialisation for `args`: a full
+  // one whose arguments are exactly `args` (its own class, without arguments), or else a partial
+  // one (`template<typename T> struct Describe<T*>`) whose patterns deduce from them (its class
+  // with the deduced arguments of its own parameters). Null when there is none or an argument is
+  // still dependent.
+  const Ty* matchSpecialization(const Lookup& l, const std::vector<const Ty*>& args, int depth)
   {
     if (!l.overloads || args.empty() || depth > 24)
       return nullptr;
     for (const Ty* a : args)
       if (!a || !a->isKnown() || types.isDependent(a))
         return nullptr;
+    const Ty* partial = nullptr;
     for (const Entry& e : *l.overloads)
     {
       if (!e.decl || e.decl->kind != NodeKind::ClassDecl || !(e.decl->flags & DF_Specialization))
@@ -784,18 +788,56 @@ struct GlobalScope::Impl
       const NamePart& part = c->name.last();
       if (part.templateArgs.size() != args.size())
         continue;
-      TypeContext sctx{lexicalScopeOf(c), nullptr, nullptr, c->file ? c->file->tokens : nullptr, c->file ? c->file->text : std::string_view()};
-      bool same = true;
-      for (size_t i = 0; i < args.size() && same; ++i)
+      LocalStack own;
+      for (Decl* p : c->templateParams)
+        own.push(static_cast<TemplateParamDecl*>(p)->name, p);
+      TypeContext sctx{lexicalScopeOf(c), c->templateParams.empty() ? nullptr : &own, nullptr,
+                       c->file ? c->file->tokens : nullptr, c->file ? c->file->text : std::string_view()};
+      if (c->templateParams.empty())
+      {
+        bool same = true;
+        for (size_t i = 0; i < args.size() && same; ++i)
+        {
+          Node* a = part.templateArgs[i];
+          Decl* param = l.decl && i < l.decl->templateParams.size() ? l.decl->templateParams[i] : nullptr;
+          same = templateArgument(a, param, sctx, depth) == args[i];
+        }
+        if (same)
+          return types.classType(c, {});
+        continue;
+      }
+      if (partial)
+        continue; // the first matching partial specialisation wins (no ordering yet)
+      Subst s;
+      bool ok = true;
+      for (size_t i = 0; i < args.size() && ok; ++i)
       {
         Node* a = part.templateArgs[i];
         Decl* param = l.decl && i < l.decl->templateParams.size() ? l.decl->templateParams[i] : nullptr;
-        same = templateArgument(a, param, sctx, depth) == args[i];
+        const Ty* pattern = templateArgument(a, param, sctx, depth);
+        if (!pattern || !pattern->isKnown())
+          ok = false;
+        else if (types.isDependent(pattern))
+        {
+          deduce(pattern, args[i], s, depth + 1);
+          ok = substitute(pattern, s) == args[i];
+        }
+        else
+          ok = pattern == args[i];
       }
-      if (same)
-        return c;
+      std::vector<const Ty*> deduced;
+      for (Decl* p : c->templateParams)
+      {
+        const Ty* t = ok ? s.find(p) : nullptr;
+        if (!t)
+          ok = false;
+        else
+          deduced.push_back(t);
+      }
+      if (ok)
+        partial = types.classType(c, Span<const Ty*>{deduced.data(), uint32_t(deduced.size())});
     }
-    return nullptr;
+    return partial;
   }
 
   Lookup lookupQualified(const QualifiedName& name, Scope* context, const LocalStack* locals, int depth, const Subst* subst = nullptr)
@@ -874,10 +916,10 @@ struct GlobalScope::Impl
         TypeContext actx{context, locals, subst};
         for (Node* a : part.templateArgs)
           args.push_back(uint8_t(a->kind) <= uint8_t(NodeKind::PackType) ? convertType(static_cast<Type*>(a), actx, depth + 1) : types.unknown());
-        if (Decl* spec = matchSpecialization(step, args, depth))
+        if (const Ty* spec = matchSpecialization(step, args, depth))
         {
-          step.decl = spec;
-          step.scope = spec->ownScope;
+          step.decl = spec->decl;
+          step.scope = spec->decl->ownScope;
         }
       }
       if (!step.scope)
@@ -893,6 +935,11 @@ struct GlobalScope::Impl
 
   // ---------------- phase 2: types ----------------
 
+  struct ConstBinding // a parameter's value while a constexpr function call is evaluated
+  {
+    uint32_t symbol;
+    int64_t value;
+  };
   struct TypeContext
   {
     Scope* scope;
@@ -900,6 +947,7 @@ struct GlobalScope::Impl
     const Subst* subst;
     const std::vector<Token>* tokens = nullptr; // For evaluating array bounds written as literals.
     std::string_view text;
+    const std::vector<ConstBinding>* env = nullptr; // Parameters bound to values inside a constexpr call.
   };
 
   // --- builtin type traits ---
@@ -1150,6 +1198,10 @@ struct GlobalScope::Impl
       case NodeKind::NameExpr:
       {
         auto* n = static_cast<NameExpr*>(e);
+        if (ctx.env && n->name.parts.size() == 1)
+          for (const ConstBinding& b : *ctx.env)
+            if (b.symbol == n->name.parts[0].symbol)
+              return b.value; // a parameter of the constexpr function being evaluated
         Lookup l = lookupQualified(n->name, ctx.scope, ctx.locals, depth + 1, ctx.subst);
         return constOfDecl(l.decl, ctx, depth);
       }
@@ -1157,6 +1209,37 @@ struct GlobalScope::Impl
       {
         // `Enum::Value` is parsed as a name; `object.member` is never constant.
         return std::nullopt;
+      }
+      case NodeKind::CallExpr:
+      {
+        // `cells()`: a call to a function whose body is one `return expression;`, evaluated with
+        // the arguments bound to its parameters (constexpr functions as bounds and constants).
+        auto* c = static_cast<CallExpr*>(e);
+        if (!c->callee || c->callee->kind != NodeKind::NameExpr)
+          return std::nullopt;
+        auto* callee = static_cast<NameExpr*>(c->callee);
+        Decl* d = callee->resolved;
+        if (!d)
+          d = lookupQualified(callee->name, ctx.scope, ctx.locals, depth + 1, ctx.subst).decl;
+        if (!d || d->kind != NodeKind::FunctionDecl)
+          return std::nullopt;
+        auto* f = static_cast<FunctionDecl*>(d);
+        if (!f->body || f->body->kind != NodeKind::BlockStmt || f->params.size() != c->args.size())
+          return std::nullopt;
+        auto* block = static_cast<BlockStmt*>(f->body);
+        if (block->stmts.size() != 1 || !block->stmts[0] || block->stmts[0]->kind != NodeKind::ReturnStmt)
+          return std::nullopt;
+        std::vector<ConstBinding> env;
+        for (size_t i = 0; i < c->args.size(); ++i)
+        {
+          auto v = constEval(c->args[i], ctx, depth + 1);
+          if (!v)
+            return std::nullopt;
+          env.push_back({static_cast<ParamDecl*>(f->params[i])->name, *v});
+        }
+        TypeContext fctx{lexicalScopeOf(f), nullptr, nullptr, f->file ? f->file->tokens : nullptr, f->file ? f->file->text : std::string_view()};
+        fctx.env = &env;
+        return constEval(static_cast<ReturnStmt*>(block->stmts[0])->value, fctx, depth + 1);
       }
       case NodeKind::LiteralExpr:
       {
@@ -1515,8 +1598,8 @@ struct GlobalScope::Impl
           for (Decl* p : params)
             args.push_back(types.param(p));
         if (!params.empty())
-          if (Decl* spec = matchSpecialization(l, args, depth))
-            return types.classType(spec, {}); // a full specialisation is its own class
+          if (const Ty* spec = matchSpecialization(l, args, depth))
+            return spec; // a full specialisation is its own class; a partial one keeps its own parameters' arguments
         return types.classType(def, Span<const Ty*>{args.data(), uint32_t(args.size())});
       }
       case NodeKind::EnumDecl:
@@ -4628,6 +4711,13 @@ std::string GlobalScope::qualifiedName(Decl* d)
         {
           P op = P(p.opToken);
           return op == P::LBracket ? "operator[]" : op == P::LParen ? "operator()" : "operator" + std::string(punctuatorSpelling(op));
+        }
+        if (p.special == 3)
+        {
+          // A conversion operator: named by what it converts to (`operator bool`, `operator String`).
+          const Ty* ft = impl->declaredTypeOf(x, nullptr, 0);
+          if (ft && ft->kind == TyKind::Function && ft->inner)
+            return "operator " + impl->types.toString(ft->inner, &impl->symbols);
         }
         if (p.special != 0 || p.symbol == UINT32_MAX)
           return "operator?";
