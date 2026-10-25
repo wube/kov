@@ -986,6 +986,18 @@ struct GlobalScope::Impl
           step.scope = spec->decl->ownScope;
         }
       }
+      if (!step.scope && step.decl && step.decl->kind == NodeKind::UsingAliasDecl && step.decl->templateParams.empty())
+      {
+        // `using Kind = Token::Special;` (a local alias, say), then `Kind::None`: the rest of the
+        // name inside the type the alias stands for.
+        auto* alias = static_cast<UsingAliasDecl*>(step.decl);
+        if (Scope* inside = scopeOfType(alias->type, step.found == Found::Local ? context : lexicalScopeOf(alias), locals, depth + 1))
+        {
+          current = inside;
+          out = step;
+          continue;
+        }
+      }
       if (!step.scope)
       {
         // A variable/function used as a qualifier, or an alias we could not follow.
@@ -1708,9 +1720,13 @@ struct GlobalScope::Impl
             if (!p->defaultArg)
               break;
             Subst s;
+            LocalStack own; // the parameters by name: `= Less<K>` names an earlier one
             for (size_t k = 0; k < i; ++k)
+            {
               s.pairs.push_back({params[k], args[k]});
-            TypeContext dctx{lexicalScopeOf(def), nullptr, &s, def->file ? def->file->tokens : nullptr, def->file ? def->file->text : std::string_view()};
+              own.push(static_cast<TemplateParamDecl*>(params[k])->name, params[k]);
+            }
+            TypeContext dctx{lexicalScopeOf(def), &own, &s, def->file ? def->file->tokens : nullptr, def->file ? def->file->text : std::string_view()};
             args.push_back(templateArgument(p->defaultArg, p, dctx, depth));
           }
         }
@@ -1752,21 +1768,21 @@ struct GlobalScope::Impl
             args.push_back(templateArgument(lastPart.templateArgs[i], params[i], ctx, depth));
             s.pairs.push_back({params[i], args.back()});
           }
+          LocalStack own; // the alias's parameters, found by name while its defaults and type are converted
+          for (Decl* p : params)
+            own.push(static_cast<TemplateParamDecl*>(p)->name, p);
           for (size_t i = args.size(); i < params.size(); ++i)
           {
             auto* p = static_cast<TemplateParamDecl*>(params[i]);
             if (!p->defaultArg)
               break;
-            TypeContext dctx{lexicalScopeOf(u), nullptr, &s, u->file ? u->file->tokens : nullptr, u->file ? u->file->text : std::string_view()};
-            args.push_back(templateArgument(p->defaultArg, p, dctx, depth));
+            TypeContext dctx{lexicalScopeOf(u), &own, &s, u->file ? u->file->tokens : nullptr, u->file ? u->file->text : std::string_view()};
+            args.push_back(templateArgument(p->defaultArg, p, dctx, depth)); // `= Less<K>`: K is an earlier parameter, bound in s
             s.pairs.push_back({params[i], args.back()});
           }
           if (ctx.subst)
             for (const Subst::Pair& p : ctx.subst->pairs)
               s.pairs.push_back(p);
-          LocalStack own; // the alias's parameters, found by name while its type is converted
-          for (Decl* p : params)
-            own.push(static_cast<TemplateParamDecl*>(p)->name, p);
           TypeContext actx{lexicalScopeOf(u), &own, &s, u->file ? u->file->tokens : nullptr, u->file ? u->file->text : std::string_view()};
           return convertType(u->type, actx, depth + 1);
         }

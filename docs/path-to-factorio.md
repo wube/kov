@@ -464,6 +464,19 @@ files parsing clean (93 errors in 37 files, down from 208 in 59). Spec: `languag
 `templates/deduction_guides` stays pending (the `Overload{lambdas...}` idiom needs `using
 Ts::operator()...` and aggregate deduction).
 
+A first self-contained subset (`Util/Container`, `Util/Sort`, `Util/MathExpressions`, `BitBuffer`
+with CommonUtil) compiles to 81.9% typed with 22 code generation complaints, and showed two
+compiler gaps, both fixed the same night: a class template's default argument naming an earlier
+parameter (`template<class K, class C = Less<K>>`) was converted without the parameters in
+scope, so `Sorted<int>` got `Less<<unknown>>`; and a qualified name through a local alias
+(`using Kind = Token::Special;` then `case Kind::None:`) was not followed into the alias's type.
+Spec: `templates/class_template_default_arguments`, `language/switch_through_local_alias`. What
+is left in the subset is the conversion set, not the compiler: `FlatMap`'s default comparator
+lives on a forward declaration (`FlatMapForwards.hpp`), which the converter drops with the
+declaration, and `FunctionArgumentIndex` lives in the game's root `Typedefs.hpp`; the converter
+needs to carry default template arguments from forward declarations, and the Util set needs the
+root headers.
+
 ## The order that gets to a running game
 
 1. Decide exceptions and RTTI; implement them (they shape what the converter emits).

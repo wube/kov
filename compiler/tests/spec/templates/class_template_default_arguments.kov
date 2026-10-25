@@ -1,0 +1,18 @@
+// spec: default template arguments of class templates, depending on earlier parameters: `template<class K, class C = Less<K>>`
+// found in src/Util (FlatMap<K, V, Comp = std::less<K>>, FlatSet, VectorSet)
+template<typename T> struct DefaultLess { bool operator()(const T& a, const T& b) const { return a < b; } };
+template<typename K, typename C = DefaultLess<K>>
+struct Sorted
+{
+  C cmp;
+  bool less(const K& a, const K& b) const { return this->cmp(a, b); }
+};
+template<typename K, typename C>
+int countLess(const Sorted<K, C>& s, const K& a, const K& b) { return s.less(a, b) ? 1 : 0; }
+int main()
+{
+  Sorted<int> s;
+  Sorted<int, DefaultLess<int>> t;
+  println("{} {} {}", s.less(1, 2), t.less(2, 1), countLess(s, 3, 4));
+  return 0;
+}

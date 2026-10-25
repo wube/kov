@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**142 pass, 2 pending, 0 failing, 0 fixed** (144 snippets, 2.4 s).
+**144 pass, 2 pending, 0 failing, 0 fixed** (146 snippets, 2.7 s).
 
 ## Language: statements, expressions, declarations
 
@@ -46,6 +46,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `language/static_locals.kov` | function-local statics | pass | static declarations inside functions: part of 7783 static uses in 1983 files |  |
 | `language/structured_bindings.kov` | structured bindings | pass | 459 uses in 204 files |  |
 | `language/switch.kov` | switch with fallthrough and default | pass | 1682 uses in 697 files |  |
+| `language/switch_through_local_alias.kov` | case labels named through a local alias of a nested enum: `using Kind = Token::Special; case Kind::Unary:` | pass |  |  |
 | `language/ternary_comma_sizeof.kov` | conditional operator with objects, comma operator, sizeof of expressions | pass |  |  |
 | `language/thread_local.kov` | thread_local variables | pass | 15 uses in 13 files |  |
 | `language/unions.kov` | unions | pass | 47 uses in 39 files |  |
@@ -90,6 +91,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/alias_template_reference.kov` | an alias template producing a reference type | pass |  |  |
 | `templates/alias_templates_traits.kov` | type traits in if constexpr (isPointer, isSame) inside a deduced function template | pass | 169 type trait uses in 77 files |  |
 | `templates/auto_return_templates.kov` | function templates with a deduced (`auto`, `auto&`) return type | pass |  |  |
+| `templates/class_template_default_arguments.kov` | default template arguments of class templates, depending on earlier parameters: `template<class K, class C = Less<K>>` | pass |  |  |
 | `templates/class_template_outofline_members.kov` | members of a class template with a non-type parameter defined out of line | pass |  |  |
 | `templates/class_template_static_members.kov` | a static data member of a class template is one object per instantiation | pass |  |  |
 | `templates/class_templates.kov` | class templates: members, nested typedefs, static constexpr functions, several instantiations | pass |  |  |

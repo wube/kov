@@ -1,0 +1,26 @@
+// spec: case labels named through a local alias of a nested enum: `using Kind = Token::Special; case Kind::Unary:`
+// found in src/Util (MathExpressions/Evaluator)
+struct Token
+{
+  enum class Special : uint8_t { None, Variable, Unary };
+  Special special = Special::None;
+};
+int classify(const Token& token)
+{
+  using Kind = Token::Special;
+  switch (token.special)
+  {
+    case Kind::None: return 0;
+    case Kind::Variable: return 1;
+    case Kind::Unary: return 2;
+  }
+  return -1;
+}
+int main()
+{
+  Token a;
+  Token b;
+  b.special = Token::Special::Unary;
+  println("{} {}", classify(a), classify(b));
+  return 0;
+}
