@@ -1,6 +1,5 @@
 // spec: enable_if-style overload selection
 // factorio: 1 use (Factorio uses requires clauses instead)
-// pending: EnableIf substitution failure does not remove the overload
 template<typename T, typename = EnableIf<isIntegral<T>>> const char* kind(T) { return "integral"; }
 template<typename T, typename = EnableIf<isFloatingPoint<T>>, typename = void> const char* kind(T) { return "floating"; }
 int main()

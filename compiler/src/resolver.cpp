@@ -1417,8 +1417,16 @@ struct GlobalScope::Impl
     std::optional<int64_t> v;
     if (arg->kind == NodeKind::NamedType)
     {
+      const QualifiedName& an = static_cast<NamedType*>(arg)->name;
+      if (an.parts.size() == 1 && an.parts[0].hasTemplateArgs && isBoolTraitName(an.parts[0].symbol))
+      {
+        // `EnableIf<isIntegral<T>>`: a trait's value, once its arguments are known.
+        std::vector<const Ty*> targs = traitArgs(an.parts[0], ctx, depth + 1);
+        std::optional<bool> b = targs.empty() ? std::nullopt : traitValue(symbols.name(an.parts[0].symbol), targs);
+        return b ? types.valueType(types.boolType(), *b ? 1 : 0) : types.unknown();
+      }
       // `Array<char, bufferSize>`: a bare name is a type to the parser; it may be a constant.
-      Lookup l = lookupQualified(static_cast<NamedType*>(arg)->name, ctx.scope, ctx.locals, depth + 1, ctx.subst);
+      Lookup l = lookupQualified(an, ctx.scope, ctx.locals, depth + 1, ctx.subst);
       bool constant = l.decl && ((l.decl->kind == NodeKind::VariableDecl && !(l.decl->flags & DF_Typedef)) || l.decl->kind == NodeKind::EnumeratorDecl ||
                                  (l.decl->kind == NodeKind::TemplateParamDecl && !static_cast<TemplateParamDecl*>(l.decl)->isType));
       if (constant)
@@ -2138,6 +2146,27 @@ struct GlobalScope::Impl
   // parameter pack, which binds to the remaining arguments.
   // The declared type of candidate with its template parameters renamed to those of f: a
   // declaration and its separate definition each have their own, and signatures must compare equal.
+  // The template parameters deduction left unbound take their defaults (`typename = EnableIf<...>`);
+  // a default that is no type (EnableIf of a false condition) makes the candidate drop out.
+  bool fillDefaultTemplateArgs(FunctionDecl* f, Subst& s)
+  {
+    LocalStack own;
+    for (Decl* p : f->templateParams)
+      own.push(static_cast<TemplateParamDecl*>(p)->name, p);
+    for (Decl* d : f->templateParams)
+    {
+      auto* p = static_cast<TemplateParamDecl*>(d);
+      if (s.find(d) || !p->defaultArg || p->isPack)
+        continue;
+      TypeContext ctx{lexicalScopeOf(f), &own, &s, f->file ? f->file->tokens : nullptr, f->file ? f->file->text : std::string_view()};
+      const Ty* t = templateArgument(p->defaultArg, d, ctx, 0);
+      if (!t || !t->isKnown())
+        return false;
+      s.pairs.push_back({d, t});
+    }
+    return true;
+  }
+
   const Ty* typeAs(FunctionDecl* candidate, FunctionDecl* f)
   {
     const Ty* t = declaredTypeOf(candidate, nullptr, 0);
@@ -2571,7 +2600,11 @@ struct GlobalScope::Impl
       const Ty* ft = declaredTypeOf(f, classSubst, 0);
       Subst deduced = classSubst ? *classSubst : Subst{};
       if (!f->templateParams.empty() && ft && ft->kind == TyKind::Function)
+      {
         deduceCall(f, ft, argTypes, deduced);
+        if (!fillDefaultTemplateArgs(f, deduced))
+          continue; // a default template argument that is no type: not a candidate
+      }
       bool ok = true;
       for (size_t i = 0; i < argTypes.size() && ok; ++i)
       {
@@ -3336,6 +3369,7 @@ struct GlobalScope::Impl
             for (size_t i = 0; i < namePart->templateArgs.size() && i < f->templateParams.size(); ++i)
               s.pairs.push_back({f->templateParams[i], explicitArgument(namePart->templateArgs[i], f->templateParams[i])});
           impl.deduceCall(f, fnTy, argTypesOf(args), s);
+          impl.fillDefaultTemplateArgs(f, s);
           if (const Ty* r = instantiateFunction(f, s, true, classSubst))
             return r;
           return unknown(Why::AutoReturn);
@@ -3371,6 +3405,7 @@ struct GlobalScope::Impl
           for (size_t i = 0; i < namePart->templateArgs.size() && i < f->templateParams.size(); ++i)
             subst.pairs.push_back({f->templateParams[i], explicitArgument(namePart->templateArgs[i], f->templateParams[i])});
         impl.deduceCall(f, fnTy, argTypesOf(args), subst);
+        impl.fillDefaultTemplateArgs(f, subst);
         if (call)
         {
           call->templateArgCount = 0;

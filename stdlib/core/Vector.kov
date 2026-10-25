@@ -71,6 +71,9 @@ struct Vector
   int size() const { return this->length; }
   T* data() { return this->items; }
   const T* data() const { return this->items; }
+  // A Vector is a Span of its elements (what passing a std::vector to a std::span parameter does).
+  operator Span<T>() { return Span<T>(this->items, this->length); }
+  operator Span<const T>() const { return Span<const T>(this->items, this->length); }
   bool empty() const { return this->length == 0; }
   T& operator[](int index) { return this->items[index]; }
   T& back() { return this->items[this->length - 1]; }

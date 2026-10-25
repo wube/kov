@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**113 pass, 17 pending, 0 failing, 0 fixed** (130 snippets, 2.0 s).
+**115 pass, 15 pending, 0 failing, 0 fixed** (130 snippets, 1.9 s).
 
 ## Language: statements, expressions, declarations
 
@@ -78,7 +78,6 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
 | `templates/nested_template_instantiation.kov` | a class template instantiated with another instantiation of itself (Stack<Stack<int>>) through a variadic push | pending |  | `nested.push()` with an empty pack picks emplace_back(const T&) and emits a call without its argument (malformed IR); C:\kov\compiler\tests\spec\templates\nested_template_instantiation.kov:7: codegen does not support a call to Vector::emplace_back without an argument for its parameter value (and the overload resolution let it through) yet (in @"Stack<Stack<int32>>::push<>()", requested by @kov.main) |
-| `templates/sfinae_enable_if.kov` | enable_if-style overload selection | pending | 1 use (Factorio uses requires clauses instead) | EnableIf substitution failure does not remove the overload; C:\kov\compiler\tests\spec\templates\sfinae_enable_if.kov:8: codegen does not support a call to kind whose template arguments could not be deduced yet (in @kov.main) |
 | `templates/template_template_parameters.kov` | template template parameters | pending |  | template template parameters are not implemented; C:\kov\compiler\tests\spec\templates\template_template_parameters.kov:10: codegen does not support a call to countAll whose template arguments could not be deduced yet (in @kov.main) |
 | `templates/alias_template_conditional.kov` | an alias template over Conditional with a bool parameter (Conditional<Small, int16_t, int64_t>) | pass |  |  |
 | `templates/alias_template_member_access.kov` | an alias template of a class template (template<typename T> using Ptr = UniquePtr<T>;) used as a variable type | pass | 7 alias templates in 6 files |  |
@@ -102,6 +101,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/partial_specialisation.kov` | partial specialisation of class templates | pass | 8 uses in 5 files |  |
 | `templates/requires_clauses.kov` | constrained templates (requires clauses) | pass | 1274 requires/concept uses in 609 files |  |
 | `templates/several_instantiations_in_one_call.kov` | three instantiations of one function template as arguments of a single variadic call | pass |  |  |
+| `templates/sfinae_enable_if.kov` | enable_if-style overload selection | pass | 1 use (Factorio uses requires clauses instead) |  |
 | `templates/traits_as_values.kov` | type traits used as values (bool isSame<A, B> in an expression, not only in if constexpr) | pass |  |  |
 | `templates/variadic_recursion.kov` | the recursive variadic pattern: f(T first, Rest... rest) calling f(rest...) down to a non-template base case | pass |  |  |
 | `templates/variadic_templates.kov` | variadic templates: packs, sizeof..., forwarding, fold expressions | pass | 175 variadic templates in 59 files, 110 fold expressions, 218 std::forward |  |
@@ -110,12 +110,12 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `library/array_span.kov` | Array<T, N> and Span<T> (std::array, std::span) | pending | 372 std::array uses in 193 files, 147 std::span | Array and Span are not in the library yet; C:\kov\compiler\tests\spec\library\array_span.kov:14: codegen does not support a parameter of unknown type (4: <unknown>) yet (in @kov.main) |
 | `library/pair_tuple.kov` | Pair (std::pair) and makePair; Tuple | pending | 354 pair uses in 199 files, 51 tuple | Tuple with get<N> is not in the library yet; C:\kov\compiler\tests\spec\library\pair_tuple.kov:8: codegen does not support a local of unknown type (t) yet (in @kov.main) |
 | `library/shared_ptr.kov` | SharedPtr and WeakPtr (std::shared_ptr/weak_ptr) | pending | 99 shared_ptr uses in 50 files, 8 weak_ptr | SharedPtr and WeakPtr are not in the library yet; C:\kov\compiler\tests\spec\library\shared_ptr.kov:7: codegen does not support a local of unknown type (a) yet (in @kov.main) |
 | `library/threads_atomics.kov` | Thread, Mutex, LockGuard, Atomic (std::thread, std::mutex, std::atomic) | pending | 78 std::thread, 479 mutex/lock_guard, 47 std::atomic | no threading primitives in the library yet; C:\kov\compiler\tests\spec\library\threads_atomics.kov:6: codegen does not support a local of unknown type (counter) yet (in @kov.main) |
 | `library/variant.kov` | Variant (std::variant) | pending | 24 uses in 15 files (Kov's answer is the typed union, design.md 8.5) | Variant is not in the library; typed unions (`union enum`) are the planned replacement; C:\kov\compiler\tests\spec\library\variant.kov:6: codegen does not support a local of unknown type (v) yet (in @kov.main) |
 | `library/algorithms.kov` | algorithms (std::sort, find_if, count_if, all_of/any_of, reverse, lower_bound, remove_if, min/max/clamp) | pass | 466 algorithm calls in 247 files |  |
+| `library/array_span.kov` | Array<T, N> and Span<T> (std::array, std::span) | pass | 372 std::array uses in 193 files, 147 std::span |  |
 | `library/containers_deque_queue.kov` | Deque and Queue (std::deque, std::queue): push at both ends, pop, front/back | pass | 116 deque uses in 68 files |  |
 | `library/emplace_scalar_rvalue.kov` | emplace_back of a scalar rvalue (v.emplace_back(7)) through a forwarding pack | pass | emplace_back with literal arguments is everywhere |  |
 | `library/exceptions_std.kov` | the standard exception classes (Exception, RuntimeError, LogicError, OutOfRange, InvalidArgument) | pass | 410 std::exception / runtime_error uses in 216 files |  |

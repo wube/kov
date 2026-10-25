@@ -27,6 +27,8 @@ struct Array
   const T* end() const { return this->items + N; }
   T& front() { return this->items[0]; }
   T& back() { return this->items[N - 1]; }
+  operator Span<T>() { return Span<T>(this->items, N); }
+  operator Span<const T>() const { return Span<const T>(this->items, N); }
   void fill(const T& value)
   {
     for (int i = 0; i < N; ++i)
@@ -55,12 +57,6 @@ struct Span
   Span() {}
   Span(T* items, int length) : items(items), length(length) {}
   Span(T* first, T* last) : items(first), length(int(last - first)) {}
-  implicit Span(Vector<RemoveConst<T>>& v) : items(v.data()), length(v.size()) {}
-  implicit Span(const Vector<RemoveConst<T>>& v) : items(v.data()), length(v.size()) {}
-  template<int N>
-  implicit Span(Array<RemoveConst<T>, N>& a) : items(a.data()), length(N) {}
-  template<int N>
-  implicit Span(const Array<RemoveConst<T>, N>& a) : items(a.data()), length(N) {}
   template<int N>
   implicit Span(T (&a)[N]) : items(a), length(N) {}
 

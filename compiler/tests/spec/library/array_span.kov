@@ -1,6 +1,5 @@
 // spec: Array<T, N> and Span<T> (std::array, std::span)
 // factorio: 372 std::array uses in 193 files, 147 std::span
-// pending: Array and Span are not in the library yet
 int total(Span<const int> values) { int s = 0; for (int v : values) s += v; return s; }
 int main()
 {
