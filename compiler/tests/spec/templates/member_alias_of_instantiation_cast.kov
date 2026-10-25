@@ -1,0 +1,12 @@
+// spec: a member alias of a class template instantiation, reached through an alias of the instantiation, names the substituted type (`Table::value_type(65)`)
+// found in src/Util (Base64: `base64DecodeCharsType::value_type(i)` with `using base64DecodeCharsType = Array<unsigned char, 256>`)
+// pending: the alias names the template parameter T
+using Table = Array<unsigned char, 4>;
+int main()
+{
+  Table t;
+  for (size_t i = 0; i < 4; ++i)
+    t[i] = Table::value_type(65 + i);
+  println("{} {} {}", int(t[0]), int(t[3]), sizeof(Table::value_type));
+  return 0;
+}

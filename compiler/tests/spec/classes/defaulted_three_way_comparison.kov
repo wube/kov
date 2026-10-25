@@ -1,0 +1,27 @@
+// spec: `operator<=>(const T&) const = default` compares the members in order and gives the class <, >, <=, >= and ==
+// factorio: 58 three-way comparisons, 45 of them defaulted (FixedPointNumber, TilePosition, ChunkPosition and the other positions)
+// pending: no three-way comparison yet
+struct Fixed
+{
+  int value;
+  constexpr Fixed(int value) : value(value) {}
+  constexpr strong_ordering operator<=>(const Fixed& other) const = default;
+};
+struct Position
+{
+  int x, y;
+  constexpr strong_ordering operator<=>(const Position&) const = default;
+};
+int main()
+{
+  Fixed a(3), b(5);
+  println("{} {} {} {} {} {}", a < b, a > b, a <= b, a >= b, a == b, a != b);
+  Position p{1, 2}, q{1, 3};
+  println("{} {} {}", p < q, p == q, p == Position{1, 2});
+  Map<Position, int> order;
+  order[q] = 2;
+  order[p] = 1;
+  for (auto& [position, index] : order)
+    println("{} {} -> {}", position.x, position.y, index);
+  return 0;
+}

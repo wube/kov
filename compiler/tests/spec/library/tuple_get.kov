@@ -1,0 +1,12 @@
+// spec: `get<I>(tuple)` reads element I of a Tuple (what std::get converts to), including as an index or an argument
+// found in src/Util (InfiniteBitset: `this->data[get<0>(indexOffset)]` with `auto indexOffset = this->getIndexAndOffset(index)`)
+Tuple<int, unsigned> split(unsigned long long index) { return makeTuple(int(index / 64), unsigned(index % 64)); }
+int main()
+{
+  Vector<int> words = {10, 20, 30};
+  auto indexOffset = split(130);
+  println("{} {} {}", get<0>(indexOffset), get<1>(indexOffset), words[get<0>(indexOffset)]);
+  get<1>(indexOffset) += 1;
+  println("{}", get<1>(indexOffset));
+  return 0;
+}

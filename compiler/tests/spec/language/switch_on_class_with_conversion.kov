@@ -1,0 +1,31 @@
+// spec: `switch` on an object of a class with a conversion to an enum or integer switches on the converted value
+// found in src/Util (Dimension, Direction: `switch (dimension)` with `implicit constexpr operator Enum() const`)
+// pending: a switch on a non-integer
+class Dimension final
+{
+public:
+  enum class Enum : uint8_t
+  {
+    X = 0,
+    Y = 1,
+  };
+  using enum Enum;
+  constexpr Dimension(Enum dimension) : dimension(dimension) {}
+  implicit constexpr operator Enum() const { return this->dimension; }
+private:
+  Enum dimension;
+};
+const char* name(Dimension dimension)
+{
+  switch (dimension)
+  {
+    case Dimension::X: return "x";
+    case Dimension::Y: return "y";
+  }
+  return "?";
+}
+int main()
+{
+  println("{} {}", name(Dimension::X), name(Dimension(Dimension::Y)));
+  return 0;
+}

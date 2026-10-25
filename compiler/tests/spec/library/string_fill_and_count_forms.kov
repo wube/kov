@@ -1,0 +1,13 @@
+// spec: String(count, char), append(count, char), insert(index, count, char) and append(other, index, count): the std::string forms that build from repeated characters or a part of another string
+// found in src/Util (PropertyItem: `String(this->indentation * 5 - 3, ' ')`; StringUtil: `result.insert(0, 1, '-')`, `result.append(tmp, 0, offset)`; Base64: `result.append(1, c)`)
+// pending: no such String constructor and methods yet
+int main()
+{
+  String dashes(3, '-');
+  dashes.append(2, '=');
+  dashes.insert(0, 1, '[');
+  String digits = "123456";
+  dashes.append(digits, 1, 3);
+  println("{} {}", dashes, dashes.size());
+  return 0;
+}

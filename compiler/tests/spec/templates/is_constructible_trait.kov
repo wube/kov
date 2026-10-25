@@ -1,0 +1,24 @@
+// spec: `isConstructible<T, Args...>` is true when T can be built from Args (what std::is_constructible_v converts to), in `if constexpr` and in variable templates
+// found in src/Util (DeserialiserHelper: `inline constexpr bool should_construct = is_constructible_v<T, Args...> && !is_optional<T>::value`)
+// pending: no isConstructible yet
+struct Point
+{
+  int x, y;
+  Point(int x, int y) : x(x), y(y) {}
+};
+template<typename T, typename... Args>
+inline constexpr bool canBuild = isConstructible<T, Args...>;
+template<typename T, typename... Args>
+int build(Args... args)
+{
+  if constexpr (isConstructible<T, Args...>)
+    return sizeof(T(args...));
+  else
+    return 0;
+}
+int main()
+{
+  println("{} {} {} {}", isConstructible<Point, int, int>, isConstructible<Point, int>, canBuild<String, const char*>, isConstructible<int, double>);
+  println("{} {}", build<Point>(1, 2), build<Point>(1));
+  return 0;
+}
