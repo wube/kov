@@ -1875,6 +1875,20 @@ struct GlobalScope::Impl
               return types.dependentMember(types.param(l.decl), n->name.parts[1].symbol); // `T::Unit`: resolved when T is known
             return types.param(l.decl);
           }
+          if (n->name.parts[0].hasTemplateArgs && !static_cast<TemplateParamDecl*>(l.decl)->innerParams.empty())
+          {
+            // `Container<T>` with Container a template template parameter: the parameter applied
+            // to the written arguments; under an instantiation that binds Container to a class
+            // template, that template with the arguments.
+            std::vector<const Ty*> args;
+            for (Node* a : n->name.parts[0].templateArgs)
+              args.push_back(templateArgument(a, nullptr, ctx, depth + 1));
+            Span<const Ty*> span{args.data(), uint32_t(args.size())};
+            if (ctx.subst)
+              if (const Ty* sub = ctx.subst->find(l.decl); sub && sub->kind == TyKind::Class && sub->decl)
+                return resolveSpecialization(types.classType(sub->decl, span), depth + 1);
+            return types.param(l.decl, span);
+          }
           if (ctx.subst)
             if (const Ty* sub = ctx.subst->find(l.decl))
               return sub;
@@ -2184,6 +2198,20 @@ struct GlobalScope::Impl
       return;
     if (pattern->kind == TyKind::DependentMember)
       return; // `typename T::Unit` is not a deduced context
+    if (pattern->kind == TyKind::Param && !pattern->args.empty())
+    {
+      // `Container<T>` (Container a template template parameter) against `Vector<int>`: the
+      // parameter binds to the template itself (its class type without arguments), its written
+      // arguments to the instantiation's.
+      const Ty* a = types.unqualified(types.stripRef(arg));
+      if (a->kind != TyKind::Class || !a->decl)
+        return;
+      if (!out.find(pattern->decl))
+        out.pairs.push_back({pattern->decl, types.classType(a->decl, {})});
+      for (size_t i = 0; i < pattern->args.size() && i < a->args.size(); ++i)
+        deduce(pattern->args[i], a->args[i], out, depth + 1);
+      return;
+    }
     if (pattern->kind == TyKind::Param)
     {
       // `T value` takes the decayed argument; inside a pointer or a class (`T*`, `Vector<T>`) T
@@ -2200,7 +2228,7 @@ struct GlobalScope::Impl
       // collapses the parameter to U&), so that the callee sees an lvalue and copies rather
       // than moves.
       const Ty* a = types.stripRef(arg);
-      if (pattern->inner->kind == TyKind::Param)
+      if (pattern->inner->kind == TyKind::Param && pattern->inner->args.empty())
       {
         bool forwarding = pattern->kind == TyKind::RRef && !pattern->inner->isConst && depth == 0;
         if (!out.find(pattern->inner->decl))
@@ -2410,7 +2438,25 @@ struct GlobalScope::Impl
     {
       case TyKind::Param:
         if (const Ty* r = s.find(t->decl))
+        {
+          if (!t->args.empty() && r->kind == TyKind::Class && r->decl)
+          {
+            // `Container<T>` with Container bound to a class template: that template with the arguments.
+            std::vector<const Ty*> args;
+            for (const Ty* a : t->args)
+              args.push_back(substitute(a, s, depth + 1));
+            const Ty* applied = resolveSpecialization(types.classType(r->decl, Span<const Ty*>{args.data(), uint32_t(args.size())}), depth + 1);
+            return types.qualified(applied, t->isConst, t->isVolatile);
+          }
           return types.qualified(r, t->isConst || r->isConst, t->isVolatile || r->isVolatile); // T = const int keeps its const
+        }
+        if (!t->args.empty())
+        {
+          std::vector<const Ty*> args;
+          for (const Ty* a : t->args)
+            args.push_back(substitute(a, s, depth + 1));
+          return types.qualified(types.param(t->decl, Span<const Ty*>{args.data(), uint32_t(args.size())}), t->isConst, t->isVolatile);
+        }
         return t;
       case TyKind::DependentMember:
       {

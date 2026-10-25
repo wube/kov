@@ -79,6 +79,7 @@ public:
   const Ty* classType(Decl* decl, Span<const Ty*> args);
   const Ty* enumType(Decl* decl);
   const Ty* param(Decl* decl);
+  const Ty* param(Decl* decl, Span<const Ty*> args); // `Container<T>`: a template template parameter applied to arguments
   const Ty* dependentMember(const Ty* of, uint32_t symbol); // `T::Unit`
   const Ty* valueType(const Ty* of, int64_t value); // a non-type template argument
   const Ty* member(const Ty* memberType, Decl* decl, const Ty* cls); // a data member as a value (`for constexpr (auto m : members(T))`)

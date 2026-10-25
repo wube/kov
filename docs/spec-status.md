@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**135 pass, 3 pending, 0 failing, 0 fixed** (138 snippets, 2.4 s).
+**137 pass, 1 pending, 0 failing, 0 fixed** (138 snippets, 2.4 s).
 
 ## Language: statements, expressions, declarations
 
@@ -79,7 +79,6 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `templates/template_template_parameters.kov` | template template parameters | pending |  | template template parameters are not implemented; C:\kov\compiler\tests\spec\templates\template_template_parameters.kov:10: codegen does not support a call to countAll whose template arguments could not be deduced yet (in @kov.main) |
 | `templates/alias_template_conditional.kov` | an alias template over Conditional with a bool parameter (Conditional<Small, int16_t, int64_t>) | pass |  |  |
 | `templates/alias_template_member_access.kov` | an alias template of a class template (template<typename T> using Ptr = UniquePtr<T>;) used as a variable type | pass | 7 alias templates in 6 files |  |
 | `templates/alias_template_nested_args.kov` | an alias template whose target nests the parameter in another template argument (Vector<Pair<T, T>>) | pass |  |  |
@@ -106,6 +105,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/requires_clauses.kov` | constrained templates (requires clauses) | pass | 1274 requires/concept uses in 609 files |  |
 | `templates/several_instantiations_in_one_call.kov` | three instantiations of one function template as arguments of a single variadic call | pass |  |  |
 | `templates/sfinae_enable_if.kov` | enable_if-style overload selection | pass | 1 use (Factorio uses requires clauses instead) |  |
+| `templates/template_template_parameters.kov` | template template parameters | pass |  |  |
 | `templates/traits_as_values.kov` | type traits used as values (bool isSame<A, B> in an expression, not only in if constexpr) | pass |  |  |
 | `templates/variadic_recursion.kov` | the recursive variadic pattern: f(T first, Rest... rest) calling f(rest...) down to a non-template base case | pass |  |  |
 | `templates/variadic_templates.kov` | variadic templates: packs, sizeof..., forwarding, fold expressions | pass | 175 variadic templates in 59 files, 110 fold expressions, 218 std::forward |  |
@@ -114,7 +114,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `library/variant.kov` | Variant (std::variant) | pending | 24 uses in 15 files (Kov's answer is the typed union, design.md 8.5) | Variant is not in the library; typed unions (`union enum`) are the planned replacement; C:\kov\compiler\tests\spec\library\variant.kov:6: codegen does not support a local of unknown type (v) yet (in @kov.main) |
+| `library/variant.kov` | Variant (std::variant) | pending | 24 uses in 15 files (Kov's answer is the typed union, design.md 8.5) | by decision there is no Variant class: a std::variant becomes a typed union (`union enum`, design.md 8.5); what is missing is the converter's mapping of the 24 uses; C:\kov\compiler\tests\spec\library\variant.kov:6: codegen does not support a local of unknown type (v) yet (in @kov.main) |
 | `library/algorithms.kov` | algorithms (std::sort, find_if, count_if, all_of/any_of, reverse, lower_bound, remove_if, min/max/clamp) | pass | 466 algorithm calls in 247 files |  |
 | `library/array_span.kov` | Array<T, N> and Span<T> (std::array, std::span) | pass | 372 std::array uses in 193 files, 147 std::span |  |
 | `library/containers_deque_queue.kov` | Deque and Queue (std::deque, std::queue): push at both ends, pop, front/back | pass | 116 deque uses in 68 files |  |
@@ -169,9 +169,9 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `interop/sdl_header.kov` | importing SDL3's header (the game's platform layer) and using its types and constants without linking it | pending |  | not yet tried; needs --cinclude C:\Factorio\libraries\SDL3\include and SDL3.lib to link; C:\Users\kovarex\AppData\Local\Temp\kov-imports\d59fe0099df08361.c:4:10: fatal error: 'SDL3/SDL.h' file not found |
 | `interop/c_callbacks.kov` | Kov functions as C callbacks (function pointers with C signatures) and C function pointers stored in Kov | pass |  |  |
 | `interop/c_import_stdlib.kov` | importing C standard headers and using their functions, types and callbacks (qsort) | pass |  |  |
 | `interop/c_import_windows.kov` | importing a C header (`extern "C" import "windows.h";`) and calling into it | pass |  |  |
 | `interop/c_structs_layout.kov` | C-compatible layout: plain structs passed to and filled by C, sizeof agreement, arrays of structs | pass |  |  |
 | `interop/extern_c_declarations.kov` | hand-written extern "C" declarations, passing Strings and buffers to C | pass |  |  |
+| `interop/sdl_header.kov` | importing SDL3's header (the game's platform layer) and using its types and constants without linking it | pass |  |  |

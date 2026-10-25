@@ -398,14 +398,20 @@ checked against the suite, the 40 end-to-end tests and the CommonUtil and Agui s
     address (virtual ones are refused for now), and `(c.*op)(3)` calls through it with the
     object first, sharing the indirect-call emission with function pointers. Spec:
     `kov/for_constexpr_switch`, `classes/member_function_pointers`.
+12. **Template template parameters** (one Factorio use): `Container<T>` with `Container` a
+    template template parameter is the parameter applied to arguments (a parameter type carrying
+    them); deduction against `Vector<int>` binds `Container` to the template itself and `T` to
+    `int`, and substitution applies the bound template to the substituted arguments. **The SDL
+    header import** passes in the suite now that the runner hands kovc the game's SDL3 include
+    directory when the Factorio checkout is present: `SDL_Rect` and `SDL_INIT_VIDEO` come straight
+    from `SDL3/SDL.h`. Spec: `templates/template_template_parameters`, `interop/sdl_header`.
 
-The suite went from 80 pass / 49 pending to 135 pass / 3 pending; the Factorio front end stayed
+The suite went from 80 pass / 49 pending to 137 pass / 1 pending; the Factorio front end stayed
 at 99.27% parsed and 77.6-77.8% typed (members of dependent qualifiers now count as dependent
 instead of being guessed from the primary template). Left pending, in order of Factorio use:
-the rest of design.md section 8 (`m.type`, `enumerators(E)`, `alternatives(U)`, tests), `Variant`
-(superseded by typed unions; the converter will need a mapping for the 24 `std::variant` uses),
-template template parameters (one Factorio use), and the SDL header import (the suite does not
-pass the SDL include path yet).
+only `Variant`, which stays pending by decision (a `std::variant` becomes a typed union; the
+converter will need a mapping for the 24 uses). Not in the suite yet, and still open in design.md
+section 8: `m.type`, `enumerators(E)`, `alternatives(U)`, and the `--tests` runner.
 
 ## The order that gets to a running game
 

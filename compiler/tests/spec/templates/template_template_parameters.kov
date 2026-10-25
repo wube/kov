@@ -1,5 +1,4 @@
 // spec: template template parameters
-// pending: template template parameters are not implemented
 template<template<typename> class Container, typename T>
 int countAll(const Container<T>& c) { return c.size(); }
 int main()

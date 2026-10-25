@@ -1,5 +1,5 @@
 // spec: importing SDL3's header (the game's platform layer) and using its types and constants without linking it
-// pending: not yet tried; needs --cinclude C:\Factorio\libraries\SDL3\include and SDL3.lib to link
+// the suite passes --cinclude C:\Factorio\libraries\SDL3\include when that checkout exists; nothing of SDL is called, so no SDL3.lib
 extern "C" import "SDL3/SDL.h";
 int main()
 {

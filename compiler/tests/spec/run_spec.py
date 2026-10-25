@@ -20,6 +20,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 COMPILER = os.path.dirname(os.path.dirname(HERE))
 ROOT = os.path.dirname(COMPILER)
 KOVC = os.path.join(COMPILER, "build", "kovc.exe")
+# The game's SDL3 headers, for the interop snippets that import them (skipped when the Factorio
+# checkout is not on this machine; the snippet then shows as failing to find the header).
+SDL_INCLUDE = r"C:\Factorio\libraries\SDL3\include"
+EXTRA = ["--cinclude", SDL_INCLUDE] if os.path.isdir(SDL_INCLUDE) else []
 OUT = os.path.join(COMPILER, "build", "spec")
 DOC = os.path.join(ROOT, "docs", "spec-status.md")
 
@@ -66,7 +70,7 @@ def run_one(path):
     expected_path = os.path.splitext(path)[0] + ".expected"
     result = {"area": area, "name": name, "info": info, "note": ""}
     try:
-        c = subprocess.run([KOVC, "--quiet", "--exe", exe, path], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+        c = subprocess.run([KOVC, "--quiet", *EXTRA, "--exe", exe, path], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     except subprocess.TimeoutExpired:
         result["status"] = "FAIL"; result["note"] = "compiler timed out"; return finish(result)
     if c.returncode != 0 or not os.path.exists(exe):

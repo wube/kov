@@ -237,6 +237,14 @@ const Ty* TypeTable::param(Decl* decl)
   return intern(t);
 }
 
+const Ty* TypeTable::param(Decl* decl, Span<const Ty*> args)
+{
+  Ty t{TyKind::Param};
+  t.decl = decl;
+  t.args = args;
+  return intern(t);
+}
+
 const Ty* TypeTable::dependentMember(const Ty* of, uint32_t symbol)
 {
   Ty t{TyKind::DependentMember};
