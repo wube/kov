@@ -1,5 +1,4 @@
 // spec: a struct nested in a class template, with members of the parameter type
-// pending: the nested struct's member of type T has an unknown type
 template<typename T>
 struct Holder
 {

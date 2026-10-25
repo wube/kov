@@ -1,7 +1,94 @@
-// Kov standard library: the small containers. Set<T> keeps its values sorted in a Vector and
-// finds them by binary search; Deque<T> is a Vector that also pops at the front. Both are the
-// simplest thing that has the interface; they get real implementations when a program needs
-// them to be fast.
+// Kov standard library: the small containers. Set<T> and Map<K, V> keep their entries sorted in
+// a Vector and find them by binary search; Deque<T> is a Vector that also pops at the front. All
+// three are the simplest thing that has the interface; they get real implementations when a
+// program needs them to be fast.
+
+// An ordered map (what std::map converts to): entries are Pair<K, V> in key order.
+template<typename K, typename V>
+struct Map
+{
+  Vector<Pair<K, V>> entries;
+
+  using iterator = Pair<K, V>*;
+  using const_iterator = const Pair<K, V>*;
+
+  int size() const { return this->entries.size(); }
+  bool empty() const { return this->entries.empty(); }
+  Pair<K, V>* begin() { return this->entries.begin(); }
+  Pair<K, V>* end() { return this->entries.end(); }
+  const Pair<K, V>* begin() const { return this->entries.begin(); }
+  const Pair<K, V>* end() const { return this->entries.end(); }
+
+  // Index of key, or of the place it would take.
+  int lowerBoundIndex(const K& key) const
+  {
+    int low = 0;
+    int high = this->entries.size();
+    while (low < high)
+    {
+      int middle = (low + high) / 2;
+      if (this->entries.items[middle].first < key)
+        low = middle + 1;
+      else
+        high = middle;
+    }
+    return low;
+  }
+  Pair<K, V>* lowerBound(const K& key) { return this->entries.begin() + this->lowerBoundIndex(key); }
+  Pair<K, V>* lower_bound(const K& key) { return this->lowerBound(key); }
+  bool contains(const K& key) const
+  {
+    int i = this->lowerBoundIndex(key);
+    return i < this->entries.size() && !(key < this->entries.items[i].first);
+  }
+  int count(const K& key) const { return this->contains(key) ? 1 : 0; }
+  // The entry with key, or end().
+  Pair<K, V>* find(const K& key)
+  {
+    int i = this->lowerBoundIndex(key);
+    if (i < this->entries.size() && !(key < this->entries.items[i].first))
+      return this->entries.begin() + i;
+    return this->entries.end();
+  }
+  const Pair<K, V>* find(const K& key) const
+  {
+    int i = this->lowerBoundIndex(key);
+    if (i < this->entries.size() && !(key < this->entries.items[i].first))
+      return this->entries.begin() + i;
+    return this->entries.end();
+  }
+  // The value for key, inserted default-constructed when new.
+  V& operator[](const K& key)
+  {
+    int i = this->lowerBoundIndex(key);
+    if (i < this->entries.size() && !(key < this->entries.items[i].first))
+      return this->entries.items[i].second;
+    this->entries.insert(i, Pair<K, V>(key, V()));
+    return this->entries.items[i].second;
+  }
+  V& at(const K& key) { return this->find(key)->second; }
+  const V& at(const K& key) const { return this->find(key)->second; }
+  // True when the key was new (an existing value is kept, as std::map::insert keeps it).
+  bool insert(const K& key, const V& value)
+  {
+    int i = this->lowerBoundIndex(key);
+    if (i < this->entries.size() && !(key < this->entries.items[i].first))
+      return false;
+    this->entries.insert(i, Pair<K, V>(key, value));
+    return true;
+  }
+  bool insert(const Pair<K, V>& entry) { return this->insert(entry.first, entry.second); }
+  bool erase(const K& key)
+  {
+    int i = this->lowerBoundIndex(key);
+    if (i >= this->entries.size() || key < this->entries.items[i].first)
+      return false;
+    this->entries.erase(i);
+    return true;
+  }
+  Pair<K, V>* erase(Pair<K, V>* at) { return this->entries.erase(at); }
+  void clear() { this->entries.clear(); }
+};
 
 template<typename T>
 struct Set

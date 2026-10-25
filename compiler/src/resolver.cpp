@@ -992,7 +992,8 @@ struct GlobalScope::Impl
   {
     std::string_view name = symbols.name(symbol);
     return name == "RemoveConst" || name == "RemoveCv" || name == "RemoveReference" || name == "RemoveExtent" || name == "RemovePointer" ||
-           name == "Decay" || name == "UnderlyingType" || name == "AddConst" || name == "AddPointer" || name == "RemoveCvRef";
+           name == "Decay" || name == "UnderlyingType" || name == "AddConst" || name == "AddPointer" || name == "RemoveCvRef" ||
+           name == "Conditional" || name == "EnableIf";
   }
 
   // RemoveConst<T> and the other type-valued traits; null when `part` is not one.
@@ -1001,6 +1002,27 @@ struct GlobalScope::Impl
     std::string_view name = symbols.name(part.symbol);
     if (!isTypeTraitName(part.symbol))
       return nullptr;
+    if (name == "Conditional" || name == "EnableIf")
+    {
+      // Conditional<c, A, B> is A or B; EnableIf<c, T = void> is T when c holds (and no type at all
+      // otherwise, which removes an overload the way std::enable_if does).
+      if (part.templateArgs.empty())
+        return types.unknown();
+      const Ty* c = templateArgument(part.templateArgs[0], nullptr, ctx, depth);
+      if (!c || c->kind != TyKind::Value)
+        return types.unknown(); // dependent still: settled under the instantiation
+      if (name == "Conditional")
+      {
+        if (part.templateArgs.size() != 3 || !isTypeNode(part.templateArgs[1]) || !isTypeNode(part.templateArgs[2]))
+          return types.unknown();
+        return convertType(static_cast<Type*>(part.templateArgs[c->value ? 1 : 2]), ctx, depth + 1);
+      }
+      if (!c->value)
+        return types.unknown();
+      if (part.templateArgs.size() == 1)
+        return types.voidType();
+      return isTypeNode(part.templateArgs[1]) ? convertType(static_cast<Type*>(part.templateArgs[1]), ctx, depth + 1) : types.unknown();
+    }
     if (part.templateArgs.size() != 1 || !isTypeNode(part.templateArgs[0]))
       return types.unknown();
     const Ty* t = convertType(static_cast<Type*>(part.templateArgs[0]), ctx, depth + 1);
@@ -1313,12 +1335,26 @@ struct GlobalScope::Impl
   }
 
   // Type of a class or enum declaration as written inside it: template parameters stay dependent.
+  // The template parameters a class is instantiated with: its own, or, for a class nested in a
+  // class template (`Holder<T>::Node`), the enclosing template's.
+  static Span<Decl*> effectiveParams(Decl* cls)
+  {
+    for (Decl* d = cls; d; d = d->parent)
+    {
+      if (d->kind != NodeKind::ClassDecl && d->kind != NodeKind::EnumDecl)
+        break;
+      if (!d->templateParams.empty())
+        return d->templateParams;
+    }
+    return {};
+  }
+
   const Ty* selfType(Decl* d)
   {
     if (d->kind == NodeKind::EnumDecl)
       return types.enumType(d);
     std::vector<const Ty*> args;
-    for (Decl* p : d->templateParams)
+    for (Decl* p : effectiveParams(d))
       args.push_back(types.param(p));
     return types.classType(d, Span<const Ty*>{args.data(), uint32_t(args.size())});
   }
@@ -1329,7 +1365,7 @@ struct GlobalScope::Impl
     Subst s;
     if (!classTy || classTy->kind != TyKind::Class || !classTy->decl)
       return s;
-    Span<Decl*> params = classTy->decl->templateParams;
+    Span<Decl*> params = effectiveParams(classTy->decl);
     for (size_t i = 0; i < params.size() && i < classTy->args.size(); ++i)
     {
       if (params[i]->kind == NodeKind::TemplateParamDecl && static_cast<TemplateParamDecl*>(params[i])->isPack)
@@ -1546,7 +1582,7 @@ struct GlobalScope::Impl
         // Use the definition (the scope owner) so that all mentions share one decl.
         Decl* def = l.scope && l.scope->owner && l.scope->kind == ScopeKind::Class ? l.scope->owner : d;
         std::vector<const Ty*> args;
-        Span<Decl*> params = def->templateParams;
+        Span<Decl*> params = effectiveParams(def);
         if (lastPart.templateArgs.size() == 1 && lastPart.symbol == functionSymbolId())
         {
           // The library's `Function<R(Args...)>`: the compiler takes the signature apart, the
@@ -1741,9 +1777,11 @@ struct GlobalScope::Impl
         if (!l.decl)
           return types.unknown();
         if (n->name.parts.size() > 1 &&
-            (l.decl->kind == NodeKind::UsingAliasDecl || (l.decl->kind == NodeKind::VariableDecl && (l.decl->flags & DF_Typedef))))
+            (l.decl->kind == NodeKind::UsingAliasDecl || (l.decl->kind == NodeKind::VariableDecl && (l.decl->flags & DF_Typedef)) ||
+             (l.decl->kind == NodeKind::ClassDecl && l.decl->templateParams.empty() && !effectiveParams(l.decl).empty())))
         {
-          // `Vector<int>::iterator`: the alias as the instantiation named by the qualifier has it.
+          // `Vector<int>::iterator`: the alias as the instantiation named by the qualifier has it;
+          // `Holder<int>::Node`: the nested class with the enclosing instantiation's arguments.
           Subst qs = qualifierSubst(n->name, ctx, depth);
           if (!qs.empty())
           {

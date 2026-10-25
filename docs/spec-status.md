@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**105 pass, 25 pending, 0 failing, 0 fixed** (130 snippets, 1.8 s).
+**109 pass, 21 pending, 0 failing, 0 fixed** (130 snippets, 1.9 s).
 
 ## Language: statements, expressions, declarations
 
@@ -15,7 +15,6 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `language/alignas.kov` | alignas on a struct | pending | 68 alignas/alignof uses in 15 files | alignas is accepted and ignored, and alignof returns the size (12) instead of the alignment; line 1: got `12 12`, expected `16 16` |
 | `language/bitfields.kov` | bit fields | pending | 14 uses in 6 files | bit field values work but every field takes a whole unit (sizeof 12 instead of 4); line 1: got `1 6 0 12`, expected `1 6 0 4` |
 | `language/generic_lambdas.kov` | generic lambdas (auto parameters) | pending | 330 uses in 168 files | generic lambdas are not implemented (Agui's one site is a hand-written override); C:\kov\compiler\tests\spec\language\generic_lambdas.kov:6: codegen does not support a local of unknown type (twice) yet (in @kov.main) |
-| `language/sizeof_array_type.kov` | sizeof of an array type (sizeof(int[4])) | pending |  | sizeof of a written array type is not supported; C:\kov\compiler\tests\spec\language\sizeof_array_type.kov:5: codegen does not support this sizeof yet (in @kov.main) |
 | `language/wide_strings.kov` | wide string literals and WString | pending | 44 uses in 10 files (literals), 58 (std::wstring) | no wide string literals yet; line 1: got `5 26999`, expected `4 119` |
 | `language/arrays_2d.kov` | two-dimensional arrays: nested brace initialisation and indexing | pass |  |  |
 | `language/assign_through_returned_reference.kov` | assigning through a reference returned from a function | pass |  |  |
@@ -38,6 +37,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `language/pointers_arrays.kov` | pointers, arrays, pointer arithmetic, arrays of arrays | pass |  |  |
 | `language/range_for.kov` | range-based for | pass | 8577 uses in 1333 files |  |
 | `language/references.kov` | references: lvalue, const binding a temporary, rvalue references and move | pass |  |  |
+| `language/sizeof_array_type.kov` | sizeof of an array type (sizeof(int[4])) | pass |  |  |
 | `language/static_assert.kov` | static_assert | pass | 470 uses in 237 files |  |
 | `language/static_locals.kov` | function-local statics | pass | static declarations inside functions: part of 7783 static uses in 1983 files |  |
 | `language/structured_bindings.kov` | structured bindings | pass | 459 uses in 204 files |  |
@@ -53,7 +53,6 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 |---|---|---|---|---|
 | `classes/dynamic_cast.kov` | dynamic_cast | pending | 443 uses in 244 files | dynamic_cast is not implemented (design.md section 9: single inheritance, type descriptor behind the vtable); line 1: got `true false`, expected `true true` |
 | `classes/member_function_pointers.kov` | pointers to member functions | pending | 3 uses in 3 files | pointers to member functions are not implemented; C:\kov\compiler\tests\spec\classes\member_function_pointers.kov:12: codegen does not support the statement kind ErrorStmt yet (in @kov.main) |
-| `classes/nested_struct_in_template.kov` | a struct nested in a class template, with members of the parameter type | pending |  | the nested struct's member of type T has an unknown type; C:\kov\compiler\tests\spec\classes\nested_struct_in_template.kov:6: codegen does not support a member of unknown type (value) yet (in @kov.main) |
 | `classes/aggregate_default_members.kov` | aggregate initialisation leaves omitted members with their default member initializers | pass |  |  |
 | `classes/aggregates_and_brace_init.kov` | aggregate initialisation, default member initializers, arrays of structs, nested braces | pass |  |  |
 | `classes/anonymous_members.kov` | anonymous struct and union members | pass |  |  |
@@ -67,6 +66,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `classes/interfaces.kov` | abstract interfaces implemented by several classes, held through base pointers in containers | pass |  |  |
 | `classes/member_pointers.kov` | pointers to data members | pass |  |  |
 | `classes/multiple_inheritance.kov` | multiple inheritance (one polymorphic base), access to both bases, pointer conversions | pass | 264 uses in 261 files |  |
+| `classes/nested_struct_in_template.kov` | a struct nested in a class template, with members of the parameter type | pass |  |  |
 | `classes/nested_types.kov` | nested classes and enums, access through the outer class | pass | 4603 nested classes in 2847 files |  |
 | `classes/operator_overloading.kov` | operator overloading: arithmetic, comparison, subscript, call, unary, increment, conversions | pass | 2940 uses in 982 files, 376 conversion operators |  |
 | `classes/static_members.kov` | static data members (in-class and out-of-line definitions), static functions, static const | pass | 1174 static const members in 719 files |  |
@@ -77,11 +77,11 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `templates/alias_template_conditional.kov` | an alias template over Conditional with a bool parameter (Conditional<Small, int16_t, int64_t>) | pending |  | `Index<true>` has an unknown type; C:\kov\compiler\tests\spec\templates\alias_template_conditional.kov:6: codegen does not support a local of unknown type (a) yet (in @kov.main) |
 | `templates/nested_template_instantiation.kov` | a class template instantiated with another instantiation of itself (Stack<Stack<int>>) through a variadic push | pending |  | `nested.push()` with an empty pack picks emplace_back(const T&) and emits a call without its argument (malformed IR); C:\kov\compiler\tests\spec\templates\nested_template_instantiation.kov:7: codegen does not support a call to Vector::emplace_back without an argument for its parameter value (and the overload resolution let it through) yet (in @"Stack<Stack<int32>>::push<>()", requested by @kov.main) |
 | `templates/requires_clauses.kov` | constrained templates (requires clauses) | pending | 1274 requires/concept uses in 609 files | requires clauses are parsed but not enforced (the first overload is taken for both calls); concepts are not implemented; line 1: got `42 3`, expected `42 not integral` |
 | `templates/sfinae_enable_if.kov` | enable_if-style overload selection | pending | 1 use (Factorio uses requires clauses instead) | EnableIf substitution failure does not remove the overload; C:\kov\compiler\tests\spec\templates\sfinae_enable_if.kov:8: codegen does not support a call to kind whose template arguments could not be deduced yet (in @kov.main) |
 | `templates/template_template_parameters.kov` | template template parameters | pending |  | template template parameters are not implemented; C:\kov\compiler\tests\spec\templates\template_template_parameters.kov:10: codegen does not support a call to countAll whose template arguments could not be deduced yet (in @kov.main) |
+| `templates/alias_template_conditional.kov` | an alias template over Conditional with a bool parameter (Conditional<Small, int16_t, int64_t>) | pass |  |  |
 | `templates/alias_template_member_access.kov` | an alias template of a class template (template<typename T> using Ptr = UniquePtr<T>;) used as a variable type | pass | 7 alias templates in 6 files |  |
 | `templates/alias_template_nested_args.kov` | an alias template whose target nests the parameter in another template argument (Vector<Pair<T, T>>) | pass |  |  |
 | `templates/alias_template_over_trait.kov` | an alias template whose target is a type trait (template<typename T> using Plain = RemoveReference<T>;) | pass |  |  |
@@ -111,7 +111,6 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
 | `library/array_span.kov` | Array<T, N> and Span<T> (std::array, std::span) | pending | 372 std::array uses in 193 files, 147 std::span | Array and Span are not in the library yet; C:\kov\compiler\tests\spec\library\array_span.kov:7: codegen does not support a local of unknown type (a) yet (in @kov.main) |
-| `library/ordered_map_set.kov` | ordered Map and Set (std::map/std::set): iteration in key order, lower bound | pending | 827 std::map uses in 422 files, 641 std::set in 293 files | Set exists (Containers.kov) but there is no ordered Map in the library yet; C:\kov\compiler\tests\spec\library\ordered_map_set.kov:6: codegen does not support a local of unknown type (m) yet (in @kov.main) |
 | `library/pair_tuple.kov` | Pair (std::pair) and makePair; Tuple | pending | 354 pair uses in 199 files, 51 tuple | Tuple with get<N> is not in the library yet; C:\kov\compiler\tests\spec\library\pair_tuple.kov:8: codegen does not support a local of unknown type (t) yet (in @kov.main) |
 | `library/shared_ptr.kov` | SharedPtr and WeakPtr (std::shared_ptr/weak_ptr) | pending | 99 shared_ptr uses in 50 files, 8 weak_ptr | SharedPtr and WeakPtr are not in the library yet; C:\kov\compiler\tests\spec\library\shared_ptr.kov:7: codegen does not support a local of unknown type (a) yet (in @kov.main) |
 | `library/threads_atomics.kov` | Thread, Mutex, LockGuard, Atomic (std::thread, std::mutex, std::atomic) | pending | 78 std::thread, 479 mutex/lock_guard, 47 std::atomic | no threading primitives in the library yet; C:\kov\compiler\tests\spec\library\threads_atomics.kov:6: codegen does not support a local of unknown type (counter) yet (in @kov.main) |
@@ -128,6 +127,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `library/limits_math.kov` | Limits (numeric_limits) and math functions (abs, sqrt, floor, ceil, round, pow, isnan) | pass | 631 numeric_limits uses in 279 files |  |
 | `library/memory_c.kov` | memcpy, memset, memcmp, strlen, malloc/free through the library's C declarations | pass | 164 mem* calls in 84 files, 48 str* calls |  |
 | `library/optional.kov` | Optional (std::optional): value, hasValue, nullopt, assignment, comparison, valueOr | pass | 1587 uses in 658 files |  |
+| `library/ordered_map_set.kov` | ordered Map and Set (std::map/std::set): iteration in key order, lower bound | pass | 827 std::map uses in 422 files, 641 std::set in 293 files |  |
 | `library/sort_default_order.kov` | ::sort by operator< (no comparator) | pass |  |  |
 | `library/string.kov` | String (std::string): building, comparison, search, substrings, c_str, iteration | pass | 11491 uses in 2434 files |  |
 | `library/string_view.kov` | StringView (std::string_view): from literals and Strings, substr, find, prefix/suffix, comparison | pass | 1744 uses in 527 files |  |

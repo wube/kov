@@ -3404,6 +3404,8 @@ namespace
               size_t mark = scratch.size();
               advance();
               Type* t = parseType();
+              if (t && at(P::LBracket))
+                t = parseArraySuffixes(t); // sizeof(int[4])
               if (t && at(P::RParen))
               {
                 advance();

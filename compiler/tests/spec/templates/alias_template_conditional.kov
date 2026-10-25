@@ -1,5 +1,4 @@
 // spec: an alias template over Conditional with a bool parameter (Conditional<Small, int16_t, int64_t>)
-// pending: `Index<true>` has an unknown type
 template<bool Small> using Index = Conditional<Small, int16_t, int64_t>;
 int main()
 {
