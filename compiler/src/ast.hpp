@@ -173,7 +173,7 @@ struct Scope;
 struct Ty;
 struct ParsedFile;
 constexpr uint8_t ATTR_NoInline = 1, ATTR_ForceInline = 2, ATTR_VectorCall = 4; // Decl::attributes, from [[...]]
-constexpr uint8_t BUILTIN_EnumCount = 1, BUILTIN_EnumValues = 2, BUILTIN_EnumStr = 3; // Decl::builtin: generated enum members
+constexpr uint8_t BUILTIN_EnumCount = 1, BUILTIN_EnumValues = 2, BUILTIN_EnumStr = 3, BUILTIN_EnumFromStr = 4; // Decl::builtin: generated enum members
 
 struct Decl : Node
 {

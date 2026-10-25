@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**129 pass, 7 pending, 0 failing, 0 fixed** (136 snippets, 2.3 s).
+**131 pass, 6 pending, 0 failing, 0 fixed** (137 snippets, 2.4 s).
 
 ## Language: statements, expressions, declarations
 
@@ -95,6 +95,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/dependent_names.kov` | dependent names: T::Type, T::constant, this-> in templates, a dependent return type | pass |  |  |
 | `templates/dependent_return_in_variadic_call.kov` | a call whose return type is dependent (typename T::Unit) used directly as a variadic argument | pass |  |  |
 | `templates/enum_template_parameters.kov` | enum values as non-type template arguments | pass |  |  |
+| `templates/enum_through_parameter.kov` | a Kov enum reached through a template parameter: E::values, E::count, value.str() | pass |  |  |
 | `templates/forwarding_conversions.kov` | forwarding a string literal through a variadic member template into a String constructor (emplace_back("x")) | pass |  |  |
 | `templates/function_templates.kov` | function templates: deduction, explicit arguments, overloading with non-templates, full specialisation | pass | 592 full specialisations in 61 files |  |
 | `templates/member_template_in_class_template.kov` | a member function template of a class template converting its argument to T (names.add("a") into Stack<String>) | pass |  |  |
@@ -144,12 +145,12 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `kov/enum_from_str.kov` | Direction::fromStr returning an Optional | pending |  | fromStr waits for Optional<E> to be constructible from the compiler; C:\kov\compiler\tests\spec\kov\enum_from_str.kov:10: codegen does not support a call that did not resolve yet (in @kov.main) |
 | `kov/for_constexpr_switch.kov` | for constexpr inside a switch, one case per type (design.md 8.2) | pending |  | case labels produced inside a for constexpr body are not implemented; C:\kov\compiler\tests\spec\kov\for_constexpr_switch.kov:10: codegen does not support a case label outside a switch body yet (in @"nameOf(int32)") |
 | `kov/typed_unions.kov` | typed unions (`union enum`) | pending |  | typed unions are not implemented; C:\kov\compiler\tests\spec\kov\typed_unions.kov:10: codegen does not support a local of unknown type (p) yet (in @kov.main) |
 | `kov/asserts_and_config.kov` | assert and release_assert statements, config constants with if constexpr, conditional functions, CallerLocation | pass |  |  |
 | `kov/attributes_inline.kov` | [[noinline]] and [[forceinline]] attributes | pass |  |  |
 | `kov/config_values.kov` | config constants from the command line (`--config name=value`, `--release`) as compile-time values | pass |  |  |
+| `kov/enum_from_str.kov` | Direction::fromStr returning an Optional | pass |  |  |
 | `kov/for_constexpr_constant.kov` | the for constexpr value is a compile-time constant: a template argument, an array bound | pass |  |  |
 | `kov/for_constexpr_types.kov` | for constexpr over a list of types | pass |  |  |
 | `kov/for_constexpr_values.kov` | for constexpr over a list of constants | pass |  |  |

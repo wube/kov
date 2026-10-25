@@ -1,6 +1,5 @@
 // spec: Direction::fromStr returning an Optional
 // design.md 8.4
-// pending: fromStr waits for Optional<E> to be constructible from the compiler
 enum class Direction : uint8_t
 {
   { North, East, South, West }

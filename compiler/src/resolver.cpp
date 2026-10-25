@@ -950,12 +950,20 @@ struct GlobalScope::Impl
       if (step.found == Found::Dependent)
       {
         if (!last && subst && step.decl && step.decl->kind == NodeKind::TemplateParamDecl)
-          if (const Ty* sub = subst->find(step.decl); sub && sub->kind == TyKind::Class && sub->decl)
+        {
+          const Ty* sub = subst->find(step.decl);
+          if (sub && sub->kind == TyKind::Class && sub->decl)
             if (Scope* inside = classScopeOf(sub))
             {
               current = inside; // `Policy::getCoordinate` with Policy = VerticalPolicy: the rest inside that class
               continue;
             }
+          if (sub && sub->kind == TyKind::Enum && sub->decl && sub->decl->ownScope)
+          {
+            current = sub->decl->ownScope; // `E::values` with E = Direction: the enum's members
+            continue;
+          }
+        }
         out = step;
         out.found = Found::Dependent;
         return out; // `T::type`: dependent on a template parameter.
@@ -1538,6 +1546,16 @@ struct GlobalScope::Impl
   bool isInitializerList(const Ty* t)
   {
     return t && t->kind == TyKind::Class && t->decl && t->decl == initializerListDecl();
+  }
+  uint32_t enumFromStrSymbol_ = UINT32_MAX;
+  Decl* enumFromStrDecl()
+  {
+    if (enumFromStrSymbol_ == UINT32_MAX)
+      enumFromStrSymbol_ = symbols.intern("enumFromStr");
+    Lookup l;
+    if (lookupInScope(&root, enumFromStrSymbol_, l, 0) && l.decl && l.decl->kind == NodeKind::FunctionDecl)
+      return l.decl;
+    return nullptr;
   }
   uint32_t typeInfoSymbol_ = UINT32_MAX;
   Decl* typeInfoDecl()
@@ -5291,6 +5309,7 @@ Decl* GlobalScope::owningClass(Decl* d)
 
 Decl* GlobalScope::initializerListDecl() { return impl->initializerListDecl(); }
 Decl* GlobalScope::typeInfoDecl() { return impl->typeInfoDecl(); }
+Decl* GlobalScope::enumFromStrDecl() { return impl->enumFromStrDecl(); }
 
 Decl* GlobalScope::definitionOf(Decl* d)
 {

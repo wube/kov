@@ -42,6 +42,9 @@ namespace
       kwValues = symbols.intern("values");
       kwStr = symbols.intern("str");
       kwTypes = symbols.intern("types");
+      kwFromStr = symbols.intern("fromStr");
+      kwOptional = symbols.intern("Optional");
+      kwText = symbols.intern("text");
       kwImplicit = symbols.intern("implicit");
       kwFallthrough = symbols.intern("fallthrough");
       kwBothConst = symbols.intern("both_const");
@@ -49,7 +52,7 @@ namespace
       kwAccumulate = symbols.intern("accumulate");
     }
     uint32_t kwImplicit, kwFallthrough, kwBothConst, kwClassConst, kwAccumulate, kwImport, kwAssert, kwReleaseAssert, kwCaller,
-             kwConditional, kwUnderscore, kwConfig, kwNameof, kwCount, kwValues, kwStr, kwTypes;
+             kwConditional, kwUnderscore, kwConfig, kwNameof, kwCount, kwValues, kwStr, kwTypes, kwFromStr, kwOptional, kwText;
     uint8_t pendingAttributes = 0;   // [[noinline]] and friends seen before the current declaration.
     Expr* pendingAlignment = nullptr; // alignas(N) seen before the current class.
     Expr* pendingCondition = nullptr; // conditional(expr) seen in the current specifiers.
@@ -988,12 +991,13 @@ namespace
 
     // Parses one declaration (possibly producing several Decl nodes, e.g. `int a, b;`) and pushes
     // the results onto scratch.
-    // Generated members of a Kov enum: `static const int count`, `static const E values[]` and
-    // `const char* str() const` (unless written by hand). Their bodies and initializers come from
-    // the compiler (Decl::builtin), not from the AST.
+    // Generated members of a Kov enum: `static const int count`, `static const E values[]`,
+    // `const char* str() const` and `static Optional<E> fromStr(const char* text)` (unless written
+    // by hand). Their bodies and initializers come from the compiler (Decl::builtin), not from the
+    // AST.
     void addEnumBuiltins(EnumDecl* e, uint32_t start, size_t mark)
     {
-      bool hasStr = false;
+      bool hasStr = false, hasFromStr = false;
       for (size_t i = mark; i < scratch.size(); ++i)
       {
         Node* n = scratch[i];
@@ -1002,6 +1006,8 @@ namespace
           auto* f = static_cast<FunctionDecl*>(n);
           if (f->name.parts.size() == 1 && f->name.parts[0].symbol == kwStr)
             hasStr = true;
+          if (f->name.parts.size() == 1 && f->name.parts[0].symbol == kwFromStr)
+            hasFromStr = true;
         }
       }
       NamePart part;
@@ -1043,6 +1049,37 @@ namespace
         part.symbol = kwStr;
         str->name.parts = makeSpanOf(std::vector<NamePart>{part});
         pushDecl(str);
+      }
+      if (!hasFromStr)
+      {
+        // `static Optional<E> fromStr(const char* text)`: the code generator lowers it to the
+        // library's enumFromStr<E>(text) (design.md 8.4).
+        FunctionDecl* from = decl<FunctionDecl>(start);
+        from->flags |= DF_Static;
+        from->builtin = BUILTIN_EnumFromStr;
+        NamedType* selfArg = node<NamedType>(start);
+        selfArg->name = e->name;
+        NamePart optional;
+        optional.symbol = kwOptional;
+        optional.hasTemplateArgs = true;
+        optional.templateArgs = makeSpanOf(std::vector<Node*>{selfArg});
+        NamedType* result = node<NamedType>(start);
+        result->name.parts = makeSpanOf(std::vector<NamePart>{optional});
+        from->returnType = result;
+        BuiltinType* ch = node<BuiltinType>(start);
+        ch->keyword = Kw::char_;
+        ConstType* constChar = node<ConstType>(start);
+        constChar->inner = ch;
+        PointerType* pointer = node<PointerType>(start);
+        pointer->pointee = constChar;
+        ParamDecl* text = decl<ParamDecl>(start);
+        text->type = pointer;
+        text->name = kwText;
+        text->parent = from;
+        from->params = makeSpanOf(std::vector<Decl*>{text});
+        part.symbol = kwFromStr;
+        from->name.parts = makeSpanOf(std::vector<NamePart>{part});
+        pushDecl(from);
       }
     }
 

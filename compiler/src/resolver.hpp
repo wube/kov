@@ -149,6 +149,7 @@ public:
   Decl* definitionOf(Decl* d);                   // Class/enum definition, or the out-of-line definition of a member function or a static data member.
   Decl* initializerListDecl();                   // The library's InitializerList class, or null.
   Decl* typeInfoDecl();                          // The library's TypeInfo class (what typeid yields), or null.
+  Decl* enumFromStrDecl();                       // The library's enumFromStr<E>(const char*) template (E::fromStr lowers to it), or null.
   Decl* owningClass(Decl* d);                    // The class a member (possibly defined out of line) belongs to.
   // The in-class declaration of an out-of-line member definition (`static` and `virtual` are
   // written there and copied onto the definition); null when there is none.

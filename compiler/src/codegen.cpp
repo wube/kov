@@ -2467,6 +2467,17 @@ namespace
     // instantiations. Returns its IR name.
     std::string useFunction(FunctionDecl* f, const TemplateArgs& args, const Ty* classTy)
     {
+      if (f->builtin == BUILTIN_EnumFromStr)
+      {
+        // The generated `E::fromStr(text)` of a Kov enum: the library's enumFromStr<E>(text),
+        // which has the same signature (an Optional<E> result slot, the text).
+        Decl* lib = global.enumFromStrDecl();
+        if (!lib || lib->templateParams.size() != 1 || !f->parent || f->parent->kind != NodeKind::EnumDecl)
+          unsupported(f, "E::fromStr without the library's enumFromStr<E>");
+        TemplateArgs libArgs;
+        libArgs.pairs.push_back({lib->templateParams[0], types.enumType(f->parent)});
+        return useFunction(static_cast<FunctionDecl*>(lib), libArgs, nullptr);
+      }
       std::string name = functionName(f, args, classTy);
       Decl* defDecl = global.definitionOf(f);
       FunctionDecl* def = defDecl && defDecl->kind == NodeKind::FunctionDecl ? static_cast<FunctionDecl*>(defDecl) : f;

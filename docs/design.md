@@ -189,8 +189,10 @@ Comparison, copying and `switch` work on the value; the underlying type is expli
 Done 2026-10-24: the brace block, methods with `this` as the value, `count`, `values`, the
 generated or hand-written `str()`, `switch` without `default` that must name every value (a
 compile error otherwise) and aborts on a value outside them; `nameof(x)` from 8.3. A plain C++
-`enum class` without the inner block keeps the C++ rules. `fromStr()` waits for `Optional<E>`
-to be constructible from the compiler.
+`enum class` without the inner block keeps the C++ rules. Done 2026-10-25: `fromStr(const char*
+text)` returns `Optional<E>`; the compiler declares it on every Kov enum and lowers it to the
+library's `enumFromStr<E>(text)` (stdlib/core/Optional.kov), which walks `E::values` comparing
+`str()`; a `String` passes its `c_str()`, and a hand-written `fromStr` replaces the generated one.
 
 **8.5 Typed unions**, the proposal's `union enum`: an enum whose every value carries a typed
 payload, stored as the tag plus storage for the largest alternative.

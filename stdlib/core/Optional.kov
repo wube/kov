@@ -65,3 +65,14 @@ struct Optional
 
 template<typename T>
 Optional<T> makeOptional(const T& value) { return Optional<T>(value); }
+
+// The generated `E::fromStr(text)` of a Kov enum (design.md 8.4): the value whose str() is text,
+// or none. The compiler lowers E::fromStr to this function.
+template<typename E>
+Optional<E> enumFromStr(const char* text)
+{
+  for (E value : E::values)
+    if (strcmp(value.str(), text) == 0)
+      return Optional<E>(value);
+  return Optional<E>();
+}

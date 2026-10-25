@@ -375,13 +375,19 @@ checked against the suite, the 40 end-to-end tests and the CommonUtil and Agui s
    in the class's instantiation and the class), `m.name` is a string constant, `m.offset` the
    field's offset, and `object.[m]` the member itself (an lvalue, so save and load loops can
    read and write it). Spec: `kov/reflection_members`, `kov/reflection_bases_offsets`.
+9. **`E::fromStr(text)`** (design.md 8.4): generated on every Kov enum as `static Optional<E>
+   fromStr(const char*)` and lowered to the library's `enumFromStr<E>`, written in Kov over
+   `E::values` and `str()`. Found on the way: a qualified name through a template parameter
+   bound to an enum (`E::values`, `E::count` with E = Direction) stayed dependent; the lookup now
+   follows enum substitutions as it did class ones. Spec: `kov/enum_from_str`,
+   `templates/enum_through_parameter`.
 
-The suite went from 80 pass / 49 pending to 129 pass / 7 pending; the Factorio front end stayed
+The suite went from 80 pass / 49 pending to 131 pass / 6 pending; the Factorio front end stayed
 at 99.27% parsed and 77.6-77.8% typed (members of dependent qualifiers now count as dependent
 instead of being guessed from the primary template). Left pending, in order of Factorio use:
-the rest of design.md section 8 (typed unions, `fromStr`, `case` labels from `for constexpr`,
-`m.type`, `enumerators(E)`, tests), `Variant` (superseded by typed unions), pointers to member
-functions, template template parameters, and the SDL header import.
+the rest of design.md section 8 (typed unions, `case` labels from `for constexpr`, `m.type`,
+`enumerators(E)`, tests), `Variant` (superseded by typed unions), pointers to member functions,
+template template parameters, and the SDL header import.
 
 ## The order that gets to a running game
 
