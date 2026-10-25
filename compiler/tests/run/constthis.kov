@@ -1,0 +1,53 @@
+// In a const member function `this` is `const C*`: the const overload is chosen, as for any const
+// object (Agui's Widget::getStyle pair). Globals of class type run their default member
+// initializers and get their vtable pointer even without a user constructor.
+extern "C" int printf(const char* format, ...);
+
+struct Style { int pad = 3; };
+
+struct Widget
+{
+  const Style* getStyle() const
+  {
+    if (Style* s = const_cast<Widget*>(this)->getStyle())
+      return s;
+    return &Widget::fallback;
+  }
+  virtual Style* getStyle() { return nullptr; }
+  virtual int kind() const { return 1; }
+  static Style fallback;
+
+  int paddingConst() const { const Style* s = this->getStyle(); return s ? s->pad : -1; } // the const overload: 3
+  int paddingMutable() { const Style* s = this->getStyle(); return s ? s->pad : -1; }     // the virtual one: null -> -1
+  int viaConstRef() { const Widget& w = *this; return w.getStyle()->pad; }
+  int viaPointerToConst() { const Widget* w = this; return w->getStyle()->pad; }
+};
+Style Widget::fallback;
+
+struct Styled : Widget
+{
+  Style own;
+  Style* getStyle() override { return &this->own; }
+  int kind() const override { return 2; }
+};
+
+struct Holder
+{
+  Style style;        // a member with a default member initializer
+  Widget widget;      // a polymorphic member
+  int count = 4;
+};
+Holder holder;        // no user constructor anywhere, still constructed at startup
+Style styles[2];      // an array of them too
+
+int main()
+{
+  Widget top;
+  Styled label;
+  label.own.pad = 5;
+  const Widget& ctop = top;
+  printf("%d %d %d %d %d %d %d\n", top.paddingConst(), top.paddingMutable(), top.viaConstRef(), top.viaPointerToConst(),
+         ctop.getStyle()->pad, label.paddingConst(), label.paddingMutable());
+  printf("%d %d %d %d %d\n", holder.style.pad, holder.widget.kind(), holder.count, styles[1].pad, holder.widget.paddingConst());
+  return 0;
+}

@@ -1,0 +1,47 @@
+// A polymorphic class over a non-polymorphic base: the base lives after the vtable pointer, so
+// Derived* -> Base* must adjust, in templates too.
+extern "C" int printf(const char* format, ...);
+
+struct Base
+{
+  Base* first = nullptr;
+  int tag = 7;
+};
+
+struct Derived : Base
+{
+  virtual int kind() const { return 1; }
+  int extra = 9;
+};
+
+struct Targeter
+{
+  Base* target = nullptr;
+  void attachTo(Base* b) { this->target = b; }
+};
+
+template<class T>
+struct Holder : Targeter
+{
+  void operator=(T* t) { this->attachTo(t); }
+  void set(T* t) { this->attachTo(t); }
+};
+
+static int tagOf(const Base* b) { return b->tag; }
+
+int main()
+{
+  Derived d;
+  Base* direct = &d;
+  Holder<Derived> h;
+  h = &d;
+  Holder<Derived> h2;
+  h2.set(&d);
+  printf("%d %d %d %d %d\n", direct->tag, tagOf(&d), h.target->tag, h2.target->tag, (int)((char*)direct - (char*)&d));
+  Derived* none = nullptr;
+  Base* noneBase = none;                               // null stays null, whatever the subobject's offset
+  Derived* back = static_cast<Derived*>(noneBase);
+  Derived* fromBase = static_cast<Derived*>(direct);
+  printf("%d %d %d\n", noneBase == nullptr ? 1 : 0, back == nullptr ? 1 : 0, fromBase == &d ? 1 : 0);
+  return 0;
+}

@@ -485,6 +485,26 @@ The road there is in docs/path-to-factorio.md; two findings belong here:
   `T&&` deduces `U&`), xvalues (`move(x)`) and temporaries move, and the copy helper only ever
   calls a copy constructor. `moves.kov` counts copies and moves against the C++ answer.
 
+## Agui runs (2026-10-25, later)
+
+The converted Agui and CommonUtil (176 Kov files, 38,455 lines, including the smoke program and
+the standard library) build from nothing into a running program in 0.62 s of wall time on the
+32 threads:
+
+```
+read 0.003 s, lex 0.004 s, parse 0.004 s, index 0.006 s, resolve 0.011 s
+instantiate: 133 class and 404 function template instantiations, 0.047 s of CPU
+codegen: 0.139 s, 5,068 functions, 324 structs, 12.4 MB of IR in 64 modules
+clang: 0.237 s (-O0, 64 modules on 32 threads) + link 0.091 s
+```
+
+The program (`programs/factorio/tests/agui_smoke.kov`, run by convert.cmd) builds a `Gui` on the
+Void backend, adds a `Label`, runs one `logic()` step and prints the label's size: 100 x 20 for
+ten characters of a 10-pixel font, the first GUI layout computed by code kovc compiled. Getting
+there took seven compiler fixes for code that compiled and linked but ran wrong, listed in
+docs/path-to-factorio.md ("Agui links and runs"); the Factorio front-end numbers did not move
+(99.27% of files parse clean, 77.7% of expressions typed). Test suite: 40 programs.
+
 ## Lessons
 
 - **Windows memory allocation serialises parallel work.** The first parser version allocated and
@@ -504,6 +524,20 @@ The road there is in docs/path-to-factorio.md; two findings belong here:
   `both_const`, `class_const` are contextual keywords in the parser.
 - Macros are the one C++ feature a no-includes model cannot emulate from the outside: all the
   remaining parse errors and the project-side unresolved names come from macro-generated code.
+- **Linking is not running.** Agui linked with 0 complaints and then crashed or computed zeros
+  seven times over: static locals as allocas, reference globals as objects, lost out-of-line
+  initializers of static data members, a non-const `this` in const methods, zero-initialised
+  globals with default member initializers, a base-pointer adjustment skipped because both
+  pointers are `ptr` in LLVM, and a `static` that reached the definition only when a call was
+  emitted first. None of these shows in the typed percentage, the complaint count or the
+  (then 36) tests; a program that exercises the converted code end to end is the regression check
+  that matters, so every converted library gets one (smoke.kov, agui_smoke.kov).
+- **Crash addresses resolve without a debugger**: the linker map (`--lib "-Wl,/MAP:file"`), a
+  vectored exception handler printing the fault address and the stack slots that point into the
+  image, and a script over the map give the function and its callers. Instrumenting the converted
+  source with `printf` is free (convert.cmd regenerates it), and a probe against the standard
+  library alone builds in seconds where one against CommonUtil + Agui took 1.5 minutes before the
+  object cache warmed up.
 
 ## How to reproduce
 

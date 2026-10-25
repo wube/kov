@@ -1,0 +1,52 @@
+// Static data members defined outside their class: the definition carries the initializer
+// (Agui's `double Gui::scale = 1.0;`, `const Style& Widget::defaultWidgetStyle = getStyleStatic();`).
+extern "C" int printf(const char* format, ...);
+
+struct Rect
+{
+  int x, y, w, h;
+  Rect(int x, int y, int w, int h) : x(x), y(y), w(w), h(h) {}
+};
+
+struct Style
+{
+  int width;
+  Style* parent;
+  Style(int width, Style* parent) : width(width), parent(parent) {}
+};
+
+namespace gui
+{
+  struct Gui
+  {
+    static double scale;
+    static Gui* instance;
+    static const Rect fullScreen;
+    static const Style& defaultStyle;
+    static const int LIMIT;
+    static const Style& styleStatic();
+    static int limitTwice() { return LIMIT * 2; }
+  };
+
+  double Gui::scale = 1.5;
+  Gui* Gui::instance = nullptr;
+  const Rect Gui::fullScreen = Rect(-1, 0, 640, 480);
+  const Style& Gui::defaultStyle = styleStatic(); // unqualified: the initializer sees the class
+  const int Gui::LIMIT = 21;
+
+  const Style& Gui::styleStatic()
+  {
+    static Style result(7, nullptr);
+    return result;
+  }
+}
+
+int main()
+{
+  int sizes[gui::Gui::LIMIT]; // the bound is a constant through the out-of-line definition
+  const Style& s = gui::Gui::defaultStyle;
+  printf("%g %d %d %d %d %d %d %d\n", gui::Gui::scale, gui::Gui::instance == nullptr ? 1 : 0, gui::Gui::fullScreen.x,
+         gui::Gui::fullScreen.w, s.width, &s == &gui::Gui::styleStatic() ? 1 : 0, gui::Gui::limitTwice(),
+         (int)(sizeof(sizes) / sizeof(int)));
+  return 0;
+}

@@ -1,0 +1,83 @@
+// A smoke test of the converted Agui against the Void backend: a Gui with a label, laid out and
+// measured with the Void font (10 pixels per character, 20 per line). Built and run by
+// convert.cmd; the output is compared with agui_smoke.expected.
+//
+// Agui's style properties are inherited along a parent chain whose root must define every
+// property (the game fills the root styles from its Lua prototypes); fillRootStyle plays that part.
+extern "C" int printf(const char* format, ...);
+
+struct SmokeFontLoader : agui::FontLoader
+{
+  agui::Font* loadFont(const String& fileName, int height, int fontFlags, float borderWidth, const agui::Color& borderColor) override
+  {
+    return new agui::VoidAguiBackendFont();
+  }
+};
+
+// Agui polls its input through this interface; the smoke test has no events.
+struct SmokeInput : agui::Input
+{
+  PlayerInputMethod getInputMethod() override { return PlayerInputMethod::KeyboardAndMouse; }
+};
+
+void fillRootStyle(agui::Style& style)
+{
+  style.setHorizontalAlign(agui::HorizontalAlign::Left);
+  style.setVerticalAlign(agui::VerticalAlign::Top);
+  style.setMinimalWidth(0);
+  style.setMinimalHeight(0);
+  style.setNaturalWidth(0);
+  style.setNaturalHeight(0);
+  style.setMaximalWidth(0);
+  style.setMaximalHeight(0);
+  style.setPadding(0);
+  style.setMargin(0);
+  style.setEffect(nullptr);
+  style.setEffectOpacity(1);
+  style.setHorizontallyStretchable(false);
+  style.setVerticallyStretchable(false);
+  style.setHorizontallySquashable(false);
+  style.setVerticallySquashable(false);
+  style.setIgnoredBySearch(false);
+  style.setNeverHiddenBySearch(false);
+}
+
+void fillRootLabelStyle(agui::LabelStyle& style, const agui::Font* font)
+{
+  fillRootStyle(style);
+  style.setFont(font);
+  style.setFontColor(agui::Color(1, 1, 1));
+  style.setHoveredFontColor(agui::Color(1, 1, 1));
+  style.setGameControllerHoveredFontColor(agui::Color(1, 1, 1));
+  style.setClickedFontColor(agui::Color(1, 1, 1));
+  style.setDisabledFontColor(agui::Color(0.5f, 0.5f, 0.5f));
+  style.setParentHoveredColor(agui::Color(1, 1, 1));
+  style.setSingleLine(false);
+  style.setRichTextSetting(agui::RichTextSetting::Enabled);
+  style.setRichTextHighlightErrorColor(agui::Color(1, 0, 0));
+  style.setRichTextHighlightWarningColor(agui::Color(1, 1, 0));
+  style.setRichTextHighlightOkColor(agui::Color(0, 1, 0));
+}
+
+int main()
+{
+  SmokeFontLoader loader;
+  agui::Font::setFontLoader(&loader);
+  agui::VoidAguiBackendFont font;
+  fillRootLabelStyle(agui::Label::defaultStyle, &font);
+  fillRootStyle(agui::EmptyWidget::defaultStyle);
+  fillRootStyle(const_cast<agui::Style&>(agui::Widget::defaultWidgetStyle)); // the top container's style
+  agui::Gui gui;
+  SmokeInput input;
+  gui.setInput(&input);
+  agui::VoidAguiBackendGraphics graphics;
+  gui.setGraphics(&graphics);
+  gui.setSize(640, 480);
+  agui::Label& label = agui::label();
+  gui.getTop()->add(&label);
+  label.setText(String("Hello Agui")); // a text change inside a Gui schedules the label's resize for the next logic step
+  gui.logic(true);
+  printf("label %d x %d\n", label.getWidth(), label.getHeight());
+  printf("top %d x %d, children %d\n", gui.getTop()->getWidth(), gui.getTop()->getHeight(), gui.getTop()->getChildren().size());
+  return 0;
+}

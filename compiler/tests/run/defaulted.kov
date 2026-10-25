@@ -1,0 +1,70 @@
+// Members declared `= default`: the memberwise constructor (with the vtable pointer), copy, move, assignment, equality and destructor the compiler writes, and a constructor delegating to a defaulted one.
+extern "C" int printf(const char* format, ...);
+int destroyed = 0;
+struct Widget
+{
+  int id = 1;
+  virtual ~Widget() { ++destroyed; }
+  virtual int kind() { return 1; }
+};
+struct Clickable : Widget
+{
+  int clicks = 5;
+  Clickable() = default;
+  int kind() override { return 2; }
+};
+struct Rect
+{
+  int x = 0;
+  int y = 0;
+  Rect() = default;
+  Rect(int x, int y) : x(x), y(y) {}
+  Rect(const Rect&) = default;
+  Rect(Rect&&) = default;
+  Rect& operator=(const Rect&) = default;
+  Rect& operator=(Rect&&) = default;
+  bool operator==(const Rect& other) const = default;
+  bool operator!=(const Rect& other) const = default;
+  ~Rect() = default;
+};
+struct Named
+{
+  String name;
+  Rect bounds;
+  Named() = default;
+  Named(const Named&) = default;
+  Named& operator=(const Named&) = default;
+  bool operator==(const Named& other) const = default;
+};
+struct Targetable
+{
+  int targets = 3;
+  Targetable() = default;
+  Targetable(const Targetable&) : Targetable() {}
+};
+int main()
+{
+  {
+    Clickable c;
+    Widget* w = &c;
+    printf("%d %d %d\n", c.id, c.clicks, w->kind());
+  }
+  Rect a(3, 4);
+  Rect b = a;
+  Rect c = Rect();
+  c = b;
+  Rect d(move(a));
+  printf("%d %d %d %d %d %d\n", b.x, c.y, d.x, a == d ? 1 : 0, a != c ? 1 : 0, c == Rect(3, 4) ? 1 : 0);
+  Named n;
+  n.name = "hello";
+  n.bounds = Rect(1, 2);
+  Named m = n;
+  Named k;
+  k = m;
+  printf("%s %d %d %d\n", k.name.c_str(), k.bounds.y, m == n ? 1 : 0, k == Named() ? 1 : 0);
+  Targetable t;
+  t.targets = 9;
+  Targetable u = t;
+  printf("%d %d %d\n", u.targets, t.targets, destroyed);
+  return 0;
+}

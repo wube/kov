@@ -118,6 +118,7 @@ namespace
       std::string name;        // the LLVM name to define it under (the declaration's), or empty
     };
     std::string currentFunctionName; // LLVM name of the function being emitted
+    unsigned staticLocals = 0;       // numbers the function-local statics' globals
     std::string currentRequestedBy;  // for an instantiation: the function that first used it
 
     // A lambda's closure: one struct per lambda, fields for the captures, one function.
@@ -671,18 +672,43 @@ namespace
       }
     }
 
+    // A destructor written by the user; `~T() = default` is the compiler's memberwise one.
     FunctionDecl* findDestructor(ClassDecl* c)
     {
       for (Decl* m : c->members)
-        if (m->kind == NodeKind::FunctionDecl && (m->flags & DF_Destructor))
+        if (m->kind == NodeKind::FunctionDecl && (m->flags & DF_Destructor) && !(m->flags & DF_Default))
           return static_cast<FunctionDecl*>(m);
       return nullptr;
     }
 
+    // Constructors written by the user (`= default` ones are the compiler's memberwise ones).
     bool hasUserConstructors(ClassDecl* c)
     {
       for (Decl* m : c->members)
-        if (m->kind == NodeKind::FunctionDecl && (m->flags & DF_Constructor))
+        if (m->kind == NodeKind::FunctionDecl && (m->flags & DF_Constructor) && !(m->flags & DF_Default))
+          return true;
+      return false;
+    }
+
+    // Default construction does something: user constructors, a vtable pointer, default member
+    // initializers, or a base/member class that needs constructing (a zeroed global is not enough).
+    bool needsConstruction(const Ty* t, Node* at, int depth = 0)
+    {
+      t = types.stripRef(t);
+      if (t->kind == TyKind::Array)
+        return needsConstruction(t->inner, at, depth);
+      if (!isClass(t) || !t->decl || depth > 16)
+        return false;
+      if (hasUserConstructors(classDef(t->decl, at)))
+        return true;
+      StructInfo info = structFor(t, at); // copy: nested calls may add structs
+      if (info.polymorphic)
+        return true;
+      for (Decl* m : info.fieldDecls)
+        if (m->kind == NodeKind::VariableDecl && static_cast<VariableDecl*>(m)->init)
+          return true;
+      for (const Ty* ft : info.fieldTypes)
+        if (needsConstruction(ft, at, depth + 1))
           return true;
       return false;
     }
@@ -778,9 +804,14 @@ namespace
         FunctionDecl* ctor = findConstructor(t, {}, at);
         if (!ctor)
           unsupported(at, "default construction of " + global.qualifiedName(c) + ", which has no default constructor");
-        TemplateArgs args = global.classArgsOf(canonicalClass(t, at));
-        emitCall("", "void " + useFunction(ctor, args, canonicalClass(t, at)) + "(ptr " + addr + ")");
-        return;
+        if (!(ctor->flags & DF_Default))
+        {
+          // Through callFunction: `Style(const Style* parent = nullptr)` wants its default argument.
+          TemplateArgs args = global.classArgsOf(canonicalClass(t, at));
+          callFunction(ctor, args, canonicalClass(t, at), addr, "", {}, at);
+          return;
+        }
+        // `T() = default;` next to other constructors: the memberwise default construction below.
       }
       fn += "  store " + llType(t, at) + " zeroinitializer, ptr " + addr + "\n";
       initializeMembers(addr, t, {}, at);
@@ -1029,7 +1060,7 @@ namespace
             unsupported(e, "a member that is not a field");
           return addr;
         }
-        return globalFor(static_cast<VariableDecl*>(d), e);
+        return globalAddress(static_cast<VariableDecl*>(d), e);
       }
       unsupported(e, "taking the address of " + global.qualifiedName(d));
     }
@@ -1055,6 +1086,8 @@ namespace
           if (f->params.size() != 1)
             continue;
           const Ty* pt = declType(f->params[0]);
+          if (f->flags & DF_Default)
+            continue; // `T(T&&) = default`: the memberwise move below
           if (pt && pt->kind == TyKind::RRef && isClass(pt->inner) && classKey(pt->inner) == classKey(t))
             move = f;
         }
@@ -1087,6 +1120,8 @@ namespace
           const Ty* pt = declType(f->params[0]);
           if (!pt || !pt->isReference() || !isClass(pt->inner) || classKey(pt->inner) != classKey(t))
             continue;
+          if (f->flags & DF_Default)
+            continue; // `T(const T&) = default`: the memberwise copy below
           if (pt->kind == TyKind::LRef)
             copy = f; // `T(const T&)`; the move constructor `T(T&&)` would empty the source
           else
@@ -1104,6 +1139,13 @@ namespace
       }
       if (findDestructor(c))
         unsupported(at, "copying " + global.qualifiedName(c) + ", which has a destructor but no copy constructor");
+      memberwiseConstruct(dst, src, t, at, move);
+    }
+
+    // Constructs the object at dst from the one at src base by base and member by member
+    // (bitwise when nothing needs destruction): copies, or moves with `move`.
+    void memberwiseConstruct(const std::string& dst, const std::string& src, const Ty* t, Node* at, bool move)
+    {
       if (!needsDestruction(t, at))
       {
         std::string v = newTemp();
@@ -1149,7 +1191,10 @@ namespace
       const Ty* foundIn = nullptr;
       // From an lvalue: operator=(const T&). From a temporary or `move(x)`: operator=(T&&) if there is one.
       std::vector<const Ty*> argTypes{move ? types.rref(types.unqualified(t)) : types.lref(types.qualified(t, true, false))};
-      if (FunctionDecl* op = findMemberFunction(t, "operator=", argTypes, t, at, &foundIn))
+      FunctionDecl* op = findMemberFunction(t, "operator=", argTypes, t, at, &foundIn);
+      if (op && (op->flags & DF_Default))
+        op = nullptr; // `operator=(const T&) = default`: the memberwise assignment below
+      if (op)
       {
         if (op->flags & DF_Delete)
           unsupported(at, "assignment to " + global.qualifiedName(t->decl) + " through its deleted operator=");
@@ -1178,6 +1223,12 @@ namespace
       }
       if (findDestructor(classDef(t->decl, at)))
         unsupported(at, "assignment to " + global.qualifiedName(t->decl) + ", which has a destructor but no operator=");
+      memberwiseAssign(dst, src, t, at, move);
+    }
+
+    // Assigns the object at src to the one at dst base by base and member by member.
+    void memberwiseAssign(const std::string& dst, const std::string& src, const Ty* t, Node* at, bool move)
+    {
       StructInfo info = structFor(t, at);
       for (auto& [baseDef, index] : info.bases)
         assignObject(gep(info.name, dst, index), gep(info.name, src, index), info.fieldTypes[index], at, move);
@@ -2055,6 +2106,19 @@ namespace
       bool templated = !args.empty();
       if (def->file && def->file->isImported)
         def = f, templated = false; // inline C functions are declared, the library provides them
+      if (def != f && (def->flags & DF_Default) && !def->body)
+        f->flags |= DF_Default; // `Flow::~Flow() = default;` out of line: the declaration is defaulted too
+      if ((f->flags & DF_Default) && !f->body)
+      {
+        // `= default`: the compiler's memberwise function, defined where first needed (a vtable
+        // slot or a function pointer wants a real function; calls inline the body).
+        if (!requested[name])
+        {
+          requested[name] = true;
+          worklist.push_back({f, args, classTy, currentModule, currentFunctionName, name});
+        }
+        return name;
+      }
       if (def->body && templated)
       {
         if (!requested[name])
@@ -2094,6 +2158,12 @@ namespace
       if (declaredNames[name])
         return name;
       declaredNames[name] = true;
+      {
+        static bool debugCalls = getenv("KOV_DEBUG_CALLS") != nullptr;
+        if (debugCalls)
+          fprintf(stderr, "declare %s: def %s, def flags %x, def body %d, f flags %x, f body %d\n", name.c_str(), def == f ? "self" : "other", def->flags,
+                  def->body != nullptr, f->flags, f->body != nullptr);
+      }
       if (f->builtin == BUILTIN_EnumStr)
       {
         emitEnumStr(f, name);
@@ -2161,6 +2231,8 @@ namespace
     {
       if (f->flags & DF_Delete)
         unsupported(at, "a call to the deleted function " + global.qualifiedName(f));
+      if (f->flags & DF_Default)
+        return defaultedCall(f, classTy, thisArg, callArgs, at);
       if (!conditionHolds(f))
         return {"", types.voidType(), false}; // conditional(false): no call, arguments not evaluated
       std::string name = indirect.empty() ? useFunction(f, args, classTy) : indirect;
@@ -2216,12 +2288,20 @@ namespace
       {
         // Parameters the call left out take their default arguments, evaluated at the call site
         // (the expression's literals belong to the callee's file; a `caller` location to this one).
+        // A member of a class template has them typed under the instantiation's arguments first
+        // (`ScrollBar(const Style* s = &Policy::defaultStyle)` with Policy = VerticalPolicy).
         ParsedFile* callerFile = currentFile;
+        bool retyped = false;
         for (size_t i = callArgs.size(); i < f->params.size(); ++i)
         {
           auto* pd = static_cast<ParamDecl*>(f->params[i]);
           if (!pd->defaultValue || pd->isPack)
             break;
+          if (!retyped && !args.empty() && f != currentFunction)
+          {
+            global.retypeFor(f, args, classTy);
+            retyped = true;
+          }
           const Ty* pt = position < s.paramTys.size() ? s.paramTys[position] : nullptr;
           std::string text;
           if (pd->defaultValue->kind == NodeKind::CallerExpr)
@@ -2248,6 +2328,137 @@ namespace
       std::string r = newTemp();
       emitCall(r + " = ", sig + name + "(" + argText + ")", mayThrow);
       return {r, ret, false};
+    }
+
+    // A member declared `= default`: the memberwise constructor, destructor, assignment or
+    // comparison the compiler writes for it, on the object at thisArg.
+    Value defaultedCall(FunctionDecl* f, const Ty* classTy, const std::string& thisArg, Span<Expr*> args, Node* at)
+    {
+      if (!classTy || thisArg.empty())
+        unsupported(at, "a defaulted function without its object");
+      const Ty* t = types.unqualified(types.stripRef(classTy));
+      std::string src;
+      if (!args.empty())
+      {
+        if (args.size() != 1)
+          unsupported(at, "a defaulted function with " + std::to_string(args.size()) + " arguments");
+        Value v = rvalue(args[0]);
+        if (!isClass(v.ty))
+          unsupported(at, "a defaulted function given a non-class");
+        src = v.text;
+        if (classKey(v.ty) != classKey(t) && !baseAddress(v.ty, t, v.text, src, at))
+          unsupported(at, "a defaulted function given an unrelated class");
+      }
+      return defaultedOperation(f, t, thisArg, src, at);
+    }
+
+    // The memberwise body of a member declared `= default`, on the object at thisArg (and the one
+    // at src: the other operand of a copy, move, assignment or comparison).
+    Value defaultedOperation(FunctionDecl* f, const Ty* t, const std::string& thisArg, const std::string& src, Node* at)
+    {
+      bool move = false;
+      if (!f->params.empty())
+      {
+        TemplateArgs cargs = global.classArgsOf(canonicalClass(t, at));
+        ArgsScope scope(*this, &cargs);
+        const Ty* pt = declType(f->params[0]);
+        move = pt && pt->kind == TyKind::RRef;
+      }
+      if (f->flags & DF_Constructor)
+      {
+        if (src.empty())
+        {
+          fn += "  store " + llType(t, at) + " zeroinitializer, ptr " + thisArg + "\n";
+          initializeMembers(thisArg, t, {}, at);
+          return {"", types.voidType(), false};
+        }
+        memberwiseConstruct(thisArg, src, t, at, move);
+        return {"", types.voidType(), false};
+      }
+      if (f->flags & DF_Destructor)
+      {
+        destroyMembers(thisArg, t, at);
+        return {"", types.voidType(), false};
+      }
+      if (!f->name.empty() && f->name.last().special == 2 && !src.empty())
+      {
+        P op = P(f->name.last().opToken);
+        if (op == P::Assign)
+        {
+          memberwiseAssign(thisArg, src, t, at, move);
+          return {thisArg, types.lref(t), false};
+        }
+        if (op == P::EqEq || op == P::NotEq)
+        {
+          Value eq = memberwiseEqual(thisArg, src, t, at);
+          if (op == P::EqEq)
+            return eq;
+          std::string r = newTemp();
+          fn += "  " + r + " = xor i1 " + eq.text + ", true\n";
+          return {r, types.boolType(), false};
+        }
+      }
+      unsupported(at, "the defaulted function " + global.qualifiedName(f));
+    }
+
+    // a == b for the objects at those addresses, base by base and member by member.
+    Value memberwiseEqual(const std::string& a, const std::string& b, const Ty* t, Node* at)
+    {
+      StructInfo info = structFor(t, at);
+      std::string result = "true";
+      auto combine = [&](const std::string& v)
+      {
+        if (result == "true")
+        {
+          result = v;
+          return;
+        }
+        std::string r = newTemp();
+        fn += "  " + r + " = and i1 " + result + ", " + v + "\n";
+        result = r;
+      };
+      for (auto& [baseDef, index] : info.bases)
+        combine(objectsEqual(gep(info.name, a, index), gep(info.name, b, index), info.fieldTypes[index], at).text);
+      for (Decl* d : info.fieldDecls)
+      {
+        uint32_t index = info.fieldIndex[d];
+        const Ty* ft = info.fieldTypes[index];
+        std::string fa = gep(info.name, a, index), fb = gep(info.name, b, index);
+        if (isClass(ft))
+          combine(objectsEqual(fa, fb, ft, at).text);
+        else if (ft->kind == TyKind::Array)
+          unsupported(at, "a defaulted comparison of an array member");
+        else
+          combine(compare(P::EqEq, load(fa, ft, at), load(fb, ft, at), at).text);
+      }
+      return {result, types.boolType(), false};
+    }
+
+    // a == b for class objects: the class's own operator== unless it is defaulted, else memberwise.
+    Value objectsEqual(const std::string& a, const std::string& b, const Ty* t, Node* at)
+    {
+      const Ty* foundIn = nullptr;
+      std::vector<const Ty*> argTypes{types.lref(types.qualified(t, true, false))};
+      FunctionDecl* op = findMemberFunction(t, "operator==", argTypes, t, at, &foundIn);
+      if (op && !(op->flags & DF_Default))
+      {
+        TemplateArgs args = global.classArgsOf(foundIn);
+        Signature s;
+        {
+          ArgsScope scope(*this, &args);
+          s = signatureOf(op);
+        }
+        std::string name = useFunction(op, args, foundIn);
+        std::string thisArg = a;
+        if (canonicalClass(t, at) != foundIn)
+          baseAddress(t, foundIn, a, thisArg, at);
+        std::string r = newTemp();
+        emitCall(r + " = ", s.returnType + " " + name + "(ptr " + thisArg + ", ptr " + b + ")");
+        if (s.returnType == "i1")
+          return {r, types.boolType(), false};
+        return convert(Value{r, types.intType(32), false}, types.boolType(), at);
+      }
+      return memberwiseEqual(a, b, t, at);
     }
 
     // One call argument as "<type> <operand>", converted to the parameter type (null: variadic).
@@ -2495,11 +2706,12 @@ namespace
             if (v->builtin == BUILTIN_EnumCount && v->parent)
               return int64_t(enumeratorCount(v->parent));
             const Ty* t = declType(v);
-            if (t && (t->isConst || (v->flags & DF_Constexpr)) && v->init && !locals.count(d))
+            VariableDecl* def = locals.count(d) ? v : variableDefinition(v);
+            if (t && (t->isConst || (v->flags & DF_Constexpr)) && def->init && !locals.count(d))
             {
               ParsedFile* saved = currentFile;
-              currentFile = v->file;
-              auto r = evalConst(v->init, depth + 1);
+              currentFile = def->file;
+              auto r = evalConst(def->init, depth + 1);
               currentFile = saved;
               return r;
             }
@@ -2791,9 +3003,48 @@ namespace
     }
 
     // Module k: the shared declarations, then declares for what it uses from other modules, then its bodies.
+    // The shared declarations without those of functions this module defines: a `declare` next to
+    // the `define` is a redefinition to LLVM (a call site whose definition was not found declares
+    // the function as external).
+    std::string declsFor(unsigned k)
+    {
+      std::string out;
+      size_t pos = 0;
+      while (pos < decls.size())
+      {
+        size_t end = decls.find('\n', pos);
+        if (end == std::string::npos)
+          end = decls.size();
+        std::string_view line(decls.data() + pos, end - pos);
+        bool skip = false;
+        if (line.rfind("declare ", 0) == 0)
+        {
+          size_t at = line.find('@');
+          if (at != std::string_view::npos)
+          {
+            size_t nameEnd = line[at + 1] == '"' ? line.find('"', at + 2) + 1 : line.find('(', at);
+            if (nameEnd != std::string_view::npos)
+            {
+              auto it = definedIn.find(std::string(line.substr(at, nameEnd - at)));
+              skip = it != definedIn.end() && it->second == k;
+            }
+          }
+        }
+        if (!skip)
+        {
+          out.append(line);
+          out += '\n';
+        }
+        pos = end + 1;
+      }
+      return out;
+    }
+
     std::string moduleText(unsigned k, const std::string& prefix)
     {
       std::string text = moduleDecls[k] + bodies[k] + shared;
+      std::string decls = declsFor(k);
+      std::string already = decls + moduleDecls[k]; // declarations every module (or this one) carries
       std::string declares;
       std::unordered_set<std::string> seen;
       for (size_t i = text.find('@'); i != std::string::npos; i = text.find('@', i + 1))
@@ -2811,8 +3062,8 @@ namespace
         if (!seen.insert(name).second)
           continue;
         auto it = definedIn.find(name);
-        if (it != definedIn.end() && it->second != k)
-          declares += declareLines[name] + "\n";
+        if (it != definedIn.end() && it->second != k && already.find(name + "(") == std::string::npos)
+          declares += declareLines[name] + "\n"; // not when a declaration is in the module's text already
       }
       return prefix + decls + moduleDecls[k] + ctorsText(k) + "\n" + shared + declares + "\n" + bodies[k];
     }
@@ -2906,6 +3157,9 @@ namespace
       }
       std::string r = newTemp();
       std::string fromT = llType(from, at), toT = llType(to, at);
+      if (fromT == toT && !(fk == TyKind::Pointer && tk == TyKind::Pointer))
+        return {v.text, to, v.isTemporary}; // the same bits: bool to `enum class E : bool`, uint8 to an int8 enum
+      // (two class pointers are both `ptr`, yet Derived* -> Base* may move to the base subobject)
       if ((fk == TyKind::Int || fk == TyKind::Char) && (tk == TyKind::Int || tk == TyKind::Char))
       {
         uint8_t fb = bitsOf(from), tb = bitsOf(to);
@@ -2956,7 +3210,7 @@ namespace
         {
           std::string addr;
           if (baseAddress(from->inner, to->inner, v.text, addr, at))
-            return {addr, to};
+            return {keepNull(v.text, addr), to};
         }
         return {fk == TyKind::Nullptr ? "null" : v.text, to};
       }
@@ -2988,9 +3242,23 @@ namespace
         const Ty* toCls = pointers ? target->inner : target;
         std::vector<std::pair<std::string, uint32_t>> path;
         if (classKey(fromCls) != classKey(toCls) && basePath(toCls, fromCls, path, at))
-          return {derivedAddress(path, v.text), pointers ? target : types.unqualified(toCls), false}; // `static_cast<VerticalFlow&>(layout)`
+        {
+          std::string addr = derivedAddress(path, v.text);
+          return {pointers ? keepNull(v.text, addr) : addr, pointers ? target : types.unqualified(toCls), false}; // `static_cast<VerticalFlow&>(layout)`
+        }
       }
       return convert(v, to, at);
+    }
+
+    // A pointer moved to a base or derived subobject: null stays null (C++'s rule for pointer conversions).
+    std::string keepNull(const std::string& original, const std::string& adjusted)
+    {
+      if (adjusted == original)
+        return adjusted;
+      std::string isNull = newTemp(), r = newTemp();
+      fn += "  " + isNull + " = icmp eq ptr " + original + ", null\n";
+      fn += "  " + r + " = select i1 " + isNull + ", ptr null, ptr " + adjusted + "\n";
+      return r;
     }
 
     // The chain of base-class fields from derived down to base: (struct name, field index) pairs.
@@ -3141,7 +3409,7 @@ namespace
                 unsupported(e, "a member that is not a field");
               return addr;
             }
-            return globalFor(static_cast<VariableDecl*>(d), e);
+            return globalAddress(static_cast<VariableDecl*>(d), e);
           }
           if (d->kind == NodeKind::EnumeratorDecl)
             break; // an enumerator bound to a reference: its value goes to a temporary (below)
@@ -3175,7 +3443,7 @@ namespace
           if (!baseTy || !isClass(baseTy))
             unsupported(e, "a member access on a non-class object");
           if (d->flags & DF_Static)
-            return globalFor(static_cast<VariableDecl*>(d), e);
+            return globalAddress(static_cast<VariableDecl*>(d), e);
           std::string addr;
           if (!fieldAddress(baseTy, d, object, addr, e))
             unsupported(e, "a member that is not a field of the object's class");
@@ -3298,16 +3566,25 @@ namespace
       funcletOverride.clear();
       resetFunctionState();
       currentFunction = nullptr;
-      currentFile = v->file;
+      VariableDecl* def = variableDefinition(v);
+      currentFile = def->file;
       emittingShared = false;
       std::string fnName = "@\"kov.init." + global.qualifiedName(v) + "\"";
       try
       {
         pushScope();
-        if (v->init)
-          initializeFrom(name, t, v->init, at);
+        if (t->isReference() && def->init)
+        {
+          // The address of what the reference is bound to.
+          std::string target = isClass(types.stripRef(def->init->ty)) ? rvalue(def->init).text : lvalue(def->init);
+          fn += "  store ptr " + target + ", ptr " + name + "\n";
+        }
+        else if (def->init)
+          initializeFrom(name, t, def->init, at);
         else if (isClass(t))
           defaultConstruct(name, t, at);
+        else if (t->kind == TyKind::Array)
+          constructArray(name, t, at); // `static Style styles[3];`
         destroyTemps();
         popScope();
         fn += "  ret void\n";
@@ -3341,6 +3618,27 @@ namespace
       return s + "]\n";
     }
 
+    // The declaration carrying a global's initializer: the out-of-line definition of a static data
+    // member (`double Gui::scale = 1.0;`), or the declaration itself.
+    VariableDecl* variableDefinition(VariableDecl* v)
+    {
+      Decl* d = global.definitionOf(v);
+      return d && d->kind == NodeKind::VariableDecl ? static_cast<VariableDecl*>(d) : v;
+    }
+
+    // The address of the object a global names: the global itself, or, for a reference global,
+    // what it was bound to.
+    std::string globalAddress(VariableDecl* v, Node* at)
+    {
+      std::string g = globalFor(v, at);
+      const Ty* t = global.typeOfDecl(v);
+      if (!t || !t->isReference())
+        return g;
+      std::string p = newTemp();
+      fn += "  " + p + " = load ptr, ptr " + g + "\n";
+      return p;
+    }
+
     std::string globalFor(VariableDecl* v, Node* at)
     {
       auto it = globals.find(v);
@@ -3372,35 +3670,45 @@ namespace
       std::string init = "zeroinitializer";
       bool constructed = false;
       const Ty* st = types.stripRef(t);
+      VariableDecl* def = variableDefinition(v); // `static double scale;` in the class, `double Gui::scale = 1.0;` outside
       ParsedFile* saved = currentFile;
-      currentFile = v->file;
-      if (v->init)
+      currentFile = def->file;
+      if (t->isReference())
       {
-        auto c = evalConst(v->init);
+        // `static const Style& defaultWidgetStyle = getStyleStatic();`: a pointer, bound at startup.
+        currentFile = saved;
+        decls += "$" + name.substr(1) + " = comdat any\n" + name + " = linkonce_odr global ptr null, comdat\n";
+        if (def->init)
+          emitGlobalConstructor(v, name, t, at);
+        return name;
+      }
+      if (def->init)
+      {
+        auto c = evalConst(def->init);
         if (c && (st->kind == TyKind::Int || st->kind == TyKind::Char || st->kind == TyKind::Enum))
           init = std::to_string(*c);
         else if (c && st->kind == TyKind::Float)
           init = floatConstant(double(*c), st->bits);
-        else if (st->kind == TyKind::Float && v->init->kind == NodeKind::LiteralExpr &&
-                 static_cast<LiteralExpr*>(v->init)->literalKind == TokenKind::Number)
+        else if (st->kind == TyKind::Float && def->init->kind == NodeKind::LiteralExpr &&
+                 static_cast<LiteralExpr*>(def->init)->literalKind == TokenKind::Number)
         {
           std::string digits;
-          for (char ch : spelling(v->init->token))
+          for (char ch : spelling(def->init->token))
             if (ch != '\'' && ch != 'f' && ch != 'F' && ch != 'l' && ch != 'L')
               digits += ch;
           init = floatConstant(strtod(digits.c_str(), nullptr), st->bits);
         }
         else if (c && st->kind == TyKind::Bool)
           init = *c ? "true" : "false";
-        else if (st->kind == TyKind::Pointer && v->init->kind == NodeKind::LiteralExpr && static_cast<LiteralExpr*>(v->init)->keyword == Kw::nullptr_)
+        else if (st->kind == TyKind::Pointer && def->init->kind == NodeKind::LiteralExpr && static_cast<LiteralExpr*>(def->init)->keyword == Kw::nullptr_)
           init = "null";
-        else if (v->init->kind == NodeKind::LiteralExpr && static_cast<LiteralExpr*>(v->init)->literalKind == TokenKind::String &&
+        else if (def->init->kind == NodeKind::LiteralExpr && static_cast<LiteralExpr*>(def->init)->literalKind == TokenKind::String &&
                  st->kind == TyKind::Pointer)
-          init = stringConstant(static_cast<LiteralExpr*>(v->init));
+          init = stringConstant(static_cast<LiteralExpr*>(def->init));
         else
           constructed = true; // built at startup, see emitGlobalConstructor
       }
-      else if (isClass(st) && hasUserConstructors(classDef(st->decl, at)))
+      else if (needsConstruction(st, at))
         constructed = true;
       currentFile = saved;
       // Defined in every module, merged by the linker (one instance per program).
@@ -3510,7 +3818,11 @@ namespace
       TemplateArgs fnArgs = global.classArgsOf(foundIn);
       if (!f->templateParams.empty())
         global.deduceArgs(f, argTypesOf(args), fnArgs); // `template<typename U> bool operator==(const U*) const`
-      return callFunction(f, fnArgs, foundIn, thisArg, "", args, at);
+      std::string indirect;
+      if ((f->flags & DF_Virtual) && isClass(object.ty))
+        if (int slot = slotOf(object.ty, f, at); slot >= 0)
+          indirect = loadSlot(object.text, slot); // `*a == *b` on images: the dynamic type's operator==
+      return callFunction(f, fnArgs, foundIn, thisArg, "", args, at, indirect);
     }
 
     Value arithmetic(P op, Value l, Value r, Node* at)
@@ -5069,11 +5381,50 @@ namespace
         bodies[definedIn[mainName]] += text;
     }
 
+    // `static T x = ...;` inside a function: a global of the program (in the module of the function),
+    // constructed on the first pass through the declaration, never destroyed. Not thread-safe yet.
+    void staticLocal(VariableDecl* v, const Ty* t)
+    {
+      if (t->isReference())
+        unsupported(v, "a static local reference");
+      std::string owner = currentFunctionName;
+      if (owner.rfind("@\"", 0) == 0)
+        owner = owner.substr(2, owner.size() - 3);
+      else if (!owner.empty() && owner[0] == '@')
+        owner = owner.substr(1);
+      std::string name = "@\"" + owner + "::" + sym(v->name.last().symbol) + "." + std::to_string(staticLocals++) + "\"";
+      std::string guard = name.substr(0, name.size() - 1) + ".guard\"";
+      moduleDecls[currentModule] += name + " = internal global " + llType(t, v) + " zeroinitializer\n";
+      moduleDecls[currentModule] += guard + " = internal global i1 false\n";
+      globals[v] = name;
+      locals[v] = {name, t, false};
+      std::string done = newLabel("static.done"), init = newLabel("static.init");
+      std::string flag = newTemp();
+      fn += "  " + flag + " = load i1, ptr " + guard + "\n";
+      fn += "  br i1 " + flag + ", label %" + done + ", label %" + init + "\n";
+      startBlock(init);
+      fn += "  store i1 true, ptr " + guard + "\n";
+      if (v->init)
+        initializeFrom(name, t, v->init, v);
+      else if (isClass(t))
+        defaultConstruct(name, t, v);
+      else if (t->kind == TyKind::Array && isClass(t->inner) && hasUserConstructors(classDef(t->inner->decl, v)))
+        constructArray(name, t, v);
+      destroyTemps();
+      emitBranch(done);
+      startBlock(done);
+    }
+
     void declareLocal(VariableDecl* v)
     {
       const Ty* t = declType(v);
       if (!t || !t->isKnown() || types.isDependent(t))
         unsupported(v, "a local of unknown type (" + sym(v->name.last().symbol) + ")");
+      if ((v->flags & DF_Static) && !(v->flags & DF_Typedef))
+      {
+        staticLocal(v, t);
+        return;
+      }
       bool isRef = t->isReference();
       std::string slot = "%v" + std::to_string(temp++);
       allocas += "  " + slot + " = alloca " + (isRef ? std::string("ptr") : llType(t, v)) + "\n";
@@ -5140,8 +5491,9 @@ namespace
               destroyTemps();
             }
             else if (d->kind == NodeKind::ClassDecl || d->kind == NodeKind::EnumDecl || d->kind == NodeKind::UsingAliasDecl ||
+                     d->kind == NodeKind::UsingDirectiveDecl || d->kind == NodeKind::UsingNameDecl ||
                      d->kind == NodeKind::EmptyDecl || d->kind == NodeKind::StaticAssertDecl)
-              continue;
+              continue; // names only (`using namespace gui;` in a body): resolved, nothing to emit
             else
               unsupported(d, "this local declaration");
           }
@@ -5775,6 +6127,26 @@ namespace
               locals[pd] = local;
           }
         }
+        if ((f->flags & DF_Default) && !f->body)
+        {
+          // `= default`: the memberwise body; the source object, if any, is the parameter after this.
+          size_t sourceIndex = s.hasSret ? 2 : 1;
+          std::string source = paramNames.size() > sourceIndex ? paramNames[sourceIndex] : std::string();
+          Value r = defaultedOperation(f, types.unqualified(types.stripRef(currentClassTy)), thisPointer(f), source, f);
+          destroyTemps();
+          popScope();
+          if (currentReturn->kind == TyKind::Void)
+            fn += "  ret void\n";
+          else if (currentReturn->isReference())
+            fn += "  ret ptr " + r.text + "\n";
+          else
+            fn += "  ret " + llType(currentReturn, f) + " " + r.text + "\n";
+          addDefinition(name, functionText(header));
+          ++result.functions;
+          currentArgs = nullptr;
+          currentClassTy = nullptr;
+          return;
+        }
         if (f->flags & DF_Constructor)
         {
           initializeMembers(thisPointer(f), currentClassTy, f->ctorInits, f);
@@ -5855,6 +6227,8 @@ CodegenResult generateLLVM(std::vector<std::unique_ptr<ParsedFile>>& files, Glob
   {
     auto it = e.fileModule.find(f->file);
     e.currentModule = it == e.fileModule.end() ? 0 : it->second;
+    if (f->name.parts.size() > 1)
+      global.declarationOf(f); // `void Text::split(...)`: static or virtual as its declaration says, whoever asks first
     e.emitFunction(f, {}, nullptr);
   }
   // Instantiations requested while emitting, including ones requested by other instantiations.
@@ -5874,7 +6248,7 @@ CodegenResult generateLLVM(std::vector<std::unique_ptr<ParsedFile>>& files, Glob
                        "target triple = \"x86_64-pc-windows-msvc\"\n\n";
   if (e.moduleCount <= 1)
   {
-    result.ir = prefix + e.decls + e.moduleDecls[0] + e.ctorsText(0) + "\n" + e.shared + e.body;
+    result.ir = prefix + e.declsFor(0) + e.moduleDecls[0] + e.ctorsText(0) + "\n" + e.shared + e.body;
     return result;
   }
   for (unsigned k = 0; k < e.moduleCount; ++k)

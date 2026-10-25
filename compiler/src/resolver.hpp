@@ -146,10 +146,13 @@ public:
   TypeTable& types();
   const Ty* typeOfDecl(Decl* d);                 // Declared (or deduced) canonical type.
   const Ty* typeOfAst(Type* t, Decl* context);   // A written type, resolved in the context of a declaration.
-  Decl* definitionOf(Decl* d);                   // Class/enum definition, or the out-of-line definition of a member function.
+  Decl* definitionOf(Decl* d);                   // Class/enum definition, or the out-of-line definition of a member function or a static data member.
   Decl* initializerListDecl();                   // The library's InitializerList class, or null.
   Decl* typeInfoDecl();                          // The library's TypeInfo class (what typeid yields), or null.
   Decl* owningClass(Decl* d);                    // The class a member (possibly defined out of line) belongs to.
+  // The in-class declaration of an out-of-line member definition (`static` and `virtual` are
+  // written there and copied onto the definition); null when there is none.
+  FunctionDecl* declarationOf(FunctionDecl* def);
   std::string qualifiedName(Decl* d);            // `ns::Class::name`
   bool isExternC(FunctionDecl* f);
   bool isTemplateContext(Decl* d);               // Inside a template (any enclosing declaration has parameters).

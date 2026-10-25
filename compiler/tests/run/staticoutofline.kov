@@ -1,0 +1,49 @@
+// A static member defined out of line, before anything calls it: the definition takes `static`
+// from the declaration (no hidden `this`), whichever is emitted first.
+extern "C" int printf(const char* format, ...);
+
+namespace demo
+{
+  class Text
+  {
+  public:
+    static void split(StringView text, Vector<StringView>& result);
+    static int count(StringView text);
+    int instanceSize() const;
+    int size = 0;
+  };
+
+  void Text::split(StringView text, Vector<StringView>& result) // defined before its first caller
+  {
+    result.clear();
+    int start = 0;
+    for (int i = 0; i <= text.size(); ++i)
+      if (i == text.size() || text[i] == '\n')
+      {
+        result.push_back(StringView(text.data() + start, i - start));
+        start = i + 1;
+      }
+  }
+
+  int Text::count(StringView text)
+  {
+    Vector<StringView> parts;
+    Text::split(text, parts);
+    return (int)parts.size();
+  }
+
+  int Text::instanceSize() const { return this->size; }
+}
+
+int main()
+{
+  String s("ab\ncd\ne");
+  printf("%d\n", demo::Text::count(s));
+  Vector<StringView> parts;
+  demo::Text::split(s, parts);
+  printf("%d %d %d\n", parts.size(), parts[1].size(), (int)(parts[2].data() - s.data()));
+  demo::Text t;
+  t.size = 7;
+  printf("%d\n", t.instanceSize());
+  return 0;
+}

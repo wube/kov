@@ -225,15 +225,70 @@ not see `TextButton`), and `typeid(x)` yields the library's `TypeInfo`: every vt
 with the class's name, so the dynamic type of a polymorphic object is one load away;
 `typeid(T)` and non-polymorphic objects get their static name. Test: `typeid.kov`.
 
-What is left in Agui: one generic lambda (`auto` parameter). Next: link the converted Agui
-with its Void backend and run a smoke program, as CommonUtil has.
+The generic lambda (an `auto` parameter) is the one construct left out: `Table::findFirstRowWhere`
+is a hand-written template in `programs/factorio/overrides/Agui/Widget/Table.kov`.
+
+## Agui links and runs (2026-10-25, later)
+
+The converted Agui (132 files) plus CommonUtil link with `programs/factorio/tests/agui_smoke.kov`
+into one program, and the program computes a layout: a `Gui` of 640 x 480 with its Void backend
+(the backend Factorio uses for headless runs: fonts of 10 pixels per character and 20 per line),
+a `Label` added to the top container, `logic()` once, and the label measures 100 x 20 for
+"Hello Agui". convert.cmd builds it and compares the output with `agui_smoke.expected`, next to
+the CommonUtil smoke test. Agui's style properties are inherited along a parent chain whose root
+must define every property (the game fills the roots from its Lua prototypes); the smoke test
+fills the three root styles by hand. `SystemClipboard` (SDL) is stubbed in `tests/stubs`.
+
+Linking found four gaps: a function declared in several modules was declared twice in one
+(declarations are now deduplicated per module), `= default` members referenced through vtables
+or function pointers had no body (they are synthesised through the worklist), out-of-line
+members of class templates were never paired with their declarations (the pairing used the
+first part of the qualified name), and `static` written on the declaration only was lost on the
+definition. Running found seven miscompiles that compile-time statistics, linking and the test
+suite had all passed over, each now a test:
+
+- Function-local statics were allocas (`static Style result(nullptr, nullptr)` in
+  `Widget::getStyleStatic`): now a guarded global of the program. `staticlocal.kov`.
+- Reference globals were objects (`static const Style& defaultWidgetStyle = getStyleStatic()`):
+  now a pointer bound by the global constructor. Out-of-line definitions of static data members
+  (`double Gui::scale = 1.0`, `const Style& Widget::defaultWidgetStyle = ...`) are paired with
+  their in-class declarations, so the initializer is no longer lost, and a constant defined that
+  way serves as an array bound. `staticmembers.kov`.
+- `this` in a const member function was `C*`, so `this->getStyle()` picked the non-const
+  virtual overload (null for the top container) over `getStyle() const`. `constthis.kov`.
+- A global of class type without user constructors was zero-initialised even when the class has
+  default member initializers, a vtable pointer, or members that need constructing.
+  `constthis.kov`.
+- `Derived*` to `Base*` skipped the adjustment to a base that is not at offset 0 (a polymorphic
+  `Widget` over the plain `GenericTargetable`: the base sits after the vtable pointer), because
+  both are `ptr` in LLVM; and a null pointer must stay null across that adjustment, in both
+  directions. `nonprimarybase.kov`.
+- An out-of-line static member emitted before any call to it kept a hidden `this`
+  (`ResizableText::splitNewlinesOnly` read its arguments shifted by one and produced empty
+  lines): the main pass now pairs every out-of-line definition with its declaration first.
+  `staticoutofline.kov`.
+- Default arguments of constructors called by default construction and of members of class
+  templates (re-typed for the instantiation); `using namespace` inside a body. `defaultargs.kov`,
+  `templatemembers.kov`, `outoflinedefault.kov`, `defaulted.kov`.
+
+Crashes were located without a debugger: `--lib "-Wl,/MAP:file"` writes the linker map, the
+smoke program installs a vectored exception handler that prints the faulting address relative
+to the module and every stack slot pointing into the image, and a small script resolves them
+against the map. The fastest route to each cause was to add `printf` lines to the converted
+source (convert.cmd regenerates it), then shrink the finding to a probe against the standard
+library alone (seconds to build, against 1.5 minutes with CommonUtil and Agui), then to a test.
+
+What is left in Agui proper: generic lambdas, pointers to member functions, thread-safe statics,
+destructors of globals at exit, `dynamic_cast`. Next: the SDL backend through C import and a
+window, or the game's `Util` library, whichever the game's dependency order wants first.
 
 ## The order that gets to a running game
 
 1. Decide exceptions and RTTI; implement them (they shape what the converter emits).
 2. Library parity, driven by the converter on `libraries/CommonUtil` first (313 includes, its
-   own unit tests), then `Util`, then `Agui`: the first real modules of the game compiled and
-   tested by kovc, with the resolver and codegen gaps fixed as they appear.
+   own unit tests), then `Agui`, then `Util`: the first real modules of the game compiled and
+   tested by kovc, with the resolver and codegen gaps fixed as they appear. (CommonUtil and
+   Agui compile, link and run smoke tests as of 2026-10-25.)
 3. Statics, intrinsics, constexpr and the small language gaps in the order the converter reports
    them.
 4. The section 8 features, which the macro rewrite needs.

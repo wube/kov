@@ -1,0 +1,40 @@
+// Function-local statics: constructed once, on the first call, and kept for the program's life;
+// a reference returned to one stays valid (Agui's Widget::getStyleStatic).
+extern "C" int printf(const char* format, ...);
+
+int constructed = 0;
+
+struct Style
+{
+  int width = 0;
+  Style* parent = nullptr;
+  Style(int width, Style* parent) : width(width), parent(parent) { ++constructed; }
+};
+
+const Style& rootStyle()
+{
+  static Style result(7, nullptr);
+  return result;
+}
+
+int counter()
+{
+  static int calls = 10;
+  return ++calls;
+}
+
+const char* name(int which)
+{
+  static const char* names[] = {"zero", "one", "two"};
+  return names[which];
+}
+
+int main()
+{
+  const Style& a = rootStyle();
+  const Style& b = rootStyle();
+  counter();
+  counter();
+  printf("%d %d %d %d %s\n", a.width, &a == &b ? 1 : 0, constructed, counter(), name(2));
+  return 0;
+}

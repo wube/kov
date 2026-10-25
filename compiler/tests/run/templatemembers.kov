@@ -1,0 +1,40 @@
+// Members of a class template defined out of line in a namespace: a constructor, methods, a const method and a static one (whose definition has no `this`).
+extern "C" int printf(const char* format, ...);
+namespace gui
+{
+  template<typename Policy>
+  struct ScrollBar
+  {
+    int value = 0;
+    ScrollBar(int start);
+    void setValue(int v, bool clamp);
+    int getValue() const;
+    static int twice(int x);
+  };
+  template<typename Policy>
+  ScrollBar<Policy>::ScrollBar(int start) : value(start)
+  {}
+  template<typename Policy>
+  void ScrollBar<Policy>::setValue(int v, bool clamp)
+  {
+    this->value = clamp && v > 100 ? 100 : v;
+  }
+  template<typename Policy>
+  int ScrollBar<Policy>::getValue() const
+  {
+    return this->value;
+  }
+  template<typename Policy>
+  int ScrollBar<Policy>::twice(int x)
+  {
+    return x * 2;
+  }
+  struct Vertical {};
+}
+int main()
+{
+  gui::ScrollBar<gui::Vertical> bar(5);
+  bar.setValue(250, true);
+  printf("%d %d\n", bar.getValue(), gui::ScrollBar<gui::Vertical>::twice(4));
+  return 0;
+}

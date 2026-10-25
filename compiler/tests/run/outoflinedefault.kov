@@ -1,0 +1,32 @@
+// Destructors declared in the class and defined `= default` out of line, one of them virtual (reached through the vtable and a delete through the base).
+extern "C" int printf(const char* format, ...);
+namespace gui
+{
+  struct Widget
+  {
+    virtual ~Widget() {}
+    virtual int kind() { return 0; }
+  };
+  struct Flow : Widget
+  {
+    String name;
+    virtual ~Flow();
+    int kind() override { return 1; }
+  };
+  Flow::~Flow() = default;
+  struct Input
+  {
+    int keys = 0;
+    ~Input();
+  };
+  Input::~Input() = default;
+}
+int main()
+{
+  gui::Widget* w = new gui::Flow();
+  int k = w->kind();
+  delete w;
+  gui::Input input;
+  printf("%d %d\n", k, input.keys);
+  return 0;
+}

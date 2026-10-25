@@ -1,0 +1,28 @@
+// A constructor whose parameters all have defaults is the default constructor: for a global, a
+// local, a member and a `new`, the defaults are passed (a hand-built call once left them out).
+extern "C" int printf(const char* format, ...);
+
+struct Style
+{
+  const Style* parent;
+  int width;
+  explicit Style(const Style* parent = nullptr, int width = 7) : parent(parent), width(width) {}
+};
+struct Holder
+{
+  Style style;
+  int tag = 1;
+};
+Style defaultStyle;
+
+int main()
+{
+  Style local;
+  Holder holder;
+  Style* made = new Style();
+  Style derived(&defaultStyle, 3);
+  printf("%d %d %d %d %d %d %d\n", defaultStyle.parent == nullptr ? 1 : 0, defaultStyle.width, local.width, holder.style.width, made->width,
+         derived.parent == &defaultStyle ? 1 : 0, derived.width);
+  delete made;
+  return 0;
+}

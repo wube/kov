@@ -1,0 +1,24 @@
+// Stand-in for CommonUtil's SystemClipboard in the smoke tests: the real one talks to SDL, which
+// the tests do not link; this one is a clipboard private to the process.
+namespace SystemClipboard
+{
+  String contents;
+
+  void copy(const String& input) { contents = input; }
+
+  String paste(bool filterNewlines)
+  {
+    String result;
+    for (int i = 0; i < contents.size(); ++i)
+    {
+      char c = contents[i];
+      if (c == '\t')
+        result += "    ";
+      else if (c == '\n' && filterNewlines)
+        result += ' ';
+      else if (c != '\r')
+        result += c;
+    }
+    return result;
+  }
+}

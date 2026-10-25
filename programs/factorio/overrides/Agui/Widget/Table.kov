@@ -1,0 +1,72 @@
+// Hand-written replacement for one function of Table.cpp: the original binary search is a generic
+// lambda (an `auto` parameter), which Kov does not have; a function template does the same.
+namespace agui
+{
+  // The first row in [lower, upper) that satisfies predicate, by binary search.
+  template<typename Predicate>
+  uint32_t findFirstRowWhere(uint32_t lower, uint32_t upper, Predicate predicate)
+  {
+    while (lower < upper)
+    {
+      uint32_t guess = lower + (upper - lower) / 2;
+      if (predicate(guess))
+        upper = guess;
+      else
+        lower = guess + 1u;
+    }
+    return lower;
+  }
+
+  Widget* Table::getChildUnderMouseWithBinaryRowSearch(Point mousePosition, Point thisAbsolutePosition, Rectangle absolutePositionClip)
+  {
+    // this version filters out non-visible rows and searches the child widgets only within those rows
+
+    const Point intersectionPoint = mousePosition - thisAbsolutePosition;
+    uint32_t rowCount = (uint32_t(this->visibleChildren.size()) - 1) / this->getColumnCount() + 1;
+    int visibleAreaTop = absolutePositionClip.y - thisAbsolutePosition.y; // start of relevant window, lower y coord
+    int visibleAreaBottom = ::min(this->getContentHeight(), absolutePositionClip.y + absolutePositionClip.height - thisAbsolutePosition.y);
+
+    Vector<int> memoizedRowBottomPixels(rowCount);
+    auto calculateRowBottomPixel = [&](uint32_t rowIndex) -> int
+    {
+      if (memoizedRowBottomPixels[rowIndex] != 0)
+        return memoizedRowBottomPixels[rowIndex];
+
+      uint32_t startChildIndex = rowIndex * this->getColumnCount();
+      uint32_t endChildIndex = ::min((rowIndex + 1) * this->getColumnCount(), uint32_t(this->visibleChildren.size()));
+      int rowBottomPixel = 0;
+
+      for (uint32_t childIndex = startChildIndex; childIndex < endChildIndex; ++childIndex)
+      {
+        Widget* child = this->visibleChildren[childIndex];
+        rowBottomPixel = ::max(rowBottomPixel, child->getLocation().y + child->getHeight());
+      }
+
+      memoizedRowBottomPixels[rowIndex] = rowBottomPixel;
+      return rowBottomPixel;
+    };
+
+    auto calculateRowTopPixel = [&](uint32_t rowIndex) -> int
+    {
+      if (rowIndex > 0)
+        return calculateRowBottomPixel(rowIndex - 1); // row is considered to contain the gap above it. top of row is the bottom of previous row.
+      return 0;
+    };
+
+    const uint32_t firstVisibleRow =
+      findFirstRowWhere(0, rowCount, [&](uint32_t row) { return calculateRowBottomPixel(row) >= visibleAreaTop; });
+    const uint32_t lastVisibleRow =
+      findFirstRowWhere(firstVisibleRow, rowCount, [&](uint32_t row) { return calculateRowTopPixel(row) > visibleAreaBottom; });
+
+    const uint32_t start = firstVisibleRow * this->getColumnCount();
+    const uint32_t end = ::min(lastVisibleRow * this->getColumnCount(), uint32_t(this->visibleChildren.size()));
+    for (uint32_t childIndex = end; childIndex > start; childIndex--)
+    {
+      Widget* child = this->visibleChildren[childIndex - 1u];
+      if (child->isUnderMouse(intersectionPoint))
+        return child;
+    }
+
+    return nullptr;
+  }
+}

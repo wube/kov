@@ -218,6 +218,8 @@ struct GlobalScope::Impl
   std::mutex deferredMutex;
   std::vector<std::pair<Decl*, Scope*>> deferredQualified; // Out-of-line class/enum definitions.
   std::vector<std::pair<FunctionDecl*, Scope*>> deferredFunctions; // Out-of-line member function definitions.
+  std::vector<std::pair<VariableDecl*, Scope*>> deferredVariables; // Out-of-line static data member definitions.
+  std::unordered_map<Decl*, VariableDecl*> variableDefinitions;    // Static data member -> its `T C::x = ...;` definition.
   std::atomic<size_t> scopes{1};
 
   // ---- template instantiations: each (template, arguments) pair is checked exactly once ----
@@ -359,9 +361,10 @@ struct GlobalScope::Impl
   }
 
   // Symbol under which a (possibly operator) function is indexed, or UINT32_MAX.
+  // The symbol a function is known by: its own name, the last part of `Class<T>::name`.
   uint32_t functionSymbol(const QualifiedName& name) const
   {
-    const NamePart& part = name.parts[0];
+    const NamePart& part = name.parts[name.parts.size() - 1];
     if (part.special == 0)
       return part.symbol;
     if (part.special == 2 && part.opToken < uint32_t(P::Count))
@@ -485,8 +488,9 @@ struct GlobalScope::Impl
             ++entries;
           }
         }
-        else if (f->name.parts.size() > 1 && f->body)
+        else if (f->name.parts.size() > 1 && (f->body || (f->flags & (DF_Default | DF_Delete))))
         {
+          // An out-of-line definition, `Flow::~Flow() = default;` included: attached to its class by finishIndex.
           std::lock_guard lock(deferredMutex);
           deferredFunctions.push_back({f, scope});
         }
@@ -503,6 +507,13 @@ struct GlobalScope::Impl
             scope->add(symbol, v, nullptr);
             ++entries;
           }
+        }
+        else if (v->name.parts.size() > 1)
+        {
+          // `const Style& Widget::defaultWidgetStyle = Widget::getStyleStatic();`: the definition
+          // of a static data member, attached to its declaration by finishIndex.
+          std::lock_guard lock(deferredMutex);
+          deferredVariables.push_back({v, scope});
         }
         for (Expr* b : v->structuredBindings)
         {
@@ -1088,13 +1099,19 @@ struct GlobalScope::Impl
     if (d->kind == NodeKind::VariableDecl)
     {
       auto* v = static_cast<VariableDecl*>(d);
+      VariableDecl* def = v; // `static const int LIMIT;` in the class, `const int Gui::LIMIT = 21;` outside
       if (!v->init)
+        if (auto it = variableDefinitions.find(v); it != variableDefinitions.end())
+          def = it->second;
+      if (!def->init)
         return std::nullopt;
       TypeContext vctx{lexicalScopeOf(v), nullptr, nullptr, v->file ? v->file->tokens : nullptr, v->file ? v->file->text : std::string_view()};
       const Ty* t = convertType(v->type, vctx, depth + 1);
       if (!(v->flags & DF_Constexpr) && !(t && t->isConst))
         return std::nullopt;
-      return constEval(v->init, vctx, depth + 1);
+      // The definition's initializer, read from its file, evaluated where the declaration is (the class).
+      TypeContext ictx{lexicalScopeOf(v), nullptr, nullptr, def->file ? def->file->tokens : nullptr, def->file ? def->file->text : std::string_view()};
+      return constEval(def->init, ictx, depth + 1);
     }
     if (d->kind == NodeKind::EnumeratorDecl)
     {
@@ -1794,6 +1811,8 @@ struct GlobalScope::Impl
           const Ty* pt = convertType(pd->type, ctx, depth + 1);
           if (pt && pt->kind == TyKind::Array)
             pt = types.decay(pt); // `f(double m[3][3])` takes a pointer, as in C
+          if (pt && !pt->isReference() && pt->kind != TyKind::Pack)
+            pt = types.unqualified(pt); // `f(const int x)` is f(int): the const is the definition's business
           if (pd->isPack && pt->kind == TyKind::Pack)
             for (const Ty* e : pt->args)
               params.push_back(e); // deduced pack: one parameter per element
@@ -3777,6 +3796,8 @@ struct GlobalScope::Impl
             returnFrames.push_back(nullptr);
           if (f->flags & DF_Static)
             thisType = nullptr;
+          else if ((f->flags & DF_Const) && thisType && thisType->kind == TyKind::Pointer && !thisType->inner->isConst)
+            thisType = impl.types.pointer(impl.types.qualified(thisType->inner, true, false)); // `const C* this` in a const method
           walkStmt(f->body);
           if (autoReturn)
           {
@@ -4331,6 +4352,38 @@ void GlobalScope::finishIndex()
     }
   }
   impl->deferredFunctions.clear();
+  // Attach out-of-line static data member definitions to the declarations in their classes.
+  for (auto& [v, context] : impl->deferredVariables)
+  {
+    QualifiedName qualifier = v->name;
+    qualifier.parts.count -= 1;
+    LocalStack params;
+    for (Decl* p : v->templateParams)
+      params.push(static_cast<TemplateParamDecl*>(p)->name, p);
+    Lookup l = impl->lookupQualified(qualifier, context, &params, 0);
+    if (l.scope && l.scope->kind == ScopeKind::Class)
+    {
+      if (const std::vector<Entry>* entries = l.scope->find(v->name.last().symbol))
+        for (const Entry& e : *entries)
+          if (e.decl && e.decl->kind == NodeKind::VariableDecl)
+          {
+            impl->variableDefinitions[e.decl] = v;
+            break;
+          }
+    }
+    else if (l.scope && l.scope->kind == ScopeKind::Namespace)
+    {
+      // `int Config::limit = 5;` outside its namespace: the same as written inside it.
+      QualifiedName simple;
+      simple.parts.data = v->name.parts.data + (v->name.parts.size() - 1);
+      simple.parts.count = 1;
+      v->name = simple;
+      if (l.scope->owner)
+        v->parent = l.scope->owner;
+      impl->indexDecl(v, l.scope);
+    }
+  }
+  impl->deferredVariables.clear();
 }
 
 void GlobalScope::resolveFile(ParsedFile& file, const std::vector<Token>& tokens, std::string_view text, ResolveStats& stats)
@@ -4389,6 +4442,31 @@ const Ty* GlobalScope::typeOfAst(Type* t, Decl* context)
   return impl->convertType(t, Impl::TypeContext{dc.scope, &dc.params, nullptr, file ? file->tokens : nullptr, file ? file->text : std::string_view()}, 0);
 }
 
+FunctionDecl* GlobalScope::declarationOf(FunctionDecl* def)
+{
+  if (!def || def->name.parts.size() <= 1)
+    return nullptr;
+  Decl* cls = owningClass(def);
+  if (!cls || !cls->ownScope)
+    return nullptr;
+  uint32_t symbol = impl->functionSymbol(def->name);
+  if (const std::vector<Entry>* entries = cls->ownScope->find(symbol))
+    for (const Entry& e : *entries)
+    {
+      if (!e.decl || e.decl->kind != NodeKind::FunctionDecl || e.decl == def)
+        continue;
+      auto* decl = static_cast<FunctionDecl*>(e.decl);
+      if (decl->body)
+        continue;
+      if (impl->typeAs(def, decl) == impl->declaredTypeOf(decl, nullptr, 0))
+      {
+        def->flags |= decl->flags & (DF_Static | DF_Virtual);
+        return decl;
+      }
+    }
+  return nullptr;
+}
+
 Decl* GlobalScope::owningClass(Decl* d)
 {
   if (!d)
@@ -4420,6 +4498,12 @@ Decl* GlobalScope::definitionOf(Decl* d)
 {
   if (!d)
     return nullptr;
+  if (d->kind == NodeKind::VariableDecl)
+  {
+    // A static data member: the out-of-line definition carries the initializer.
+    auto it = impl->variableDefinitions.find(d);
+    return it != impl->variableDefinitions.end() ? it->second : d;
+  }
   if (d->kind == NodeKind::ClassDecl || d->kind == NodeKind::EnumDecl)
   {
     if (d->ownScope)
@@ -4440,7 +4524,22 @@ Decl* GlobalScope::definitionOf(Decl* d)
       const Ty* ft = impl->declaredTypeOf(f, nullptr, 0);
       for (FunctionDecl* candidate : cls->ownScope->outOfLineMembers)
         if (impl->functionSymbol(candidate->name) == symbol && impl->typeAs(candidate, f) == ft)
+        {
+          // `static` and `virtual` are written on the declaration only; the definition is emitted
+          // (with or without `this`) by what the declaration says.
+          candidate->flags |= f->flags & (DF_Static | DF_Virtual);
           return candidate;
+        }
+      static bool debugCalls = getenv("KOV_DEBUG_CALLS") != nullptr;
+      if (debugCalls)
+      {
+        std::string line = "definitionOf " + qualifiedName(f) + " : " + impl->types.toString(ft, &impl->symbols) + " candidates:";
+        for (FunctionDecl* candidate : cls->ownScope->outOfLineMembers)
+          if (impl->functionSymbol(candidate->name) == symbol)
+            line += " " + impl->types.toString(impl->typeAs(candidate, f), &impl->symbols);
+        line += " (" + std::to_string(cls->ownScope->outOfLineMembers.size()) + " out-of-line members)";
+        fprintf(stderr, "%s\n", line.c_str());
+      }
     }
     else if (!cls && f->name.parts.size() == 1)
     {
