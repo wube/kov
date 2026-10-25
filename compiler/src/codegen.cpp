@@ -2987,7 +2987,7 @@ namespace
             return "ptr " + initializerListTemporary(cls, static_cast<BraceInitExpr*>(arg), at); // `max({a, b, c})`
           if (arg->kind == NodeKind::BraceInitExpr && isClass(cls))
             return "ptr " + convertedTemporary(cls, arg, at); // `f({a, b, c})` with `f(const Rect&)`
-          const Ty* argTy = arg->ty && arg->ty->isKnown() && !types.isDependent(arg->ty) ? types.stripRef(arg->ty) : nullptr;
+          const Ty* argTy = arg->ty && arg->ty->isKnown() && types.stripRef(arg->ty)->isKnown() && !types.isDependent(arg->ty) ? types.stripRef(arg->ty) : nullptr;
           if (argTy && isClass(cls) && !isClass(argTy))
             return "ptr " + convertedTemporary(cls, arg, at); // `f("text")` with `f(const String&)`, a lambda with `f(const Function<void()>&)`
           if (argTy && isClass(cls) && isClass(argTy) && classKey(argTy) != classKey(cls) && !baseInstantiation(argTy, classDef(cls->decl, at), at))
@@ -3087,6 +3087,9 @@ namespace
     // constructor, alive until the end of the full expression: what a reference parameter binds to.
     std::string convertedTemporary(const Ty* cls, Expr* arg, Node* at)
     {
+      const Ty* source = arg->ty ? types.stripRef(arg->ty) : nullptr;
+      if (arg->kind != NodeKind::BraceInitExpr && (!source || !source->isKnown()))
+        unsupported(at, "converting a value of unknown type to " + types.toString(cls, &symbols)); // (not the copy constructor, again and again)
       Expr* one = arg;
       if (arg->kind != NodeKind::BraceInitExpr)
         if (FunctionDecl* ctor = findConstructor(cls, argTypesOf(Span<Expr*>{&one, 1}), at); ctor && (ctor->flags & DF_Explicit))
