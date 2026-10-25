@@ -148,8 +148,10 @@ and no token pasting. Per-element data is an array indexed by the element, or a 
 Done 2026-10-25: `for constexpr` inside functions over `types<...>` and over a brace list of
 constants; the loop variable is a template parameter of the body (a type, or a constant usable as
 a template argument and an array bound), and the body is re-typed and generated once per element
-the way a pack expansion is. Not yet: `case` labels inside the body, a list named by an alias or a
-`const` array, bodies at namespace or class scope.
+the way a pack expansion is. Since the same evening, `case` labels inside the body: `switch (kind)
+{ for constexpr (typename T : kinds) case T::kind: return parse<T>(); }` makes one case per
+element (the label and the statement it labels are the body). Not yet: a list named by an alias or
+a `const` array, bodies at namespace or class scope.
 
 **8.3 Reflection.** `members(T)` is the list of T's non-static data members, bases first, in
 declaration order; each member `m` has `m.name` (a string literal), `m.type` (usable where a

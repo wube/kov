@@ -1,4 +1,5 @@
 #include "codegen.hpp"
+#include <map>
 #include <set>
 #include <unordered_set>
 #include <algorithm>
@@ -255,7 +256,7 @@ namespace
         case TyKind::Float: return t->bits == 32 ? "float" : "double";
         case TyKind::Nullptr: case TyKind::Pointer: case TyKind::LRef: case TyKind::RRef: case TyKind::Function:
           return "ptr";
-        case TyKind::MemberPointer: return "i64"; // a data member's offset within its class
+        case TyKind::MemberPointer: return t->inner && t->inner->kind == TyKind::Function ? "ptr" : "i64"; // a function, or a data member's offset within its class
         case TyKind::Lambda: return t->decl ? closureStructName(t) : "ptr";
         case TyKind::Array:
           return "[" + std::to_string(t->count) + " x " + llType(t->inner, at) + "]";
@@ -4808,6 +4809,25 @@ namespace
           return callFunction(f, calleeArgs(f, objectTy, c, c), objectTy, thisArg, sret, c->args, c, indirect);
         }
       }
+      // `(obj.*pmf)(args)` / `(p->*pmf)(args)`: a call through a pointer to a member function, the
+      // object first.
+      {
+        Expr* inner = callee;
+        while (inner && inner->kind == NodeKind::ParenExpr)
+          inner = static_cast<ParenExpr*>(inner)->inner;
+        if (inner && inner->kind == NodeKind::BinaryExpr && !static_cast<BinaryExpr*>(inner)->isKeyword &&
+            (P(static_cast<BinaryExpr*>(inner)->op) == P::DotStar || P(static_cast<BinaryExpr*>(inner)->op) == P::ArrowStar))
+        {
+          auto* b = static_cast<BinaryExpr*>(inner);
+          const Ty* mp = b->rhs && b->rhs->ty ? types.stripRef(b->rhs->ty) : nullptr;
+          if (mp && mp->kind == TyKind::MemberPointer && mp->inner && mp->inner->kind == TyKind::Function)
+          {
+            std::string object = P(b->op) == P::ArrowStar ? arrowOperand(rvalue(b->lhs), c).text : rvalue(b->lhs).text;
+            Value fp = rvalue(b->rhs);
+            return callIndirect(fp.text, mp->inner, object, c->args, sret, c);
+          }
+        }
+      }
       // Call through a closure or a function pointer.
       Value fnValue = rvalue(callee);
       if (isLambda(fnValue.ty))
@@ -4817,8 +4837,14 @@ namespace
       const Ty* ft = fnValue.ty->kind == TyKind::Pointer ? fnValue.ty->inner : fnValue.ty;
       if (!ft || ft->kind != TyKind::Function)
         unsupported(c, "a call that did not resolve to a function (the callee has type " + types.toString(fnValue.ty, &symbols) + ")");
-      // The same calling convention as a declared Kov function: classes by pointer (a copy the
-      // callee owns, or the caller's result slot), references as addresses.
+      return callIndirect(fnValue.text, ft, "", c->args, sret, c);
+    }
+
+    // A call through a function pointer, with the same calling convention as a declared Kov
+    // function: the object first for a member function (thisArg), the caller's result slot for a
+    // class result, classes by pointer (a copy the callee owns), references as addresses.
+    Value callIndirect(const std::string& fnText, const Ty* ft, const std::string& thisArg, Span<Expr*> callArgs, const std::string& sret, Node* c)
+    {
       Signature s;
       const Ty* ret = ft->inner;
       if (isClass(ret))
@@ -4829,10 +4855,15 @@ namespace
       else
         s.returnType = ret->isReference() ? "ptr" : llType(ret, c);
       std::string args, resultAddr;
+      if (!thisArg.empty())
+      {
+        args = "ptr " + thisArg;
+        s.paramTypes.push_back("ptr");
+      }
       if (s.hasSret)
       {
         resultAddr = sret.empty() ? newObjectSlot(ret, c) : sret;
-        args = "ptr " + resultAddr;
+        args += (args.empty() ? "" : ", ") + std::string("ptr ") + resultAddr;
         s.paramTypes.push_back("ptr");
       }
       size_t position = 0;
@@ -4843,7 +4874,7 @@ namespace
         args += (args.empty() ? "" : ", ") + text;
         ++position;
       };
-      for (Expr* arg : c->args)
+      for (Expr* arg : callArgs)
       {
         if (isPackExpansion(arg))
         {
@@ -4859,13 +4890,13 @@ namespace
       std::string sig = signatureText(s);
       if (s.returnType == "void")
       {
-        emitCall("", sig + " " + fnValue.text + "(" + args + ")");
+        emitCall("", sig + " " + fnText + "(" + args + ")");
         if (s.hasSret)
           return {resultAddr, ret, sret.empty()};
         return {"", types.voidType()};
       }
       std::string r = newTemp();
-      emitCall(r + " = ", sig + " " + fnValue.text + "(" + args + ")");
+      emitCall(r + " = ", sig + " " + fnText + "(" + args + ")");
       return {r, ret, false};
     }
 
@@ -5429,8 +5460,17 @@ namespace
         Decl* d = n->resolved;
         const Ty* mp = types.stripRef(u->ty);
         const Ty* cls = mp->args.empty() ? nullptr : mp->args[0];
+        if (d && d->kind == NodeKind::FunctionDecl && cls && isClass(cls))
+        {
+          // `&Calc::mul`: the function itself; a call through it passes the object first.
+          auto* f = static_cast<FunctionDecl*>(d);
+          if (f->flags & DF_Virtual)
+            unsupported(u, "a pointer to a virtual member function");
+          const Ty* key = canonicalClass(cls, u);
+          return {useFunction(f, global.classArgsOf(key), key), mp};
+        }
         if (!d || d->kind != NodeKind::VariableDecl || !cls || !isClass(cls))
-          unsupported(u, "a pointer to a member function");
+          unsupported(u, "a pointer to a member that is neither a field nor a function");
         std::string addr;
         if (!fieldAddress(cls, d, "null", addr, u))
           unsupported(u, "a pointer to a member that is not a field");
@@ -6850,6 +6890,29 @@ namespace
     // type, or a constant), the way a pack expansion binds each element in turn.
     void forConstexpr(ForConstexprStmt* f)
     {
+      forEachConstexprElement(f, [&](size_t)
+      {
+        pushScope();
+        statement(f->body);
+        popScope();
+      });
+    }
+
+    // The statements of a for constexpr body: those of its block, or the statement itself.
+    static std::vector<Stmt*> bodyStatements(Stmt* body)
+    {
+      if (!body)
+        return {};
+      if (body->kind == NodeKind::BlockStmt)
+        return std::vector<Stmt*>(static_cast<BlockStmt*>(body)->stmts.begin(), static_cast<BlockStmt*>(body)->stmts.end());
+      return {body};
+    }
+
+    // Runs body(index) once per element of a for constexpr list, with the function re-typed for
+    // the element and currentArgs binding the loop variable to it; the original typing is
+    // restored afterwards.
+    void forEachConstexprElement(ForConstexprStmt* f, const std::function<void(size_t)>& body)
+    {
       auto* var = static_cast<TemplateParamDecl*>(f->var);
       if (!currentFunction)
         unsupported(f, "for constexpr outside a function");
@@ -6907,20 +6970,18 @@ namespace
       else
         unsupported(f, "a for constexpr list that is neither types<...>, members(T) nor a brace list of constants");
       const TemplateArgs* savedArgs = currentArgs;
-      for (const Ty* element : elements)
+      for (size_t index = 0; index < elements.size(); ++index)
       {
         TemplateArgs elementArgs = original;
         bool bound = false;
         for (auto& [d, t] : elementArgs.pairs)
           if (d == var)
-            t = element, bound = true;
+            t = elements[index], bound = true;
         if (!bound)
-          elementArgs.pairs.push_back({var, element});
+          elementArgs.pairs.push_back({var, elements[index]});
         global.retypeFor(currentFunction, elementArgs, currentClassTy);
         currentArgs = &elementArgs;
-        pushScope();
-        statement(f->body);
-        popScope();
+        body(index);
         currentArgs = savedArgs;
       }
       if (!elements.empty())
@@ -7086,9 +7147,11 @@ namespace
       auto* body = static_cast<BlockStmt*>(sw->body);
       std::string endL = newLabel("switch.end");
       std::string defaultL;
-      std::vector<std::string> labels;
+      std::map<std::pair<const Stmt*, size_t>, std::string> caseLabels; // (label statement, for constexpr element) -> block
+      std::set<int64_t> covered;
       std::string cases;
-      for (Stmt* st : body->stmts)
+      constexpr size_t topLevel = SIZE_MAX;
+      auto addLabel = [&](Stmt* st, size_t element)
       {
         if (st->kind == NodeKind::CaseStmt)
         {
@@ -7099,14 +7162,30 @@ namespace
           if (!v)
             unsupported(st, "a case label that is not a constant");
           std::string l = newLabel("case");
-          labels.push_back(l);
+          caseLabels[{st, element}] = l;
+          covered.insert(*v);
           cases += "    " + llType(ct, sw) + " " + std::to_string(*v) + ", label %" + l + "\n";
         }
         else if (st->kind == NodeKind::DefaultStmt)
         {
           defaultL = newLabel("default");
-          labels.push_back(defaultL);
+          caseLabels[{st, element}] = defaultL;
         }
+      };
+      for (Stmt* st : body->stmts)
+      {
+        if (st->kind == NodeKind::ForConstexprStmt)
+        {
+          // `for constexpr (typename T : kinds) case T::kind: ...`: one case per element.
+          auto* fc = static_cast<ForConstexprStmt*>(st);
+          forEachConstexprElement(fc, [&](size_t element)
+          {
+            for (Stmt* inner : bodyStatements(fc->body))
+              addLabel(inner, element);
+          });
+          continue;
+        }
+        addLabel(st, topLevel);
       }
       std::string invalidL;
       const Ty* condTy = switchedTy; // before the conversion to the underlying type
@@ -7117,11 +7196,6 @@ namespace
         if (e && e->isKov)
         {
           // A Kov enum: every value needs a case, and a value outside them aborts.
-          std::set<int64_t> covered;
-          for (Stmt* st : body->stmts)
-            if (st->kind == NodeKind::CaseStmt)
-              if (auto v = evalConst(static_cast<CaseStmt*>(st)->value))
-                covered.insert(*v);
           std::string missing;
           for (Decl* d : e->enumerators)
             if (d->kind == NodeKind::EnumeratorDecl && !covered.count(enumeratorValue(static_cast<EnumeratorDecl*>(d))))
@@ -7145,19 +7219,34 @@ namespace
       }
       loops.push_back({endL, "", scopes.size()});
       pushScope();
-      size_t next = 0;
-      for (Stmt* st : body->stmts)
+      auto emitLabelled = [&](Stmt* st, size_t element)
       {
         if (st->kind == NodeKind::CaseStmt || st->kind == NodeKind::DefaultStmt)
         {
-          const std::string& l = labels[next++];
+          const std::string& l = caseLabels[{st, element}];
           emitBranch(l);
           startBlock(l);
-          continue;
+          return;
         }
         if (st->kind == NodeKind::FallthroughStmt)
-          continue;
+          return;
         statement(st);
+      };
+      for (Stmt* st : body->stmts)
+      {
+        if (st->kind == NodeKind::ForConstexprStmt)
+        {
+          auto* fc = static_cast<ForConstexprStmt*>(st);
+          forEachConstexprElement(fc, [&](size_t element)
+          {
+            pushScope();
+            for (Stmt* inner : bodyStatements(fc->body))
+              emitLabelled(inner, element);
+            popScope();
+          });
+          continue;
+        }
+        emitLabelled(st, topLevel);
       }
       popScope();
       loops.pop_back();

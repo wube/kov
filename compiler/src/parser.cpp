@@ -1651,7 +1651,9 @@ namespace
           if (accept(P::Star))
           {
             MemberPointerType* m = node<MemberPointerType>(pos);
-            m->classType = nullptr;
+            NamedType* cls = node<NamedType>(pos);
+            cls->name = q;
+            m->classType = cls;
             m->pointee = inner;
             inner = m;
           }
@@ -1673,9 +1675,18 @@ namespace
           f->params = tmp.params;
           f->isConst = (tmp.flags & DF_Const) != 0;
           f->isNoexcept = (tmp.flags & DF_Noexcept) != 0;
-          PointerType* p = node<PointerType>(pos);
-          p->pointee = f;
-          d.type = p;
+          if (inner && inner->kind == NodeKind::MemberPointerType)
+          {
+            // Pointer to member function: `R (C::*name)(params)`.
+            static_cast<MemberPointerType*>(inner)->pointee = f;
+            d.type = inner;
+          }
+          else
+          {
+            PointerType* p = node<PointerType>(pos);
+            p->pointee = f;
+            d.type = p;
+          }
         }
         else
           d.type = inner;
@@ -3005,6 +3016,8 @@ namespace
           case Kw::decltype_:
             break; // speculative path below
           default:
+            if (isBuiltinTypeKeyword(Kw(tok().id)) && at(P::LParen, 1) && atIdent(2) && at(P::ColonColon, 3) && at(P::Star, 4))
+              return true; // `int (Calc::*op)(int)`: a pointer to a member
             return isBuiltinTypeKeyword(Kw(tok().id)) && !at(P::LParen, 1) && !at(P::LBrace, 1) && !at(P::ColonColon, 1);
         }
       }
@@ -3045,6 +3058,8 @@ namespace
           else if (at(P::LParen) && (at(P::Star, 1) || at(P::Amp, 1)) && atIdent(2) &&
                    ((at(P::RParen, 3) && at(P::LParen, 4)) || at(P::LBracket, 3)))
             result = true; // function pointer declarator `R (*f)(...)`; `f(*p);` and `f(&x);` are calls
+          else if (at(P::LParen) && atIdent(1) && at(P::ColonColon, 2) && at(P::Star, 3))
+            result = true; // pointer to member declarator `R (C::*name)(...)`
           else if (at(P::LBracket) && autoUnderRefs(t))
             result = true;
         }
@@ -3165,6 +3180,18 @@ namespace
         s->list = parseExpression();
       expect(P::RParen, "expected ')' after for constexpr");
       s->body = parseStatement();
+      if (s->body && (s->body->kind == NodeKind::CaseStmt || s->body->kind == NodeKind::DefaultStmt))
+      {
+        // `for constexpr (typename T : kinds) case T::kind: return parse<T>();` inside a switch: the
+        // label and the statement it labels are the body (the parser keeps labels as statements of
+        // their own).
+        std::vector<Stmt*> stmts{s->body};
+        if (Stmt* labelled = parseStatement())
+          stmts.push_back(labelled);
+        BlockStmt* block = node<BlockStmt>(s->body->token);
+        block->stmts = makeSpanOf(stmts);
+        s->body = block;
+      }
       return s;
     }
 

@@ -390,14 +390,22 @@ checked against the suite, the 40 end-to-end tests and the CommonUtil and Agui s
     checks the tag on every other `p[E]` (release_assert), switches on the tag for `switch (p)`
     (exhaustive like a Kov enum), and copies, assigns and destroys by the tag. Spec:
     `kov/typed_unions`, `kov/typed_unions_switch_copy`.
+11. **`case` labels from `for constexpr`** (the third example of design.md 8.2): a switch body
+    walks its `for constexpr` statements once per element to collect the labels (the Kov enum
+    exhaustiveness check sees them too) and once more to emit them. **Pointers to member
+    functions** (3 Factorio uses): `int (Calc::*op)(int) const = &Calc::mul;` parses as a
+    declaration whose type keeps the class and the function type, `&Calc::mul` is the function's
+    address (virtual ones are refused for now), and `(c.*op)(3)` calls through it with the
+    object first, sharing the indirect-call emission with function pointers. Spec:
+    `kov/for_constexpr_switch`, `classes/member_function_pointers`.
 
-The suite went from 80 pass / 49 pending to 133 pass / 5 pending; the Factorio front end stayed
+The suite went from 80 pass / 49 pending to 135 pass / 3 pending; the Factorio front end stayed
 at 99.27% parsed and 77.6-77.8% typed (members of dependent qualifiers now count as dependent
 instead of being guessed from the primary template). Left pending, in order of Factorio use:
-the rest of design.md section 8 (`case` labels from `for constexpr`, `m.type`, `enumerators(E)`,
-`alternatives(U)`, tests), `Variant` (superseded by typed unions; the converter will need a
-mapping for the 24 `std::variant` uses), pointers to member functions, template template
-parameters, and the SDL header import.
+the rest of design.md section 8 (`m.type`, `enumerators(E)`, `alternatives(U)`, tests), `Variant`
+(superseded by typed unions; the converter will need a mapping for the 24 `std::variant` uses),
+template template parameters (one Factorio use), and the SDL header import (the suite does not
+pass the SDL include path yet).
 
 ## The order that gets to a running game
 

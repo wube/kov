@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**133 pass, 5 pending, 0 failing, 0 fixed** (138 snippets, 2.4 s).
+**135 pass, 3 pending, 0 failing, 0 fixed** (138 snippets, 2.4 s).
 
 ## Language: statements, expressions, declarations
 
@@ -53,7 +53,6 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `classes/member_function_pointers.kov` | pointers to member functions | pending | 3 uses in 3 files | pointers to member functions are not implemented; C:\kov\compiler\tests\spec\classes\member_function_pointers.kov:12: codegen does not support the statement kind ErrorStmt yet (in @kov.main) |
 | `classes/aggregate_default_members.kov` | aggregate initialisation leaves omitted members with their default member initializers | pass |  |  |
 | `classes/aggregates_and_brace_init.kov` | aggregate initialisation, default member initializers, arrays of structs, nested braces | pass |  |  |
 | `classes/anonymous_members.kov` | anonymous struct and union members | pass |  |  |
@@ -66,6 +65,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `classes/friends.kov` | friend functions and friend classes | pass | 459 uses in 269 files |  |
 | `classes/inherited_constructors.kov` | inherited constructors (using Base::Base;) in a class with members of its own | pass | Agui's Filler, Frame and others |  |
 | `classes/interfaces.kov` | abstract interfaces implemented by several classes, held through base pointers in containers | pass |  |  |
+| `classes/member_function_pointers.kov` | pointers to member functions | pass | 3 uses in 3 files |  |
 | `classes/member_pointers.kov` | pointers to data members | pass |  |  |
 | `classes/multiple_inheritance.kov` | multiple inheritance (one polymorphic base), access to both bases, pointer conversions | pass | 264 uses in 261 files |  |
 | `classes/nested_struct_in_template.kov` | a struct nested in a class template, with members of the parameter type | pass |  |  |
@@ -145,12 +145,12 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `kov/for_constexpr_switch.kov` | for constexpr inside a switch, one case per type (design.md 8.2) | pending |  | case labels produced inside a for constexpr body are not implemented; C:\kov\compiler\tests\spec\kov\for_constexpr_switch.kov:10: codegen does not support a case label outside a switch body yet (in @"nameOf(int32)") |
 | `kov/asserts_and_config.kov` | assert and release_assert statements, config constants with if constexpr, conditional functions, CallerLocation | pass |  |  |
 | `kov/attributes_inline.kov` | [[noinline]] and [[forceinline]] attributes | pass |  |  |
 | `kov/config_values.kov` | config constants from the command line (`--config name=value`, `--release`) as compile-time values | pass |  |  |
 | `kov/enum_from_str.kov` | Direction::fromStr returning an Optional | pass |  |  |
 | `kov/for_constexpr_constant.kov` | the for constexpr value is a compile-time constant: a template argument, an array bound | pass |  |  |
+| `kov/for_constexpr_switch.kov` | for constexpr inside a switch, one case per type (design.md 8.2) | pass |  |  |
 | `kov/for_constexpr_types.kov` | for constexpr over a list of types | pass |  |  |
 | `kov/for_constexpr_values.kov` | for constexpr over a list of constants | pass |  |  |
 | `kov/implicit_constructors.kov` | `implicit` constructors convert, others do not (Kov's default is explicit) | pass |  |  |
