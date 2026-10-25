@@ -1,0 +1,15 @@
+// spec: Kov functions as C callbacks (function pointers with C signatures) and C function pointers stored in Kov
+typedef int (*BinaryOp)(int, int);
+static int add(int a, int b) { return a + b; }
+static int mul(int a, int b) { return a * b; }
+static int apply(BinaryOp op, int a, int b) { return op(a, b); }
+struct Table { BinaryOp ops[2]; };
+int main()
+{
+  Table t;
+  t.ops[0] = add;
+  t.ops[1] = &mul;
+  BinaryOp chosen = t.ops[1];
+  println("{} {} {}", apply(add, 2, 3), t.ops[1](4, 5), chosen == mul);
+  return 0;
+}

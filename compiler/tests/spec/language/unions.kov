@@ -1,0 +1,26 @@
+// spec: unions
+// factorio: 47 uses in 39 files
+union Bits
+{
+  float f;
+  uint32_t u;
+};
+struct Packet
+{
+  int kind;
+  union
+  {
+    int whole;
+    char bytes[4];
+  };
+};
+int main()
+{
+  Bits b;
+  b.f = 1.0f;
+  Packet p;
+  p.kind = 1;
+  p.whole = 0x01020304;
+  println("{} {} {} {}", b.u == 0x3f800000u, (int)sizeof(Bits), (int)p.bytes[0], (int)p.bytes[3]);
+  return 0;
+}

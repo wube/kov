@@ -1,0 +1,18 @@
+// spec: members of a class template with a non-type parameter defined out of line
+// pending: `Ring<int, 3>::push` is referenced but never defined (link error)
+template<typename T, int N>
+struct Ring
+{
+  T items[N];
+  int head = 0;
+  void push(const T& v);
+};
+template<typename T, int N> void Ring<T, N>::push(const T& v) { this->items[this->head] = v; this->head = (this->head + 1) % N; }
+int main()
+{
+  Ring<int, 3> r;
+  r.push(5);
+  r.push(6);
+  println("{} {}", r.items[0], r.head);
+  return 0;
+}

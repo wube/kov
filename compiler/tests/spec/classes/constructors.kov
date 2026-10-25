@@ -1,0 +1,32 @@
+// spec: constructors: default, converting, explicit, copy, move, delegating, = default, = delete
+// factorio: 2065 `= default`, 904 `= delete`, 1100 delegating, 2035 explicit
+struct Point
+{
+  int x, y;
+  Point() : Point(0, 0) {}
+  Point(int x, int y) : x(x), y(y) {}
+  explicit Point(int both) : Point(both, both) {}
+  Point(const Point&) = default;
+  Point& operator=(const Point&) = default;
+};
+struct Unique
+{
+  int id;
+  Unique(int id) : id(id) {}
+  Unique(const Unique&) = delete;
+  Unique(Unique&& other) : id(other.id) { other.id = 0; }
+};
+struct Wide { implicit Wide(int v) : value(v * 2) {} int value; };
+int takes(Wide w) { return w.value; }
+int main()
+{
+  Point a;
+  Point b(3, 4);
+  Point c(7);
+  Point d = b;
+  d = c;
+  Unique u(5);
+  Unique moved(::move(u));
+  println("{} {} {} {} {} {} {} {}", a.x, b.y, c.x, d.x, u.id, moved.id, takes(21), takes(Wide(1)));
+  return 0;
+}

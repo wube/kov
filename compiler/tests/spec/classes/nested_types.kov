@@ -1,0 +1,18 @@
+// spec: nested classes and enums, access through the outer class
+// factorio: 4603 nested classes in 2847 files
+struct Machine
+{
+  enum class State { Off, On };
+  struct Stats { int cycles = 0; int errors = 0; };
+  State state = State::Off;
+  Stats stats;
+  void run() { this->state = State::On; this->stats.cycles += 1; }
+};
+int main()
+{
+  Machine m;
+  m.run();
+  Machine::Stats copy = m.stats;
+  println("{} {}", m.state == Machine::State::On, copy.cycles);
+  return 0;
+}

@@ -1,0 +1,7 @@
+// spec: type traits used as values (bool isSame<A, B> in an expression, not only in if constexpr)
+int main()
+{
+  bool same = isSame<RemoveReference<int&>, int>;
+  println("{} {}", same, isPointer<int*>);
+  return 0;
+}

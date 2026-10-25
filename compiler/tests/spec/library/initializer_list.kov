@@ -1,0 +1,8 @@
+// spec: InitializerList parameters and brace lists as arguments
+// factorio: 53 std::initializer_list uses in 33 files
+int total(InitializerList<int> values) { int s = 0; for (int v : values) s += v; return s; }
+int main()
+{
+  println("{} {}", total({1, 2, 3}), ::max({4, 9, 2}));
+  return 0;
+}

@@ -1,0 +1,16 @@
+// spec: fixed-width integers, size_t, conversions and wrap-around
+int main()
+{
+  int8_t a = 127; a = (int8_t)(a + 1);
+  uint8_t b = 255; b = (uint8_t)(b + 1);
+  uint16_t c = 65535;
+  int32_t d = Limits<int32_t>::max();
+  uint64_t e = 1;
+  e <<= 63;
+  size_t n = sizeof(e);
+  int fromDouble = (int)3.99;
+  unsigned back = (unsigned)-1;
+  bool truthy = 42;
+  println("{} {} {} {} {} {} {} {} {}", (int)a, (int)b, (int)c, d, e == 9223372036854775808ull, (int)n, fromDouble, back == 4294967295u, truthy);
+  return 0;
+}

@@ -1,0 +1,9 @@
+// spec: enum values as non-type template arguments
+// pending: comparing the parameter in the body fails (`M == Mode::Fast` has no type under the instantiation)
+enum class Mode { Fast, Safe };
+template<Mode M> const char* modeName() { return M == Mode::Fast ? "fast" : "safe"; }
+int main()
+{
+  println("{} {}", modeName<Mode::Fast>(), modeName<Mode::Safe>());
+  return 0;
+}

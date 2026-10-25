@@ -1,0 +1,14 @@
+// spec: structured bindings
+// factorio: 459 uses in 204 files
+// pending: `auto& [w, h] = s;` on a struct crashes the compiler; `auto [a, b] = pair` does not compile either
+struct Size { int width; int height; };
+Pair<String, int> entry() { return makePair(String("key"), 5); }
+int main()
+{
+  auto [name, value] = entry();
+  Size s{40, 30};
+  auto& [w, h] = s;
+  w += 2;
+  println("{} {} {} {}", name, value, s.width, h);
+  return 0;
+}

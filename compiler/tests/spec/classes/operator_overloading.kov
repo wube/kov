@@ -1,0 +1,27 @@
+// spec: operator overloading: arithmetic, comparison, subscript, call, unary, increment, conversions
+// factorio: 2940 uses in 982 files, 376 conversion operators
+struct Vec
+{
+  int x, y;
+  Vec(int x, int y) : x(x), y(y) {}
+  Vec operator+(const Vec& o) const { return Vec(this->x + o.x, this->y + o.y); }
+  Vec operator-() const { return Vec(-this->x, -this->y); }
+  Vec& operator+=(const Vec& o) { this->x += o.x; this->y += o.y; return *this; }
+  bool operator==(const Vec& o) const { return this->x == o.x && this->y == o.y; }
+  bool operator<(const Vec& o) const { return this->x < o.x || (this->x == o.x && this->y < o.y); }
+  int operator[](int i) const { return i == 0 ? this->x : this->y; }
+  int operator()(int scale) const { return (this->x + this->y) * scale; }
+  Vec& operator++() { ++this->x; return *this; }
+  explicit operator bool() const { return this->x != 0 || this->y != 0; }
+};
+Vec operator*(const Vec& v, int k) { return Vec(v.x * k, v.y * k); }
+int main()
+{
+  Vec a(1, 2), b(3, 4);
+  Vec c = a + b * 2;
+  c += -a;
+  ++c;
+  String text = format("({}, {})", c.x, c.y);
+  println("{} {} {} {} {} {} {}", text, c[0], c[1], c(2), a == Vec(1, 2), a < b, bool(Vec(0, 0)));
+  return 0;
+}

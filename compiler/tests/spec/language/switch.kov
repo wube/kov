@@ -1,0 +1,33 @@
+// spec: switch with fallthrough and default
+// factorio: 1682 uses in 697 files
+const char* describe(int n)
+{
+  switch (n)
+  {
+    case 0: return "zero";
+    case 1:
+    case 2: return "small";
+    case 3: [[fallthrough]];
+    case 4: return "medium";
+    default: return "large";
+  }
+}
+int main()
+{
+  String out;
+  for (int i = 0; i < 6; ++i)
+  {
+    out += describe(i);
+    out += ' ';
+  }
+  int acc = 0;
+  for (int i = 0; i < 4; ++i)
+    switch (i)
+    {
+      case 1: acc += 10; break;
+      case 2: acc += 100; // falls through
+      case 3: acc += 1000; break;
+    }
+  println("{}{}", out, acc);
+  return 0;
+}

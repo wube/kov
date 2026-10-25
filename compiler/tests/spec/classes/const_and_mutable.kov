@@ -1,0 +1,22 @@
+// spec: const member functions, const overloads, mutable members, const objects
+// factorio: 198 mutable members in 127 files
+struct Cache
+{
+  mutable int hits = 0;
+  int value = 7;
+  int get() const { ++this->hits; return this->value; }
+  const char* which() const { return "const"; }
+  const char* which() { return "mutable"; }
+  int& ref() { return this->value; }
+  const int& ref() const { return this->value; }
+};
+int main()
+{
+  Cache c;
+  const Cache& cc = c;
+  cc.get();
+  cc.get();
+  c.ref() = 8;
+  println("{} {} {} {} {}", cc.hits, c.which(), cc.which(), cc.ref(), c.get());
+  return 0;
+}

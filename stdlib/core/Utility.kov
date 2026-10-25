@@ -160,3 +160,13 @@ struct LogicError : Exception
   LogicError() {}
   explicit LogicError(const String& message) : Exception(message) {}
 };
+struct OutOfRange : LogicError
+{
+  OutOfRange() {}
+  explicit OutOfRange(const String& message) : LogicError(message) {}
+};
+struct InvalidArgument : LogicError
+{
+  InvalidArgument() {}
+  explicit InvalidArgument(const String& message) : LogicError(message) {}
+};

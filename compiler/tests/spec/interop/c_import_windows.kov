@@ -1,0 +1,12 @@
+// spec: importing a C header (`extern "C" import "windows.h";`) and calling into it
+extern "C" import "windows.h";
+int main()
+{
+  DWORD pid = GetCurrentProcessId();
+  SYSTEM_INFO info;
+  GetSystemInfo(&info);
+  LARGE_INTEGER freq;
+  QueryPerformanceFrequency(&freq);
+  println("{} {} {}", pid != 0, info.dwNumberOfProcessors > 0, freq.QuadPart > 0);
+  return 0;
+}

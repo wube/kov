@@ -1,0 +1,7 @@
+// spec: `requires <condition>;` at the top of a file (compiled only when the config says so)
+requires config::platform == Platform::Windows;
+int main()
+{
+  println("windows file");
+  return 0;
+}

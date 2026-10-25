@@ -1,0 +1,10 @@
+// spec: Variant (std::variant)
+// factorio: 24 uses in 15 files (Kov's answer is the typed union, design.md 8.5)
+// pending: Variant is not in the library; typed unions (`union enum`) are the planned replacement
+int main()
+{
+  Variant<int, String> v = 5;
+  v = String("text");
+  println("{} {}", holdsAlternative<String>(v), get<String>(v));
+  return 0;
+}

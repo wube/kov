@@ -1,0 +1,13 @@
+// spec: virtual inheritance (diamond): one shared base subobject
+// design.md section 9 keeps virtual bases out of scope; a repeated base is shared, which is what this diamond needs
+struct Base { int id = 1; };
+struct Left : virtual Base {};
+struct Right : virtual Base {};
+struct Both : Left, Right {};
+int main()
+{
+  Both b;
+  b.Left::id = 5;
+  println("{} {}", b.Right::id, &b.Left::id == &b.Right::id);
+  return 0;
+}

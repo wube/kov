@@ -1,0 +1,12 @@
+// spec: `_` as a repeatable unnamed local living to the end of its scope
+struct Guard { const char* n; Guard(const char* n) : n(n) { println("+{}", n); } ~Guard() { println("-{}", this->n); } };
+int main()
+{
+  {
+    Guard _("a");
+    Guard _("b");
+    println("inside");
+  }
+  println("after");
+  return 0;
+}

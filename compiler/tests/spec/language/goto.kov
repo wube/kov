@@ -1,0 +1,21 @@
+// spec: goto
+// factorio: 8 uses in 6 files
+// pending: goto is parsed but not generated
+int main()
+{
+  int found = -1;
+  for (int i = 0; i < 5; ++i)
+    for (int j = 0; j < 5; ++j)
+      if (i * j == 6)
+      {
+        found = i * 10 + j;
+        goto done;
+      }
+done:
+  int retries = 0;
+again:
+  if (++retries < 3)
+    goto again;
+  println("{} {}", found, retries);
+  return 0;
+}

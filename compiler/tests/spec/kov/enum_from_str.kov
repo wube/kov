@@ -1,0 +1,14 @@
+// spec: Direction::fromStr returning an Optional
+// design.md 8.4
+// pending: fromStr waits for Optional<E> to be constructible from the compiler
+enum class Direction : uint8_t
+{
+  { North, East, South, West }
+};
+int main()
+{
+  Optional<Direction> d = Direction::fromStr("South");
+  Optional<Direction> none = Direction::fromStr("Up");
+  println("{} {}", d.hasValue() && *d == Direction::South, none.hasValue());
+  return 0;
+}

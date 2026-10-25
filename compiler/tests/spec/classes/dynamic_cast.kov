@@ -1,0 +1,15 @@
+// spec: dynamic_cast
+// factorio: 443 uses in 244 files
+// pending: dynamic_cast is not implemented (design.md section 9: single inheritance, type descriptor behind the vtable)
+struct Base { virtual ~Base() {} };
+struct A : Base { int a = 1; };
+struct B : Base { int b = 2; };
+int main()
+{
+  Base* x = new A();
+  A* asA = dynamic_cast<A*>(x);
+  B* asB = dynamic_cast<B*>(x);
+  println("{} {}", asA != nullptr, asB == nullptr);
+  delete x;
+  return 0;
+}

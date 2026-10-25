@@ -1,0 +1,12 @@
+// spec: conditional operator with objects, comma operator, sizeof of expressions
+struct Named { String name; Named(const char* n) : name(n) {} };
+int main()
+{
+  Named a("a"), b("b");
+  bool pick = true;
+  const Named& chosen = pick ? a : b;
+  int i = 0, j = 0;
+  for (; i < 3; ++i, j += 2) {}
+  println("{} {} {} {}", chosen.name, i, j, (int)sizeof(a.name) == (int)sizeof(String));
+  return 0;
+}

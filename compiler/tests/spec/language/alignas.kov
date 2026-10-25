@@ -1,0 +1,9 @@
+// spec: alignas on a struct
+// factorio: 68 alignas/alignof uses in 15 files
+// pending: alignas is accepted and ignored, and alignof returns the size (12) instead of the alignment
+struct alignas(16) Aligned { float v[3]; };
+int main()
+{
+  println("{} {}", (int)sizeof(Aligned), (int)alignof(Aligned));
+  return 0;
+}

@@ -1,0 +1,7 @@
+// spec: config constants from the command line (`--config name=value`, `--release`) as compile-time values
+// the suite builds without flags, so config::debug is true and the platform is Windows
+int main()
+{
+  println("{} {}", config::debug, config::platform == Platform::Windows);
+  return 0;
+}

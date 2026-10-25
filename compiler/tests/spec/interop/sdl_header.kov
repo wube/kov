@@ -1,0 +1,9 @@
+// spec: importing SDL3's header (the game's platform layer) and using its types and constants without linking it
+// pending: not yet tried; needs --cinclude C:\Factorio\libraries\SDL3\include and SDL3.lib to link
+extern "C" import "SDL3/SDL.h";
+int main()
+{
+  SDL_Rect r{0, 0, 640, 480};
+  println("{} {}", r.w, SDL_INIT_VIDEO != 0);
+  return 0;
+}

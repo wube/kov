@@ -1,0 +1,16 @@
+// spec: forwarding a string literal through a variadic member template into a String constructor (emplace_back("x"))
+template<typename T>
+struct Stack
+{
+  Vector<T> items;
+  template<typename... Args> T& push(Args&&... args) { return this->items.emplace_back(::forward<Args>(args)...); }
+};
+int main()
+{
+  Stack<String> names;
+  names.push("a");
+  Vector<String> direct;
+  direct.emplace_back("bc");
+  println("{} {}", names.items[0], direct[0]);
+  return 0;
+}

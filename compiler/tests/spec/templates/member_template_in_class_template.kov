@@ -1,0 +1,15 @@
+// spec: a member function template of a class template converting its argument to T (names.add("a") into Stack<String>)
+template<typename T>
+struct Stack
+{
+  Vector<T> items;
+  template<typename U> void add(const U& u) { this->items.push_back(T(u)); }
+};
+int main()
+{
+  Stack<String> names;
+  names.add("a");
+  names.add(StringView("bc"));
+  println("{} {}", names.items.size(), names.items[1]);
+  return 0;
+}

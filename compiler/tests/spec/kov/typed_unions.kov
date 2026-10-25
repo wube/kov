@@ -1,0 +1,16 @@
+// spec: typed unions (`union enum`)
+// design.md 8.5; replaces std::variant and the tagged unions of InputAction
+// pending: typed unions are not implemented
+union enum Property : uint8_t
+{
+  { {int, Integer}, {double, Double}, {String, Text} }
+};
+int main()
+{
+  Property p;
+  p[Property::Integer] = 5;
+  bool wasInt = p == Property::Integer;
+  p[Property::Text] = String("t");
+  println("{} {} {}", wasInt, p == Property::Text, p[Property::Text]);
+  return 0;
+}

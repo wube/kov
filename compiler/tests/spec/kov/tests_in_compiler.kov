@@ -1,0 +1,12 @@
+// spec: `test "name" { check(...); }` declarations are accepted and cost nothing without --tests
+// design.md 8.6; replaces the unit test macros. The generated runner (kovc --tests) is not implemented and not covered here.
+int square(int x) { return x * x; }
+test "square"
+{
+  check(square(3) == 9);
+}
+int main()
+{
+  println("{}", square(4));
+  return 0;
+}

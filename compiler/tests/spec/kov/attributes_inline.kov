@@ -1,0 +1,9 @@
+// spec: [[noinline]] and [[forceinline]] attributes
+// design.md 7.8
+[[noinline]] int slow(int x) { return x + 1; }
+[[forceinline]] int fast(int x) { return x + 2; }
+int main()
+{
+  println("{}", slow(1) + fast(1));
+  return 0;
+}

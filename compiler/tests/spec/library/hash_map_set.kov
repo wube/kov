@@ -1,0 +1,23 @@
+// spec: HashMap and HashSet (std::unordered_map/set): insert, find, operator[], erase, iteration, custom key hash
+// factorio: 47 unordered_map, 19 unordered_set (and 827 std::map, 641 std::set)
+struct Key { int a, b; bool operator==(const Key& o) const { return a == o.a && b == o.b; } };
+size_t hashOf(const Key& k) { return hashOf(k.a * 31 + k.b); }
+int main()
+{
+  HashMap<String, int> counts;
+  counts[String("x")] += 2;
+  counts[String("y")] = 5;
+  counts.insert(String("z"), 1);
+  counts.erase(String("z"));
+  int* found = counts.find(String("y"));
+  int total = 0;
+  counts.forEach([&](const String& k, int v) { total += v; });
+  HashSet<int> seen;
+  seen.insert(3);
+  seen.insert(3);
+  seen.insert(4);
+  HashMap<Key, const char*> byKey;
+  byKey[Key{1, 2}] = "one-two";
+  println("{} {} {} {} {} {} {}", counts.size(), *found, counts.contains(String("z")), total, seen.size(), seen.contains(4), byKey[Key{1, 2}]);
+  return 0;
+}

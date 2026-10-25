@@ -1,0 +1,20 @@
+// spec: UniquePtr (std::unique_ptr): makeUnique, move, release/reset, polymorphic delete, UniqueArray
+// factorio: 3820 uses in 1049 files
+static int alive = 0;
+struct Res { int id; Res(int id) : id(id) { ++alive; } virtual ~Res() { --alive; } };
+struct Sub : Res { Sub() : Res(9) {} };
+UniquePtr<Res> make(bool sub) { if (sub) return UniquePtr<Res>(new Sub()); return makeUnique<Res>(1); }
+int main()
+{
+  UniquePtr<Res> a = make(false);
+  UniquePtr<Res> b = make(true);
+  UniquePtr<Res> c = ::move(a);
+  int ids = b->id + c->id;
+  b.reset();
+  UniqueArray<int> arr(3);
+  arr[2] = 7;
+  println("{} {} {} {} {}", ids, a == nullptr, alive, (bool)c, arr[2]);
+  c = nullptr;
+  println("{}", alive);
+  return 0;
+}

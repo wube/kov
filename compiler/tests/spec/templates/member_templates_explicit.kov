@@ -1,0 +1,15 @@
+// spec: member function templates called with explicit arguments, static member templates
+struct Reader
+{
+  int position = 0;
+  template<typename T> T read() { this->position += (int)sizeof(T); return T(this->position); }
+  template<typename T> static const char* label() { return isSame<T, int> ? "int" : "other"; }
+};
+int main()
+{
+  Reader r;
+  int a = r.read<int>();
+  char b = r.read<char>();
+  println("{} {} {} {} {}", a, (int)b, r.position, Reader::label<int>(), Reader::label<double>());
+  return 0;
+}

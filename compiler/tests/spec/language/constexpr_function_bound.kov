@@ -1,0 +1,9 @@
+// spec: a constexpr function call as an array bound
+// pending: the bound evaluates to 0 (the array has no storage and writes into it crash the program)
+constexpr int cells() { return 8; }
+int main()
+{
+  int table[cells()];
+  println("{}", (int)(sizeof(table) / sizeof(int)));
+  return 0;
+}

@@ -1,0 +1,25 @@
+// spec: assert and release_assert statements, config constants with if constexpr, conditional functions, CallerLocation
+// design.md section 7; replaces assert/debug macros
+conditional(config::debug) void debugTrace(const char* text) { println("debug {}", text); }
+conditional(!config::debug) void releaseTrace(const char* text) { println("release {}", text); }
+int where(CallerLocation here = caller) { return (int)here.line; }
+if constexpr (config::debug)
+{
+  const char* buildName() { return "debug"; }
+}
+else
+{
+  const char* buildName() { return "release"; }
+}
+int main()
+{
+  int x = 4;
+  assert(x == 4);
+  release_assert(x > 0);
+  debugTrace("on");
+  releaseTrace("off");
+  if constexpr (config::platform == Platform::Windows)
+    println("windows {}", buildName());
+  println("{}", where());
+  return 0;
+}

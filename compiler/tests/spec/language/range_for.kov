@@ -1,0 +1,23 @@
+// spec: range-based for
+// factorio: 8577 uses in 1333 files
+// Over arrays, Vector, by reference (modifying), const reference, and a brace list.
+int main()
+{
+  int values[] = {3, 1, 4};
+  int sum = 0;
+  for (int v : values)
+    sum += v;
+  Vector<String> names;
+  names.push_back(String("a"));
+  names.push_back(String("b"));
+  for (String& n : names)
+    n += "!";
+  String joined;
+  for (const String& n : names)
+    joined += n;
+  int count = 0;
+  for (int v : {10, 20, 30})
+    count += v;
+  println("{} {} {}", sum, joined, count);
+  return 0;
+}

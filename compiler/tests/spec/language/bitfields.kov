@@ -1,0 +1,19 @@
+// spec: bit fields
+// factorio: 14 uses in 6 files
+// pending: bit field values work but every field takes a whole unit (sizeof 12 instead of 4)
+struct Flags
+{
+  unsigned visible : 1;
+  unsigned level : 3;
+  unsigned rest : 4;
+};
+int main()
+{
+  Flags f;
+  f.visible = 1;
+  f.level = 5;
+  f.rest = 0;
+  f.level += 1;
+  println("{} {} {} {}", (int)f.visible, (int)f.level, (int)f.rest, (int)sizeof(Flags));
+  return 0;
+}

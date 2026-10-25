@@ -1,0 +1,11 @@
+// spec: ::sort by operator< (no comparator)
+// pending: the recursive call inside sort<T> fails deduction ("a call to sort whose template arguments could not be deduced")
+int main()
+{
+  Vector<int> v;
+  for (int x : {5, 3, 8, 1})
+    v.push_back(x);
+  ::sort(v.begin(), v.end());
+  println("{} {} {}", v[0], v[1], v[3]);
+  return 0;
+}

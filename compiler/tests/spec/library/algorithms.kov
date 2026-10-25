@@ -1,0 +1,19 @@
+// spec: algorithms (std::sort, find_if, count_if, all_of/any_of, reverse, lower_bound, remove_if, min/max/clamp)
+// factorio: 466 algorithm calls in 247 files
+int main()
+{
+  Vector<int> v;
+  for (int x : {5, 3, 8, 1, 9, 2})
+    v.push_back(x);
+  ::sort(v.begin(), v.end(), [](int a, int b) { return a < b; });
+  int firstBig = *::findIf(v.begin(), v.end(), [](int x) { return x > 4; });
+  int evens = (int)::countIf(v.begin(), v.end(), [](int x) { return x % 2 == 0; });
+  bool allPositive = ::allOf(v.begin(), v.end(), [](int x) { return x > 0; });
+  bool anyTen = ::anyOf(v.begin(), v.end(), [](int x) { return x == 10; });
+  int* pos = ::lowerBound(v.begin(), v.end(), 8);
+  int* newEnd = ::removeIf(v.begin(), v.end(), [](int x) { return x < 3; });
+  v.erase(newEnd, v.end());
+  ::reverse(v.begin(), v.end());
+  println("{} {} {} {} {} {} {} {} {}", firstBig, evens, allPositive, anyTen, (int)(pos - v.begin()), v.size(), v[0], ::max(3, 7), ::clamp(15, 0, 10));
+  return 0;
+}

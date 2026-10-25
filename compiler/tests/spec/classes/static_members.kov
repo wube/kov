@@ -1,0 +1,20 @@
+// spec: static data members (in-class and out-of-line definitions), static functions, static const
+// factorio: 1174 static const members in 719 files
+struct Registry
+{
+  static int created;
+  static const int limit;
+  static constexpr int version = 3;
+  static Registry& instance() { static Registry r; return r; }
+  int id;
+  Registry() : id(++Registry::created) {}
+};
+int Registry::created = 0;
+const int Registry::limit = 10;
+int main()
+{
+  Registry a, b;
+  Registry& i = Registry::instance();
+  println("{} {} {} {} {} {}", Registry::created, Registry::limit, Registry::version, a.id, b.id, i.id);
+  return 0;
+}

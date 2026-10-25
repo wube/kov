@@ -1,0 +1,10 @@
+// spec: Duration, TimePoint, Clock (std::chrono)
+// factorio: 394 chrono uses in 97 files
+int main()
+{
+  Duration d = milliseconds(1500);
+  TimePoint start = Clock::now();
+  TimePoint later = Clock::now();
+  println("{} {} {}", d.milliseconds(), seconds(2) > d, later >= start);
+  return 0;
+}

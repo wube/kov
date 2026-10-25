@@ -1,0 +1,24 @@
+// spec: destructor order: scope exit, temporaries, members, early return
+struct Log { const char* n; Log(const char* n) : n(n) { println("+{}", n); } ~Log() { println("-{}", this->n); } };
+struct Pair2 { Log first; Log second; Pair2() : first("m1"), second("m2") {} };
+Log make(const char* n) { return Log(n); }
+int early(bool flag)
+{
+  Log a("a");
+  if (flag)
+    return 1;
+  Log b("b");
+  return 2;
+}
+int main()
+{
+  {
+    Log x("x");
+    Log y("y");
+  }
+  make("temp");
+  { Pair2 p; }
+  early(true);
+  early(false);
+  return 0;
+}

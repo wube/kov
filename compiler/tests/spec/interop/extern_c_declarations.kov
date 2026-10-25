@@ -1,0 +1,13 @@
+// spec: hand-written extern "C" declarations, passing Strings and buffers to C
+extern "C" int printf(const char* format, ...);
+extern "C" int atoi(const char* text);
+extern "C" size_t strlen(const char* text);
+extern "C" void* memcpy(void* dst, const void* src, size_t n);
+int main()
+{
+  String number = "123";
+  char copy[8];
+  memcpy(copy, number.c_str(), number.size() + 1);
+  printf("%d %d %s\n", atoi(number.c_str()), (int)strlen(copy), copy);
+  return 0;
+}

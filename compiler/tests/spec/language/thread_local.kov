@@ -1,0 +1,10 @@
+// spec: thread_local variables
+// factorio: 15 uses in 13 files
+// Accepted and stored like a plain global; this single-threaded program cannot tell whether the storage is per thread.
+thread_local int perThread = 5;
+int main()
+{
+  perThread += 1;
+  println("{}", perThread);
+  return 0;
+}

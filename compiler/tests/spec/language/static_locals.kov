@@ -1,0 +1,11 @@
+// spec: function-local statics
+// factorio: static declarations inside functions: part of 7783 static uses in 1983 files
+int& counter() { static int value = 100; return value; }
+const Vector<int>& table() { static Vector<int> t(3); return t; }
+int main()
+{
+  counter() += 1;
+  counter() += 1;
+  println("{} {} {}", counter(), table().size(), &table() == &table());
+  return 0;
+}

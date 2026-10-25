@@ -1,0 +1,9 @@
+// spec: binary integer literals (0b1010)
+// pending: a binary literal evaluates to 0
+int main()
+{
+  int bin = 0b1010;
+  unsigned mask = 0b1111'0000u;
+  println("{} {}", bin, mask);
+  return 0;
+}

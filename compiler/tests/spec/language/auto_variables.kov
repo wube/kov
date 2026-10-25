@@ -1,0 +1,16 @@
+// spec: auto variables
+// factorio: 6641 uses in 1428 files
+struct Box { int width = 3; };
+Box makeBox() { return Box(); }
+int main()
+{
+  auto n = 7;
+  auto d = 2.5;
+  auto box = makeBox();
+  const auto& ref = box;
+  auto* ptr = &box;
+  auto text = String("text");
+  ptr->width += 1;
+  println("{} {} {} {} {}", n, int(d * 2), ref.width, text.size(), sizeof(n) == sizeof(int));
+  return 0;
+}

@@ -1,0 +1,18 @@
+// spec: ordered Map and Set (std::map/std::set): iteration in key order, lower bound
+// factorio: 827 std::map uses in 422 files, 641 std::set in 293 files
+// pending: Set exists (Containers.kov) but there is no ordered Map in the library yet
+int main()
+{
+  Map<int, String> m;
+  m[3] = "c";
+  m[1] = "a";
+  m[2] = "b";
+  String order;
+  for (auto& [k, v] : m)
+    order += v;
+  Set<int> s;
+  s.insert(5);
+  s.insert(1);
+  println("{} {} {}", order, m.size(), *s.begin());
+  return 0;
+}

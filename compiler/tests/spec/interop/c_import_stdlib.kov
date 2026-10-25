@@ -1,0 +1,14 @@
+// spec: importing C standard headers and using their functions, types and callbacks (qsort)
+extern "C" import "stdlib.h";
+extern "C" import "string.h";
+static int compareInts(const void* a, const void* b) { return *(const int*)a - *(const int*)b; }
+int main()
+{
+  int values[] = {4, 1, 3, 2};
+  qsort(values, 4, sizeof(int), &compareInts);
+  char buffer[16];
+  strcpy(buffer, "ab");
+  strcat(buffer, "cd");
+  println("{} {} {} {}", values[0], values[3], buffer, (int)strlen(buffer));
+  return 0;
+}

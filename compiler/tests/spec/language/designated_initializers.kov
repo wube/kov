@@ -1,0 +1,10 @@
+// spec: designated initializers
+// factorio: 45 uses in 21 files
+// pending: designators are ignored, the values are taken positionally (1 3 0 instead of 1 0 3)
+struct Point { int x = 0; int y = 0; int z = 0; };
+int main()
+{
+  Point p{.x = 1, .z = 3};
+  println("{} {} {}", p.x, p.y, p.z);
+  return 0;
+}

@@ -1,0 +1,11 @@
+// spec: an alias template producing a reference type
+// pending: `template<typename T> using Ref = RemoveReference<T>&;` gives a variable of unknown type
+template<typename T> using Ref = RemoveReference<T>&;
+int main()
+{
+  int x = 5;
+  Ref<int&> r = x;
+  r += 1;
+  println("{}", x);
+  return 0;
+}

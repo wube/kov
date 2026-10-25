@@ -1,0 +1,11 @@
+// spec: assigning through a reference returned from a function
+// pending: `pick(x, y, false) = 20` leaves y unchanged (the returned reference is not an lvalue to codegen)
+int& pick(int& a, int& b, bool first) { return first ? a : b; }
+int main()
+{
+  int x = 1, y = 2;
+  pick(x, y, false) = 20;
+  pick(x, y, true) += 5;
+  println("{} {}", x, y);
+  return 0;
+}

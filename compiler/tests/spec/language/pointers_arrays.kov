@@ -1,0 +1,22 @@
+// spec: pointers, arrays, pointer arithmetic, arrays of arrays
+extern "C" int printf(const char* format, ...);
+int sum(const int* first, const int* last)
+{
+  int s = 0;
+  for (; first != last; ++first)
+    s += *first;
+  return s;
+}
+int main()
+{
+  int values[5] = {1, 2, 3, 4, 5};
+  int* p = values;
+  int* q = p + 4;
+  int* const fixed = values;
+  const int* readOnly = values;
+  fixed[0] = 10;
+  int** pp = &p;
+  (*pp)[1] = 20;
+  printf("%d %d %d %d %d\n", sum(values, values + 5), (int)(q - p), *q, readOnly[1], values[0]);
+  return 0;
+}

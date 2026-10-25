@@ -1,0 +1,12 @@
+// spec: decltype
+// factorio: 163 uses in 57 files
+int main()
+{
+  int a = 2;
+  double b = 1.5;
+  decltype(a) c = a * 3;
+  decltype(a * b) d = a * b;
+  decltype(c + 1) e = 1;
+  println("{} {} {} {}", c, d == 3.0, e, sizeof(d) == sizeof(double));
+  return 0;
+}

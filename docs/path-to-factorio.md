@@ -282,6 +282,34 @@ What is left in Agui proper: generic lambdas, pointers to member functions, thre
 destructors of globals at exit, `dynamic_cast`. Next: the SDL backend through C import and a
 window, or the game's `Util` library, whichever the game's dependency order wants first.
 
+## The specification suite (2026-10-25, later)
+
+kovarex's direction for the next step: instead of learning what the compiler lacks by converting
+and recompiling the whole game at every step, build a suite of small snippets, one per construct
+the Factorio sources use, and let the suite be the specification of what is needed.
+`compiler/tests/spec/<area>/<name>.kov` holds one program per construct with its expected output;
+`compiler\tests\spec.cmd` compiles and runs them all (129 snippets in two seconds) and writes
+[spec-status.md](spec-status.md), where every construct is pass or pending (a known gap, with the
+compiler's first complaint and the construct's count in the game's sources). A pending snippet that
+starts passing fails the run until its pending line is removed, so the document never goes stale.
+
+The construct counts come from a regex survey over the 7,371 files of `src`, `CommonUtil` and
+`Agui` (scratch script, numbers in the snippet headers): default arguments 32k, `override` 16k,
+`std::string` 11k, range-for 8.6k, lambdas 5.3k, `std::vector` 5.2k, `std::unique_ptr` 3.8k,
+`throw` 3.1k, operator overloads 2.9k, `std::string_view` 1.7k, `std::optional` 1.6k,
+`std::function` 1.5k, `requires` 1.3k, `std::map` 827, `dynamic_cast` 443, generic lambdas 330,
+`std::array` 372, `std::span` 147, variadic templates 175, fold expressions 110.
+
+The first run found 49 gaps (80 constructs pass), among them several that the Agui smoke test had not reached: aggregate
+initialisation drops default member initializers of omitted members, two-dimensional array
+initialisation, assigning through a returned reference, binary literals, designated initializers,
+`goto`, bit-field layout, `alignas`, structured bindings (one form crashes the compiler), partial
+specialisations silently ignored, per-instantiation static members of class templates shared, the
+recursive variadic pattern, `emplace_back(7)` into `Vector<int>`, `::sort` without a comparator,
+and the library's missing `Map`, `Tuple`, `Array`/`Span`, `SharedPtr`, `Variant`, threads.
+Small library additions came out of it too: `memset`, `abs(int)`, the C math functions,
+`OutOfRange`/`InvalidArgument`, `UniquePtr = nullptr`.
+
 ## The order that gets to a running game
 
 1. Decide exceptions and RTTI; implement them (they shape what the converter emits).

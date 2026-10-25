@@ -1,0 +1,16 @@
+// spec: memcpy, memset, memcmp, strlen, malloc/free through the library's C declarations
+// factorio: 164 mem* calls in 84 files, 48 str* calls
+int main()
+{
+  char a[8];
+  ::memset(a, 'x', 7);
+  a[7] = 0;
+  char b[8];
+  ::memcpy(b, a, 8);
+  b[0] = 'y';
+  int* block = (int*)malloc(4 * sizeof(int));
+  block[3] = 11;
+  println("{} {} {} {}", (int)::strlen(a), ::memcmp(a, b, 8) != 0, b[1] == 'x', block[3]);
+  free(block);
+  return 0;
+}

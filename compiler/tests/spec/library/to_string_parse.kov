@@ -1,0 +1,13 @@
+// spec: toString and parsing numbers (std::to_string, strtol family)
+// factorio: 302 to_string uses in 123 files
+extern "C" long long strtoll(const char* text, char** end, int base);
+extern "C" double strtod(const char* text, char** end);
+int main()
+{
+  String s = toString(255) + "/" + toString(true) + "/" + toString(-1.5);
+  long long n = strtoll("1234", nullptr, 10);
+  long long hex = strtoll("ff", nullptr, 16);
+  double d = strtod("2.5", nullptr);
+  println("{} {} {} {}", s, n, hex, d == 2.5);
+  return 0;
+}

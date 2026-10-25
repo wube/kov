@@ -16,6 +16,11 @@ struct UniquePtr
   }
 
   UniquePtr<T>& operator=(const UniquePtr<T>& other) = delete;
+  UniquePtr<T>& operator=(nullptr_t)
+  {
+    this->reset(nullptr);
+    return *this;
+  }
   UniquePtr<T>& operator=(UniquePtr<T>&& other)
   {
     if (this != &other)

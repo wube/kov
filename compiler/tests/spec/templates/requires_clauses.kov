@@ -1,0 +1,12 @@
+// spec: constrained templates (requires clauses)
+// factorio: 1274 requires/concept uses in 609 files
+// pending: requires clauses are parsed but not enforced (the first overload is taken for both calls); concepts are not implemented
+template<typename T> requires isIntegral<T>
+T twice(T v) { return v * 2; }
+template<typename T> requires (!isIntegral<T>)
+String twice(T v) { return String("not integral"); }
+int main()
+{
+  println("{} {}", twice(21), twice(1.5));
+  return 0;
+}

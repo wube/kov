@@ -1,0 +1,16 @@
+// spec: pointers to member functions
+// factorio: 3 uses in 3 files
+// pending: pointers to member functions are not implemented
+struct Calc
+{
+  int base = 10;
+  int add(int x) const { return this->base + x; }
+  int mul(int x) const { return this->base * x; }
+};
+int main()
+{
+  int (Calc::*op)(int) const = &Calc::mul;
+  Calc c;
+  println("{} {}", (c.*op)(3), (c.*(&Calc::add))(3));
+  return 0;
+}

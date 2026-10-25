@@ -1,0 +1,14 @@
+// spec: no includes, declaration order does not matter: uses before definitions, mutually recursive types
+int main()
+{
+  Node n;
+  n.value = 2;
+  Leaf l;
+  l.owner = &n;
+  println("{} {}", describe(l), twice(n.value));
+  return 0;
+}
+int twice(int x) { return x * 2; }
+struct Leaf { Node* owner = nullptr; };
+struct Node { int value = 0; Leaf* first = nullptr; };
+String describe(const Leaf& l) { return format("leaf of {}", l.owner ? l.owner->value : -1); }

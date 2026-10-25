@@ -1,0 +1,9 @@
+// spec: three instantiations of one function template as arguments of a single variadic call
+struct Big { int v = 2; };
+template<typename T> const char* describe(const T&) { if constexpr (isPointer<T>) return "pointer"; else if constexpr (isSame<T, Big>) return "big"; else return "value"; }
+int main()
+{
+  Big b;
+  println("{} {} {}", describe(&b), describe(b), describe(1));
+  return 0;
+}

@@ -1,0 +1,19 @@
+// spec: the standard exception classes (Exception, RuntimeError, LogicError, OutOfRange, InvalidArgument)
+// factorio: 410 std::exception / runtime_error uses in 216 files
+void check(int i)
+{
+  if (i < 0) throw InvalidArgument(String("negative"));
+  if (i > 9) throw OutOfRange(String("too big"));
+}
+int main()
+{
+  String log;
+  for (int i : {-1, 5, 10})
+  {
+    try { check(i); log += "ok "; }
+    catch (const OutOfRange& e) { log += "range:"; log += e.what(); log += ' '; }
+    catch (const Exception& e) { log += "other:"; log += e.what(); log += ' '; }
+  }
+  println("{}", log);
+  return 0;
+}

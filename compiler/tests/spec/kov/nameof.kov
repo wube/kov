@@ -1,0 +1,9 @@
+// spec: nameof(expr) as a string literal
+// design.md 8.3
+struct Sprite { int frame = 0; };
+int main()
+{
+  Sprite sprite;
+  println("{} {} {}", nameof(sprite), nameof(sprite.frame), nameof(Sprite));
+  return 0;
+}

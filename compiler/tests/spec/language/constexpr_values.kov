@@ -1,0 +1,18 @@
+// spec: constexpr constants and constexpr functions
+// factorio: 2643 uses in 808 files (variables), 361 (functions)
+constexpr int columns = 4;
+constexpr int rows = columns / 2;
+constexpr int cells() { return columns * rows; }
+struct Grid
+{
+  static constexpr int border = 1;
+  int data[columns * rows];
+};
+int main()
+{
+  int table[columns * rows];
+  for (int i = 0; i < cells(); ++i)
+    table[i] = i * Grid::border;
+  println("{} {} {} {}", rows, cells(), (int)(sizeof(table) / sizeof(int)), table[7]);
+  return 0;
+}

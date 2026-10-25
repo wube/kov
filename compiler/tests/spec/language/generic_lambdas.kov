@@ -1,0 +1,9 @@
+// spec: generic lambdas (auto parameters)
+// factorio: 330 uses in 168 files
+// pending: generic lambdas are not implemented (Agui's one site is a hand-written override)
+int main()
+{
+  auto twice = [](auto x) { return x + x; };
+  println("{} {}", twice(21), twice(String("ab")));
+  return 0;
+}

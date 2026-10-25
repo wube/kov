@@ -1,6 +1,27 @@
 // Kov standard library: the floating-point classification functions, which C's math.h only
 // provides as macros.
 
+// The C math library, as std::sqrt and friends convert to `::sqrt`.
+extern "C" double sqrt(double value);
+extern "C" double floor(double value);
+extern "C" double ceil(double value);
+extern "C" double round(double value);
+extern "C" double trunc(double value);
+extern "C" double pow(double base, double exponent);
+extern "C" double fmod(double value, double divisor);
+extern "C" double exp(double value);
+extern "C" double log(double value);
+extern "C" double sin(double value);
+extern "C" double cos(double value);
+extern "C" double atan2(double y, double x);
+extern "C" double fabs(double value);
+extern "C" long lround(double value);
+extern "C" double nextafter(double from, double to);
+float sqrt(float value) { return (float)sqrt((double)value); }
+float floor(float value) { return (float)floor((double)value); }
+float ceil(float value) { return (float)ceil((double)value); }
+float round(float value) { return (float)round((double)value); }
+
 bool isnan(double value) { return value != value; }
 bool isnan(float value) { return value != value; }
 bool isinf(double value) { return value == value && value != 0.0 && value * 2.0 == value; }
@@ -16,6 +37,7 @@ const double NAN = 0.0 / 0.0; // computed at startup: the compiler folds integer
 
 // abs for the floating-point types (the C runtime's abs takes an int; std::abs on a double
 // converts to `::abs` and finds these).
+int abs(int value) { return value < 0 ? -value : value; }
 float abs(float value) { return value < 0 ? -value : value; }
 double abs(double value) { return value < 0 ? -value : value; }
 long long abs(long long value) { return value < 0 ? -value : value; }

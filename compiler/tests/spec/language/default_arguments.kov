@@ -1,0 +1,21 @@
+// spec: default arguments
+// factorio: 32235 uses in 4539 files
+// Defaults on free functions, members and constructors; a default naming another constant.
+const int baseline = 10;
+int scaled(int value, int factor = 2, int offset = baseline) { return value * factor + offset; }
+
+struct Timer
+{
+  int interval;
+  Timer(int interval = 60) : interval(interval) {}
+  int ticks(int seconds, int perSecond = 60) const { return seconds * perSecond / this->interval; }
+};
+
+int main()
+{
+  Timer t;
+  Timer fast(30);
+  println("{} {} {}", scaled(1), scaled(1, 3), scaled(1, 3, 0));
+  println("{} {} {}", t.ticks(2), fast.ticks(2), fast.ticks(2, 120));
+  return 0;
+}

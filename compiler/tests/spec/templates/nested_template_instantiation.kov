@@ -1,0 +1,17 @@
+// spec: a class template instantiated with another instantiation of itself (Stack<Stack<int>>) through a variadic push
+// pending: pushing into the inner stack is rejected ("passing a non-class to a class parameter" / int&& parameter)
+template<typename T>
+struct Stack
+{
+  Vector<T> items;
+  template<typename... Args> T& push(Args&&... args) { return this->items.emplace_back(::forward<Args>(args)...); }
+};
+int main()
+{
+  Stack<Stack<int>> nested;
+  Stack<int>& inner = nested.push();
+  int seven = 7;
+  inner.push(seven);
+  println("{} {}", nested.items.size(), nested.items[0].items[0]);
+  return 0;
+}

@@ -1,0 +1,11 @@
+// spec: for constexpr over a list of constants
+// design.md 8.2
+// pending: for constexpr is not implemented
+int table[8];
+int main()
+{
+  for constexpr (int i : {1, 2, 4})
+    table[i] = i * 10;
+  println("{} {} {} {}", table[0], table[1], table[2], table[4]);
+  return 0;
+}

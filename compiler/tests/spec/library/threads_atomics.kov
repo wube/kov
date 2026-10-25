@@ -1,0 +1,15 @@
+// spec: Thread, Mutex, LockGuard, Atomic (std::thread, std::mutex, std::atomic)
+// factorio: 78 std::thread, 479 mutex/lock_guard, 47 std::atomic
+// pending: no threading primitives in the library yet
+int main()
+{
+  Atomic<int> counter(0);
+  Mutex m;
+  Vector<Thread> threads;
+  for (int i = 0; i < 4; ++i)
+    threads.emplace_back([&]() { LockGuard<Mutex> lock(m); counter += 1; });
+  for (Thread& t : threads)
+    t.join();
+  println("{}", counter.load());
+  return 0;
+}

@@ -1,0 +1,21 @@
+// spec: abstract interfaces implemented by several classes, held through base pointers in containers
+struct Listener { virtual ~Listener() {} virtual void onEvent(int code) = 0; virtual bool wants(int code) const { return true; } };
+struct Logger : Listener { Vector<int> seen; void onEvent(int code) override { this->seen.push_back(code); } };
+struct EvenOnly : Listener { int sum = 0; bool wants(int code) const override { return code % 2 == 0; } void onEvent(int code) override { this->sum += code; } };
+struct Bus
+{
+  Vector<Listener*> listeners;
+  void emit(int code) { for (Listener* l : this->listeners) if (l->wants(code)) l->onEvent(code); }
+};
+int main()
+{
+  Logger log;
+  EvenOnly even;
+  Bus bus;
+  bus.listeners.push_back(&log);
+  bus.listeners.push_back(&even);
+  for (int i = 1; i <= 4; ++i)
+    bus.emit(i);
+  println("{} {}", log.seen.size(), even.sum);
+  return 0;
+}

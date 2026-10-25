@@ -1,0 +1,19 @@
+// spec: anonymous struct and union members
+struct Value
+{
+  int kind;
+  union
+  {
+    int i;
+    double d;
+    struct { short lo; short hi; };
+  };
+};
+int main()
+{
+  Value v;
+  v.kind = 0;
+  v.i = 0x00020001;
+  println("{} {} {}", (int)v.lo, (int)v.hi, (int)sizeof(Value));
+  return 0;
+}

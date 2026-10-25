@@ -1,0 +1,14 @@
+// spec: a member typedef of a dependent instantiation as a return type (typename Vector<T>::iterator)
+template<typename T>
+struct Stack
+{
+  Vector<T> items;
+  typename Vector<T>::iterator first() { return this->items.begin(); }
+};
+int main()
+{
+  Stack<String> names;
+  names.items.push_back(String("a"));
+  println("{}", *names.first());
+  return 0;
+}

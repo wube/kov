@@ -1,0 +1,14 @@
+// spec: aggregate initialisation, default member initializers, arrays of structs, nested braces
+struct Point { int x = 0; int y = 0; };
+struct Line { Point from; Point to; int width = 1; };
+struct Named { String name; int score; };
+int main()
+{
+  Point p{3, 4};
+  Point zero{};
+  Line l{{1, 2}, {3, 4}, 1};
+  Named table[] = {{String("a"), 1}, {String("b"), 2}};
+  int grid[2][2] = {{1, 2}, {3, 4}};
+  println("{} {} {} {} {} {} {}", p.x + p.y, zero.y, l.to.x, l.width, table[1].name, table[0].score, grid[1][0]);
+  return 0;
+}

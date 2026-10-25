@@ -1,0 +1,9 @@
+// spec: calling C variadic functions and C-style ... declarations
+extern "C" int snprintf(char* buffer, size_t size, const char* format, ...);
+int main()
+{
+  char buffer[32];
+  int n = snprintf(buffer, sizeof(buffer), "%d-%s-%.1f", 7, "x", 2.5);
+  println("{} {}", n, buffer);
+  return 0;
+}

@@ -1,0 +1,15 @@
+// spec: C-compatible layout: plain structs passed to and filled by C, sizeof agreement, arrays of structs
+extern "C" import "string.h";
+struct Pixel { uint8_t r, g, b, a; };
+struct Rect { int32_t x, y, w, h; };
+int main()
+{
+  Pixel row[4];
+  memset(row, 0, sizeof(row));
+  row[2].g = 200;
+  Rect r{1, 2, 3, 4};
+  Rect copy;
+  memcpy(&copy, &r, sizeof(Rect));
+  println("{} {} {} {} {}", (int)sizeof(Pixel), (int)sizeof(row), (int)sizeof(Rect), (int)row[2].g, copy.w);
+  return 0;
+}

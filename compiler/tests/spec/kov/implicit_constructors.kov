@@ -1,0 +1,10 @@
+// spec: `implicit` constructors convert, others do not (Kov's default is explicit)
+struct Meters { implicit Meters(int v) : value(v) {} int value; };
+struct Exact { Exact(int v) : value(v) {} int value; };
+int twice(Meters m) { return m.value * 2; }
+int exact(Exact e) { return e.value; }
+int main()
+{
+  println("{} {}", twice(21), exact(Exact(5)));
+  return 0;
+}

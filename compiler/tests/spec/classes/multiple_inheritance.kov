@@ -1,0 +1,21 @@
+// spec: multiple inheritance (one polymorphic base), access to both bases, pointer conversions
+// factorio: 264 uses in 261 files
+struct Named { String name; Named(const char* n) : name(n) {} };
+struct Counted { int count = 0; void bump() { ++this->count; } };
+struct Widget : Named, Counted
+{
+  virtual int kind() const { return 1; }
+  Widget(const char* n) : Named(n) {}
+};
+int total(const Counted* c) { return c->count; }
+int main()
+{
+  Widget w("w");
+  w.bump();
+  w.bump();
+  Counted* asCounted = &w;
+  Named* asNamed = &w;
+  Widget* back = static_cast<Widget*>(asCounted);
+  println("{} {} {} {} {}", w.name, total(&w), asCounted->count, asNamed->name, back == &w);
+  return 0;
+}

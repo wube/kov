@@ -1,0 +1,11 @@
+// spec: emplace_back of a scalar rvalue (v.emplace_back(7)) through a forwarding pack
+// factorio: emplace_back with literal arguments is everywhere
+// pending: the instantiation emplace_back<int>(int&&) is rejected ("the type int32&& of FunctionDecl")
+int main()
+{
+  Vector<int> v;
+  v.emplace_back(7);
+  v.emplace_back(8);
+  println("{} {}", v.size(), v[1]);
+  return 0;
+}

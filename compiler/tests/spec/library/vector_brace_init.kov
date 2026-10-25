@@ -1,0 +1,10 @@
+// spec: Vector from a brace list
+// factorio: common for constant tables (std::vector<T> v = {...})
+// pending: Vector has no InitializerList constructor yet
+int main()
+{
+  Vector<int> primes = {2, 3, 5, 7};
+  Vector<String> names{"a", "b"};
+  println("{} {} {}", primes.size(), primes[3], names[1]);
+  return 0;
+}

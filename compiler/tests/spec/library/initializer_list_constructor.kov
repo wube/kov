@@ -1,0 +1,10 @@
+// spec: a constructor taking InitializerList, called with a brace list
+// pending: `Poly p({1, 2, 3, 4})` looks for a four-argument constructor
+struct Poly { Vector<int> xs; Poly(InitializerList<int> list) { for (int v : list) this->xs.push_back(v); } };
+int main()
+{
+  Poly p({1, 2, 3, 4});
+  Poly q = {5, 6};
+  println("{} {}", p.xs.size(), q.xs[1]);
+  return 0;
+}

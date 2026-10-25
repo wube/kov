@@ -1,0 +1,25 @@
+// spec: Function (std::function): lambdas with captures, function pointers, copies, emptiness, callbacks in containers
+// factorio: 1470 uses in 589 files
+int twice(int x) { return x * 2; }
+struct Button { Function<void(int)> onClick; void click(int n) { if (this->onClick) this->onClick(n); } };
+int main()
+{
+  Function<int(int)> f = twice;
+  int offset = 10;
+  Function<int(int)> g = [offset](int x) { return x + offset; };
+  Function<int(int)> h = g;
+  Function<void()> empty;
+  int clicks = 0;
+  Button b;
+  b.onClick = [&clicks](int n) { clicks += n; };
+  b.click(3);
+  b.click(4);
+  Vector<Function<int(int)>> ops;
+  ops.push_back(f);
+  ops.push_back(h);
+  int acc = 1;
+  for (Function<int(int)>& op : ops)
+    acc = op(acc);
+  println("{} {} {} {} {} {}", f(4), g(1), h(2), (bool)empty, clicks, acc);
+  return 0;
+}

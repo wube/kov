@@ -26,6 +26,9 @@ simple templates, own standard library, C-only interop.
 Front end (lexer, parser, resolver, type checker, template instantiation) is done and measured
 (docs/prototype-results.md). Code generation for the Kov v0 subset works through textual LLVM IR
 and the bundled clang: `compiler\build\kovc.exe --exe out.exe program.kov`. Run the end-to-end
-tests with `compiler\tests\run_tests.cmd` after every compiler change; the Factorio benchmark
-command in docs/prototype-results.md is the regression check for the front end. Measure, don't
-guess: every speed claim comes with the benchmark command and numbers.
+tests with `compiler\tests\run_tests.cmd` and the specification suite `compiler\tests\spec.cmd`
+(one snippet per construct, pass/pending, writes docs/spec-status.md) after every compiler
+change; the Factorio benchmark command in docs/prototype-results.md is the regression check for the
+front end. A new gap found in converted code gets a pending snippet in `compiler/tests/spec/`
+before it is fixed. Measure, don't guess: every speed claim comes with the benchmark command and
+numbers.

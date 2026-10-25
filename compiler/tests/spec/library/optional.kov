@@ -1,0 +1,15 @@
+// spec: Optional (std::optional): value, hasValue, nullopt, assignment, comparison, valueOr
+// factorio: 1587 uses in 658 files
+Optional<int> parse(const char* s) { return s[0] == 'x' ? Optional<int>() : Optional<int>(s[0] - '0'); }
+int main()
+{
+  Optional<int> a = parse("7"), b = parse("x");
+  Optional<String> name;
+  name = String("n");
+  int sum = a.valueOr(0) + b.valueOr(100);
+  if (a)
+    sum += *a;
+  bool cleared = (b = nullopt, !b.hasValue());
+  println("{} {} {} {} {} {} {}", a.hasValue(), b.hasValue(), sum, name->size(), a == 7, cleared, name.value());
+  return 0;
+}

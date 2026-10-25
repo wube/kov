@@ -1,0 +1,11 @@
+// spec: format, print, println, toString for the common types
+int main()
+{
+  String s = format("{} + {} = {}", 1, 2, 1 + 2);
+  String mixed = format("{} {} {} {}", true, 'c', String("str"), "lit");
+  println("{}|{}|{}", s, mixed, toString(-7));
+  print("no newline ");
+  println("then one");
+  println("{} {}", toString(2.5), toString(100000000000ll));
+  return 0;
+}

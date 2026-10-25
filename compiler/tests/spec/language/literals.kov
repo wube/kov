@@ -1,0 +1,14 @@
+// spec: literals: integer suffixes and bases, digit separators, char escapes, raw strings, adjacent literals
+int main()
+{
+  int hex = 0xFF, oct = 017;
+  unsigned long long u = 18'446'744'073'709'551'615ull;
+  long long neg = -9'223'372'036'854'775'807ll - 1;
+  char tab = '\t', quote = '\'', nul = '\0';
+  const char* raw = R"(a\b"c")";
+  const char* joined = "one" "two";
+  float f = 1.5f;
+  println("{} {} {} {}", hex, oct, u == Limits<unsigned long long>::max(), neg == Limits<long long>::min());
+  println("{} {} {} {} {} {}", (int)tab, (int)quote, (int)nul, raw, joined, f == 1.5f);
+  return 0;
+}

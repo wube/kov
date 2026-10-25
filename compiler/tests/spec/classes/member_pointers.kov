@@ -1,0 +1,12 @@
+// spec: pointers to data members
+struct Style { int top = 1; int left = 2; };
+int get(const Style& s, int Style::*member) { return s.*member; }
+int main()
+{
+  Style s;
+  int Style::*m = &Style::left;
+  Style* p = &s;
+  p->*m = 20;
+  println("{} {}", get(s, &Style::top), get(s, m));
+  return 0;
+}

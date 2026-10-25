@@ -1,0 +1,18 @@
+// spec: if constexpr on type traits
+// factorio: 411 uses in 107 files
+template<typename T>
+String describe(const T& value)
+{
+  if constexpr (isSame<T, int>)
+    return format("int {}", value);
+  else if constexpr (isPointer<T>)
+    return String("pointer");
+  else
+    return String("other");
+}
+int main()
+{
+  int n = 3;
+  println("{} / {} / {}", describe(n), describe(&n), describe(2.5));
+  return 0;
+}

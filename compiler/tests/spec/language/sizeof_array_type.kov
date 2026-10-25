@@ -1,0 +1,7 @@
+// spec: sizeof of an array type (sizeof(int[4]))
+// pending: sizeof of a written array type is not supported
+int main()
+{
+  println("{} {}", (int)sizeof(int[4]), (int)sizeof(char[3][2]));
+  return 0;
+}

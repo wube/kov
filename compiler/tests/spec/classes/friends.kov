@@ -1,0 +1,24 @@
+// spec: friend functions and friend classes
+// factorio: 459 uses in 269 files
+class Account
+{
+  int balance = 100;
+  friend int peek(const Account& a);
+  friend class Auditor;
+public:
+  void deposit(int n) { this->balance += n; }
+};
+int peek(const Account& a) { return a.balance; }
+class Auditor
+{
+public:
+  int twice(const Account& a) const { return a.balance * 2; }
+};
+int main()
+{
+  Account a;
+  a.deposit(5);
+  Auditor au;
+  println("{} {}", peek(a), au.twice(a));
+  return 0;
+}

@@ -1,0 +1,25 @@
+// spec: lambdas
+// factorio: 5310 uses in 1206 files
+// Captures by value and by reference, `this`, mutable state, immediate invocation, stored in Function.
+struct Counter
+{
+  int count = 0;
+  Function<void()> bump() { return [this]() { this->count += 1; }; }
+};
+
+int main()
+{
+  int base = 10;
+  auto addBase = [base](int x) { return x + base; };
+  auto addToBase = [&base](int x) { base += x; };
+  addToBase(5);
+  auto next = [n = 0]() mutable { return ++n; };
+  next();
+  int immediate = [](int a, int b) { return a * b; }(6, 7);
+  Counter c;
+  Function<void()> f = c.bump();
+  f();
+  f();
+  println("{} {} {} {} {}", addBase(1), base, next(), immediate, c.count);
+  return 0;
+}

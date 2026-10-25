@@ -1,0 +1,12 @@
+// spec: noexcept, [[nodiscard]], [[maybe_unused]]
+// factorio: 802 noexcept, 215 [[nodiscard]], 46 [[maybe_unused]], 68 alignas/alignof
+[[nodiscard]] int compute() noexcept { return 4; }
+struct Aligned { float v[3]; };
+int main()
+{
+  [[maybe_unused]] int unused = 0;
+  Aligned a;
+  a.v[0] = 1;
+  println("{} {}", compute(), (int)sizeof(Aligned));
+  return 0;
+}

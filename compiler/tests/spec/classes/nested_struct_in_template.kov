@@ -1,0 +1,16 @@
+// spec: a struct nested in a class template, with members of the parameter type
+// pending: the nested struct's member of type T has an unknown type
+template<typename T>
+struct Holder
+{
+  struct Node { T value; Node* next = nullptr; };
+  Node head;
+};
+int main()
+{
+  Holder<int> h;
+  h.head.value = 9;
+  Holder<int>::Node* n = &h.head;
+  println("{} {}", n->value, n->next == nullptr);
+  return 0;
+}

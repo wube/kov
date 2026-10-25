@@ -1,0 +1,18 @@
+// spec: Deque and Queue (std::deque, std::queue): push at both ends, pop, front/back
+// factorio: 116 deque uses in 68 files
+int main()
+{
+  Deque<int> d;
+  d.push_back(2);
+  d.push_front(1);
+  d.push_back(3);
+  int front = d.front();
+  d.pop_front();
+  Queue<String> q;
+  q.push(String("first"));
+  q.push(String("second"));
+  String head = q.front();
+  q.pop();
+  println("{} {} {} {} {} {}", front, d.size(), d.back(), head, q.size(), q.front());
+  return 0;
+}

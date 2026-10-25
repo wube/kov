@@ -1,0 +1,18 @@
+// spec: non-type template parameters: ints, bools, defaults, used in the body
+template<typename T, int N, bool Checked = false>
+struct Array
+{
+  T items[N];
+  int size() const { return N; }
+  T get(int i) const { if (Checked && (i < 0 || i >= N)) return T(); return this->items[i]; }
+};
+const int Count = 4;
+int main()
+{
+  Array<int, Count> plain;
+  Array<int, 2, true> checked;
+  plain.items[3] = 7;
+  checked.items[0] = 5;
+  println("{} {} {} {}", plain.size(), plain.get(3), checked.get(5), checked.get(0));
+  return 0;
+}

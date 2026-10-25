@@ -1,0 +1,21 @@
+// spec: Vector (std::vector): push/emplace, index, erase, insert, iteration, nesting, moves, sort
+// factorio: 5225 uses in 1662 files
+struct Item { String name; int weight; Item(const char* n, int w) : name(n), weight(w) {} };
+int main()
+{
+  Vector<int> v;
+  for (int i = 0; i < 6; ++i)
+    v.push_back(i * i);
+  v.erase(1);
+  v.insert(0, 100);
+  v.pop_back();
+  Vector<Item> items;
+  items.emplace_back("iron", 3);
+  items.emplace_back("copper", 1);
+  ::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.weight < b.weight; });
+  Vector<Vector<int>> grid(2);
+  grid[1].push_back(9);
+  Vector<int> moved = ::move(v);
+  println("{} {} {} {} {} {} {}", moved.size(), moved[0], moved.back(), items[0].name, grid[1][0], v.size(), moved.contains(9));
+  return 0;
+}

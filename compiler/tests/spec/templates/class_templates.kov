@@ -1,0 +1,22 @@
+// spec: class templates: members, nested typedefs, static constexpr functions, several instantiations
+template<typename T, int N>
+struct Ring
+{
+  using Value = T;
+  T items[N];
+  int head = 0;
+  void push(const T& v) { this->items[this->head] = v; this->head = (this->head + 1) % N; }
+  T& at(int i) { return this->items[(this->head + i) % N]; }
+  static constexpr int capacity() { return N; }
+};
+int main()
+{
+  Ring<int, 3> a, b;
+  Ring<String, 2> s;
+  for (int i = 0; i < 4; ++i)
+    a.push(i * 10);
+  s.push(String("x"));
+  Ring<int, 3>::Value v = a.at(0);
+  println("{} {} {} {}", Ring<int, 3>::capacity(), v, a.items[0], s.items[0]);
+  return 0;
+}

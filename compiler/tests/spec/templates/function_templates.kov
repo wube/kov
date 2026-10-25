@@ -1,0 +1,12 @@
+// spec: function templates: deduction, explicit arguments, overloading with non-templates, full specialisation
+// factorio: 592 full specialisations in 61 files
+template<typename T> T biggest(T a, T b) { return a < b ? b : a; }
+template<typename T> const char* kind(T) { return "generic"; }
+template<> const char* kind(bool) { return "bool"; }
+const char* kind(int) { return "int"; }
+template<typename To, typename From> To convert(From value) { return (To)value; }
+int main()
+{
+  println("{} {} {} {} {} {}", biggest(3, 9), biggest(String("a"), String("b")), kind(1), kind(true), kind(2.5), convert<int>(3.9));
+  return 0;
+}

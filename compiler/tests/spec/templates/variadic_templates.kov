@@ -1,0 +1,12 @@
+// spec: variadic templates: packs, sizeof..., forwarding, fold expressions
+// factorio: 175 variadic templates in 59 files, 110 fold expressions, 218 std::forward
+template<typename... Args> int count(Args... args) { return (int)sizeof...(args); }
+template<typename... Args> int folded(Args... args) { return (args + ... + 0); }
+struct Point { int x, y; Point(int x, int y) : x(x), y(y) {} };
+template<typename T, typename... Args> T build(Args&&... args) { return T(::forward<Args>(args)...); }
+int main()
+{
+  Point p = build<Point>(3, 4);
+  println("{} {} {} {}", count(), count(1, "a", 2.5), folded(1, 2, 3), p.x * p.y);
+  return 0;
+}

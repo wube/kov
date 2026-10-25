@@ -1,0 +1,25 @@
+// spec: class template argument deduction from constructor arguments
+template<typename A, typename B>
+struct Both
+{
+  A a; B b;
+  Both(const A& a, const B& b) : a(a), b(b) {}
+};
+template<typename T>
+struct Guard
+{
+  T& slot; T saved;
+  Guard(T& slot, T value) : slot(slot), saved(slot) { slot = value; }
+  ~Guard() { this->slot = this->saved; }
+};
+int main()
+{
+  Both both(1, String("two"));
+  int mode = 1;
+  {
+    Guard g(mode, 5);
+    println("{} {} {}", both.a, both.b, mode);
+  }
+  println("{}", mode);
+  return 0;
+}
