@@ -477,6 +477,16 @@ declaration, and `FunctionArgumentIndex` lives in the game's root `Typedefs.hpp`
 needs to carry default template arguments from forward declarations, and the Util set needs the
 root headers.
 
+Both done next: the converter carries default template arguments from forward declarations to
+the definition's parameter list the way it carries default arguments of functions (`class Comp =
+Less<>` on `FlatMap`), a single file can be a conversion input (`C:\Factorio\src\Typedefs.hpp`
+joins the set), the library gained `Less<T>`/`Greater<T>` and their transparent `Less<>`/
+`Greater<>` (std::less<>), and `Name<>` written with empty brackets takes every default. The
+subset is at 82.6% typed with 15 complaints: the `LOG_*` macros (the game's `Log` is not in the
+set), `Serialiser`/`Deserialiser` (`Map`), `FlatMap`'s initializer-list constructor (a loop
+variable over `InitializerList<Pair<K, V>>`) and a brace list used as a value. Spec:
+`library/less_comparator`.
+
 ## The order that gets to a running game
 
 1. Decide exceptions and RTTI; implement them (they shape what the converter emits).

@@ -1,0 +1,18 @@
+// spec: Less<T> and the transparent Less<> (std::less<>) as comparator objects; `Name<>` written with empty brackets takes every default
+// found in src/Util (FlatMap<K, V, Comp = std::less<>>)
+template<typename T, typename Comp = Less<>>
+struct Ordered
+{
+  T a;
+  T b;
+  Comp comp;
+  bool ordered() const { return this->comp(this->a, this->b); }
+};
+int main()
+{
+  Ordered<int> p{1, 2};
+  Ordered<int, Greater<int>> q{1, 2};
+  Less<String> byString;
+  println("{} {} {} {}", p.ordered(), q.ordered(), byString(String("a"), String("b")), Less<>()(3, 2));
+  return 0;
+}

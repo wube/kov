@@ -327,3 +327,28 @@ struct ReverseIterator
   bool operator==(ReverseIterator<T> other) const { return this->position == other.position; }
   bool operator!=(ReverseIterator<T> other) const { return this->position != other.position; }
 };
+
+// Comparator objects (std::less, std::greater): `Less<T>` compares two T with <, the transparent
+// `Less<>` compares any two operands, so `FlatMap<K, V, Less<>>` can look a String up by a StringView.
+template<typename T = void>
+struct Less
+{
+  bool operator()(const T& a, const T& b) const { return a < b; }
+};
+template<>
+struct Less<void>
+{
+  template<typename A, typename B>
+  bool operator()(const A& a, const B& b) const { return a < b; }
+};
+template<typename T = void>
+struct Greater
+{
+  bool operator()(const T& a, const T& b) const { return b < a; }
+};
+template<>
+struct Greater<void>
+{
+  template<typename A, typename B>
+  bool operator()(const A& a, const B& b) const { return b < a; }
+};

@@ -25,6 +25,9 @@ namespace
   // Default arguments of a function's parameters, by index, as source text: carried from a
   // header declaration to the definition that replaces it in the converted file.
   using CarriedDefaults = std::map<FunctionDecl*, std::vector<std::pair<size_t, std::string>>>;
+  // A class template's definition -> (parameter index, default text) from its forward declarations
+  // (`template<class K, class V, class Comp = std::less<K>> class FlatMap;` in FlatMapForwards.hpp).
+  using CarriedTemplateDefaults = std::map<ClassDecl*, std::vector<std::pair<size_t, std::string>>>;
 
   // The index of the `,` or `)` that ends the parameter (or default argument) starting at token,
   // skipping nested brackets; UINT32_MAX when a `;` or the end comes first.
@@ -188,6 +191,7 @@ namespace
     const SymbolTable& symbols;
     const OverrideKeys* overrides = nullptr; // definitions a hand-written file replaces
     const CarriedDefaults* carriedDefaults = nullptr;
+    const CarriedTemplateDefaults* carriedTemplateDefaults = nullptr;
     struct LocalMacro
     {
       std::vector<std::string> params;
@@ -1017,6 +1021,15 @@ namespace
               }
               break;
             }
+            if (carriedTemplateDefaults)
+              if (auto cd = carriedTemplateDefaults->find(c); cd != carriedTemplateDefaults->end())
+                for (auto& [index, value] : cd->second)
+                  if (index < c->templateParams.size())
+                    if (uint32_t end = templateParameterEnd(c->templateParams[index]->token); end != UINT32_MAX)
+                    {
+                      insert(endOffset(end - 1), " = " + value);
+                      counts.add("default template arguments carried from forward declarations");
+                    }
             convertDecls(c->members, false, prefix + nameText(c->name, symbols) + "::");
             break;
           }
@@ -1132,6 +1145,33 @@ namespace
       if (lineEnd < text.size() && text[lineEnd] == '\n')
         end = lineEnd + 1;
       remove(start, end - start);
+    }
+
+    // The `,` or `>` that ends the template parameter starting at token `from`, or UINT32_MAX.
+    uint32_t templateParameterEnd(uint32_t from) const
+    {
+      int depth = 0;
+      for (uint32_t k = from; k < toks.size(); ++k)
+      {
+        const Token& tk = toks[k];
+        if (tk.is(P::Less) || tk.is(P::LParen) || tk.is(P::LBracket))
+          ++depth;
+        else if (tk.is(P::RParen) || tk.is(P::RBracket))
+          --depth;
+        else if (tk.is(P::Greater) || tk.is(P::Shr))
+        {
+          if (depth == 0)
+            return k;
+          depth -= tk.is(P::Shr) ? 2 : 1;
+          if (depth < 0)
+            return k;
+        }
+        else if (tk.is(P::Comma) && depth == 0)
+          return k;
+        else if (tk.is(P::Semi) || tk.is(P::LBrace))
+          return UINT32_MAX;
+      }
+      return UINT32_MAX;
     }
 
     void removeDecl(Decl* d)
@@ -1629,11 +1669,28 @@ std::string convertToKov(const std::vector<ConvertInput>& inputs, GlobalScope& g
   // Default arguments live on the header declaration, which the conversion drops when the
   // definition is elsewhere: carry them to the definition's parameters.
   CarriedDefaults carriedDefaults;
+  CarriedTemplateDefaults carriedTemplateDefaults;
   {
     std::map<ParsedFile*, const ConvertInput*> inputOf;
     for (const ConvertInput& in : inputs)
       if (in.parsed)
         inputOf[in.parsed] = &in;
+    // std:: names in carried text, mapped as the token pass maps them.
+    auto mapStd = [&](std::string value)
+    {
+      for (size_t at = value.find("std::"); at != std::string::npos; at = value.find("std::", at))
+      {
+        size_t nameEnd = at + 5;
+        while (nameEnd < value.size() && (isalnum((unsigned char)value[nameEnd]) || value[nameEnd] == '_'))
+          ++nameEnd;
+        std::string name = value.substr(at + 5, nameEnd - at - 5);
+        auto it = stdNames.find(name);
+        std::string to = it == stdNames.end() ? name : it->second;
+        value.replace(at, nameEnd - at, to);
+        at += to.size();
+      }
+      return value;
+    };
     std::function<void(Span<Decl*>)> scan = [&](Span<Decl*> decls)
     {
       for (Decl* d : decls)
@@ -1641,6 +1698,66 @@ std::string convertToKov(const std::vector<ConvertInput>& inputs, GlobalScope& g
         if (d->kind == NodeKind::NamespaceDecl)
         {
           scan(static_cast<NamespaceDecl*>(d)->decls);
+          continue;
+        }
+        if (d->kind == NodeKind::ClassDecl)
+        {
+          // `template<class K, class V, class Comp = std::less<K>> class FlatMap;`: the defaults
+          // live on the forward declaration, which goes; the definition's parameters take them.
+          auto* c = static_cast<ClassDecl*>(d);
+          if (c->isDefinition || c->templateParams.empty())
+            continue;
+          Decl* defDecl = global.definitionOf(c);
+          if (!defDecl || defDecl == c || defDecl->kind != NodeKind::ClassDecl)
+            continue;
+          auto* def = static_cast<ClassDecl*>(defDecl);
+          if (def->templateParams.size() != c->templateParams.size())
+            continue;
+          auto it = inputOf.find(c->file);
+          if (it == inputOf.end() || !it->second->tokens)
+            continue;
+          const ConvertInput& in = *it->second;
+          const std::vector<Token>& tk = *in.tokens;
+          for (size_t i = 0; i < c->templateParams.size(); ++i)
+          {
+            auto* p = static_cast<TemplateParamDecl*>(c->templateParams[i]);
+            if (!p->defaultArg || static_cast<TemplateParamDecl*>(def->templateParams[i])->defaultArg)
+              continue;
+            uint32_t from = p->defaultArg->token, k = from;
+            int depth = 0;
+            bool splitShr = false;
+            for (; k < tk.size(); ++k)
+            {
+              if (tk[k].is(P::Less) || tk[k].is(P::LParen) || tk[k].is(P::LBracket))
+                ++depth;
+              else if (tk[k].is(P::RParen) || tk[k].is(P::RBracket))
+                --depth;
+              else if (tk[k].is(P::Greater))
+              {
+                if (depth == 0)
+                  break;
+                --depth;
+              }
+              else if (tk[k].is(P::Shr))
+              {
+                if (depth <= 1)
+                {
+                  splitShr = depth == 1; // `std::less<K>>`: the first > closes the default
+                  break;
+                }
+                depth -= 2;
+              }
+              else if (tk[k].is(P::Comma) && depth == 0)
+                break;
+              else if (tk[k].is(P::Semi))
+                break;
+            }
+            if (k >= tk.size() || k <= from)
+              continue;
+            uint32_t a = tk[from].offset;
+            uint32_t b = splitShr ? tk[k].offset + 1 : tk[k - 1].offset + tk[k - 1].length;
+            carriedTemplateDefaults[def].push_back({i, mapStd(std::string(in.text.substr(a, b - a)))});
+          }
           continue;
         }
         if (d->kind != NodeKind::FunctionDecl)
@@ -1689,19 +1806,7 @@ std::string convertToKov(const std::vector<ConvertInput>& inputs, GlobalScope& g
           }
           uint32_t from = (*in.tokens)[fromTok].offset;
           uint32_t to = (*in.tokens)[end - 1].offset + (*in.tokens)[end - 1].length;
-          std::string value(in.text.substr(from, to - from));
-          for (size_t at = value.find("std::"); at != std::string::npos; at = value.find("std::", at))
-          {
-            size_t nameEnd = at + 5;
-            while (nameEnd < value.size() && (isalnum((unsigned char)value[nameEnd]) || value[nameEnd] == '_'))
-              ++nameEnd;
-            std::string name = value.substr(at + 5, nameEnd - at - 5);
-            auto it = stdNames.find(name);
-            std::string to = it == stdNames.end() ? name : it->second;
-            value.replace(at, nameEnd - at, to);
-            at += to.size();
-          }
-          carriedDefaults[def].push_back({i, value});
+          carriedDefaults[def].push_back({i, mapStd(std::string(in.text.substr(from, to - from)))});
         }
       }
     };
@@ -1720,6 +1825,7 @@ std::string convertToKov(const std::vector<ConvertInput>& inputs, GlobalScope& g
     std::string key = rel.substr(0, rel.size() - ext.size()) + ".kov";
     FileConverter fc(in, global, symbols);
     fc.carriedDefaults = &carriedDefaults;
+    fc.carriedTemplateDefaults = &carriedTemplateDefaults;
     if (OverrideFile* ov = overrideFor(key))
       fc.overrides = &ov->keys;
     Piece piece;

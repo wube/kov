@@ -1711,9 +1711,10 @@ struct GlobalScope::Impl
           else
             args.push_back(a);
         }
-        if (!args.empty())
+        if (!args.empty() || (lastPart.hasTemplateArgs && !params.empty()))
         {
-          // Parameters not written take their defaults, which may use the earlier arguments.
+          // Parameters not written take their defaults, which may use the earlier arguments
+          // (`Less<>`: all of them).
           for (size_t i = args.size(); i < params.size(); ++i)
           {
             auto* p = static_cast<TemplateParamDecl*>(params[i]);

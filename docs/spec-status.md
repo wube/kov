@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**144 pass, 2 pending, 0 failing, 0 fixed** (146 snippets, 2.7 s).
+**145 pass, 2 pending, 0 failing, 0 fixed** (147 snippets, 2.6 s).
 
 ## Language: statements, expressions, declarations
 
@@ -132,6 +132,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `library/hash_map_set.kov` | HashMap and HashSet (std::unordered_map/set): insert, find, operator[], erase, iteration, custom key hash | pass | 47 unordered_map, 19 unordered_set (and 827 std::map, 641 std::set) |  |
 | `library/initializer_list.kov` | InitializerList parameters and brace lists as arguments | pass | 53 std::initializer_list uses in 33 files |  |
 | `library/initializer_list_constructor.kov` | a constructor taking InitializerList, called with a brace list | pass |  |  |
+| `library/less_comparator.kov` | Less<T> and the transparent Less<> (std::less<>) as comparator objects; `Name<>` written with empty brackets takes every default | pass |  |  |
 | `library/limits_math.kov` | Limits (numeric_limits) and math functions (abs, sqrt, floor, ceil, round, pow, isnan) | pass | 631 numeric_limits uses in 279 files |  |
 | `library/memory_c.kov` | memcpy, memset, memcmp, strlen, malloc/free through the library's C declarations | pass | 164 mem* calls in 84 files, 48 str* calls |  |
 | `library/optional.kov` | Optional (std::optional): value, hasValue, nullopt, assignment, comparison, valueOr | pass | 1587 uses in 658 files |  |
