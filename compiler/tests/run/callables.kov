@@ -1,0 +1,51 @@
+// Function parameters chosen by what the lambda can be called with, default arguments of class type on virtual methods, Function<void(double)> next to Function<void()>.
+extern "C" int printf(const char* format, ...);
+template<typename Tag>
+struct NamedBool
+{
+  enum class Enum : uint8_t { False, True };
+  static constexpr Enum True = Enum::True;
+  static constexpr Enum False = Enum::False;
+  bool value = false;
+  NamedBool() {}
+  implicit NamedBool(Enum e) : value(e == Enum::True) {}
+};
+struct InvertTag {};
+using InvertColors = NamedBool<InvertTag>;
+struct Point { int x; int y; Point(int x, int y) : x(x), y(y) {} };
+struct Dimension { int w; int h; Dimension(int w, int h) : w(w), h(h) {} };
+struct Graphics
+{
+  virtual void drawScaledImage(const int* bmp, const Point& position, const Dimension& scale, const float& opacity = 1.0f, InvertColors invertColors = InvertColors::False) = 0;
+};
+struct Impl : Graphics
+{
+  int calls = 0;
+  void drawScaledImage(const int* bmp, const Point& position, const Dimension& scale, const float& opacity, InvertColors invertColors) override
+  {
+    this->calls += position.x + scale.w + int(opacity) + (invertColors.value ? 100 : 0);
+  }
+};
+struct Slider
+{
+  Vector<Function<void(double)>> moves;
+  void onMove(Function<void(double)> callback) { this->moves.push_back(move(callback)); }
+  void onMove(Function<void()> callback) { this->onMove([callback = move(callback)](double) { callback(); }); }
+};
+int main()
+{
+  Impl impl;
+  Graphics* g = &impl;
+  int image = 0;
+  int y = 2;
+  g->drawScaledImage(&image, Point(1, y), Dimension(3, 4));
+  g->drawScaledImage(&image, Point(10, y), Dimension(30, 4), 2.0f, InvertColors::True);
+  Slider s;
+  int n = 0;
+  s.onMove([&n]() { n += 1; });
+  s.onMove([&n](double v) { n += int(v); });
+  for (Function<void(double)>& f : s.moves)
+    f(10.0);
+  printf("%d %d %d\n", impl.calls, n, s.moves.size());
+  return 0;
+}

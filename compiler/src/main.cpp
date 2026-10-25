@@ -234,7 +234,10 @@ namespace
                                                     "sizeof", "size_t", "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t", "uint16_t",
                                                     "uint32_t", "uint64_t", "intptr_t", "uintptr_t", "wchar_t", "bool", "true", "false",
                                                     "DWORD", "WORD", "BYTE", "HANDLE", "LONG", "ULONG", "UINT", "INT", "LONG_PTR", "ULONG_PTR",
-                                                    "LPVOID", "SIZE_T", "DWORD_PTR", "HRESULT", "BOOL", "LONGLONG", "ULONGLONG", "UINT_PTR", "INT_PTR"};
+                                                    "LPVOID", "SIZE_T", "DWORD_PTR", "HRESULT", "BOOL", "LONGLONG", "ULONGLONG", "UINT_PTR", "INT_PTR",
+                                                    "clock_t", "time_t", "ptrdiff_t", "errno_t", "wint_t", "intmax_t", "uintmax_t", "UINT8", "UINT16",
+                                                    "UINT32", "UINT64", "INT8", "INT16", "INT32", "INT64", "ULONG64", "LONG64", "DWORD64", "USHORT",
+                                                    "SHORT", "UCHAR", "CHAR", "WCHAR"};
     std::map<std::string, std::string> integerTypes; // constants with a plain integer body, by name
     for (size_t p = 0; p < defines.size();)
     {

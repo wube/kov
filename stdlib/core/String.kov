@@ -15,6 +15,7 @@ struct String
   implicit String(const char* text) { this->append(text); }
   implicit String(StringView text) { this->append(text.chars, text.length); }
   String(const char* text, int count) { this->append(text, count); }
+  String(const char* first, const char* last) { this->append(first, int(last - first)); }
   String(const String& other) { this->append(other.chars, other.length); }
   String(String&& other) : chars(other.chars), length(other.length), capacity(other.capacity)
   {

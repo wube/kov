@@ -1,0 +1,58 @@
+// Kov standard library: UniqueArray<T>, sole ownership of a heap array of count elements (what
+// std::unique_ptr<T[]> converts to): indexed, destroyed and freed when the owner goes away or is
+// reset, moved but never copied. The count is kept so that the elements' destructors run.
+template<typename T>
+struct UniqueArray
+{
+  T* pointer = nullptr;
+  int length = 0;
+
+  UniqueArray() {}
+  // count default-constructed elements.
+  explicit UniqueArray(int count) : pointer(count > 0 ? (T*)malloc(count * sizeof(T)) : nullptr), length(count)
+  {
+    for (int i = 0; i < count; ++i)
+      new (this->pointer + i) T();
+  }
+  UniqueArray(const UniqueArray<T>& other) = delete;
+  UniqueArray(UniqueArray<T>&& other) : pointer(other.pointer), length(other.length)
+  {
+    other.pointer = nullptr;
+    other.length = 0;
+  }
+  ~UniqueArray() { this->reset(); }
+
+  UniqueArray<T>& operator=(const UniqueArray<T>& other) = delete;
+  UniqueArray<T>& operator=(UniqueArray<T>&& other)
+  {
+    if (this != &other)
+    {
+      this->reset();
+      this->pointer = other.pointer;
+      this->length = other.length;
+      other.pointer = nullptr;
+      other.length = 0;
+    }
+    return *this;
+  }
+
+  T* get() const { return this->pointer; }
+  int size() const { return this->length; }
+  T& operator[](int index) const { return this->pointer[index]; }
+  explicit operator bool() const { return this->pointer != nullptr; }
+  bool operator!() const { return this->pointer == nullptr; }
+
+  // Destroys the elements and frees the array.
+  void reset()
+  {
+    for (int i = 0; i < this->length; ++i)
+      this->pointer[i].~T();
+    if (this->pointer)
+      free(this->pointer);
+    this->pointer = nullptr;
+    this->length = 0;
+  }
+};
+
+template<typename T>
+UniqueArray<T> makeUniqueArray(int count) { return UniqueArray<T>(count); }

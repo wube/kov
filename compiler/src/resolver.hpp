@@ -73,6 +73,21 @@ inline const Ty* argumentType(const Expr* e, const Ty* t, TypeTable& types)
   return t->isReference() ? t : types.lref(t);
 }
 
+// The type a brace list `{a, b, c}` presents to overload resolution: InitializerList<E> of the
+// first element's type (null when the elements are untyped or there is no such class). Only for
+// ranking and deduction: the expression itself stays untyped, since a brace list also initialises
+// aggregates and calls constructors.
+inline const Ty* braceListType(const Expr* e, Decl* initializerList, TypeTable& types)
+{
+  if (!e || e->kind != NodeKind::BraceInitExpr || !initializerList)
+    return nullptr;
+  auto* b = static_cast<const BraceInitExpr*>(e);
+  if (b->args.empty() || !b->args[0] || !b->args[0]->ty || !b->args[0]->ty->isKnown())
+    return nullptr;
+  const Ty* element = types.decay(b->args[0]->ty);
+  return types.classType(initializerList, Span<const Ty*>{&element, 1});
+}
+
 struct ResolveStats
 {
   // Type names (in declarations, casts, template arguments...).
@@ -132,6 +147,7 @@ public:
   const Ty* typeOfDecl(Decl* d);                 // Declared (or deduced) canonical type.
   const Ty* typeOfAst(Type* t, Decl* context);   // A written type, resolved in the context of a declaration.
   Decl* definitionOf(Decl* d);                   // Class/enum definition, or the out-of-line definition of a member function.
+  Decl* initializerListDecl();                   // The library's InitializerList class, or null.
   Decl* owningClass(Decl* d);                    // The class a member (possibly defined out of line) belongs to.
   std::string qualifiedName(Decl* d);            // `ns::Class::name`
   bool isExternC(FunctionDecl* f);

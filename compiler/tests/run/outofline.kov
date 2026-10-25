@@ -1,0 +1,31 @@
+// An out-of-line constructor of a class template (its template parameters stand for the class's), and a nested enum of a base class named through a derived class inside it.
+extern "C" int printf(const char* format, ...);
+struct Clickable
+{
+  enum class ClickState { DEFAULT, HOVERED, CLICKED };
+  int state = 0;
+  void setMouseLeaveState(ClickState s) { this->state = s == ClickState::CLICKED ? 2 : 1; }
+};
+struct Button : Clickable {};
+struct TextButton : Button {};
+struct Style { int pad = 1; };
+template<typename Policy>
+struct ScrollBar
+{
+  Button thumb;
+  Style style;
+  ScrollBar(const Style* parentStyle);
+};
+template<typename Policy>
+ScrollBar<Policy>::ScrollBar(const Style* parentStyle) : style(*parentStyle)
+{
+  this->thumb.setMouseLeaveState(TextButton::ClickState::CLICKED);
+}
+struct VerticalPolicy {};
+int main()
+{
+  Style s;
+  ScrollBar<VerticalPolicy> bar(&s);
+  printf("%d\n", bar.thumb.state);
+  return 0;
+}

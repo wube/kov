@@ -71,10 +71,14 @@ struct Vector
   T* end() { return this->items + this->length; }
   const T* begin() const { return this->items; }
   const T* end() const { return this->items + this->length; }
+  const T* cbegin() const { return this->items; }
+  const T* cend() const { return this->items + this->length; }
   ReverseIterator<T> rbegin() { return ReverseIterator<T>(this->items + this->length); }
   ReverseIterator<T> rend() { return ReverseIterator<T>(this->items); }
   ReverseIterator<const T> rbegin() const { return ReverseIterator<const T>(this->items + this->length); }
   ReverseIterator<const T> rend() const { return ReverseIterator<const T>(this->items); }
+  ReverseIterator<const T> crbegin() const { return ReverseIterator<const T>(this->items + this->length); }
+  ReverseIterator<const T> crend() const { return ReverseIterator<const T>(this->items); }
 
   void reserve(int needed)
   {
@@ -132,6 +136,12 @@ struct Vector
     this->insert(index, value);
     return this->items + index;
   }
+  T* insert(T* position, T&& value)
+  {
+    int index = int(position - this->items);
+    this->insert(index, move(value));
+    return this->items + index;
+  }
   T* insert(T* position, const T* first, const T* last)
   {
     int index = int(position - this->items);
@@ -141,10 +151,21 @@ struct Vector
   }
   void insert(int index, const T& value)
   {
-    this->push_back(value);
-    for (int k = this->length - 1; k > index; --k)
-      this->items[k] = this->items[k - 1];
-    this->items[index] = value;
+    this->openSlot(index);
+    new (this->items + index) T(value);
+  }
+  void insert(int index, T&& value)
+  {
+    this->openSlot(index);
+    new (this->items + index) T(move(value));
+  }
+  // Makes room for one element at index: the elements from there on move up one place (bitwise,
+  // as the buffer growth does).
+  void openSlot(int index)
+  {
+    this->reserve(this->length + 1);
+    memmove(this->items + index + 1, this->items + index, (this->length - index) * sizeof(T));
+    ++this->length;
   }
   bool contains(const T& value) const
   {
@@ -170,14 +191,16 @@ struct Vector
     memmove(this->items + index, this->items + index + 1, (this->length - index - 1) * sizeof(T));
     --this->length;
   }
-  // Removes [first, last), given as pointers into the vector (begin()/end() and what find functions return).
-  void erase(T* first, T* last)
+  // Removes [first, last), given as pointers into the vector (begin()/end() and what find functions
+  // return); returns the position of the element after the removed ones.
+  T* erase(T* first, T* last)
   {
     int index = int(first - this->items), count = int(last - first);
     for (int i = 0; i < count; ++i)
       this->items[index + i].~T();
     memmove(this->items + index, this->items + index + count, (this->length - index - count) * sizeof(T));
     this->length -= count;
+    return this->items + index;
   }
-  void erase(T* at) { this->erase(at, at + 1); }
+  T* erase(T* at) { return this->erase(at, at + 1); }
 };

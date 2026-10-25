@@ -16,3 +16,7 @@ size_t hashOf(const String& text)
   }
   return hash;
 }
+
+// Pointers hash by address.
+template<typename T>
+size_t hashOf(T* pointer) { return (size_t)pointer * 11400714819323198485ull; }

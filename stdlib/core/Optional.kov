@@ -25,6 +25,10 @@ struct Optional
     return *this;
   }
 
+  // Comparisons with a value: an absent optional equals nothing.
+  bool operator==(const T& v) const { return this->present && this->stored == v; }
+  bool operator!=(const T& v) const { return !this->present || !(this->stored == v); }
+
   bool hasValue() const { return this->present; }
   bool has_value() const { return this->present; }
   explicit operator bool() const { return this->present; }

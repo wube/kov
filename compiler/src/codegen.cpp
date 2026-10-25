@@ -115,6 +115,7 @@ namespace
       const Ty* classTy;
       unsigned module;         // the module of the function that asked for it
       std::string requestedBy; // the name of that function, for diagnostics
+      std::string name;        // the LLVM name to define it under (the declaration's), or empty
     };
     std::string currentFunctionName; // LLVM name of the function being emitted
     std::string currentRequestedBy;  // for an instantiation: the function that first used it
@@ -607,9 +608,63 @@ namespace
             continue;
           }
         }
+        if (a && a->kind == NodeKind::BraceInitExpr)
+        {
+          out.push_back(braceListType(a, global.initializerListDecl(), types));
+          continue;
+        }
         out.push_back(a ? argumentType(a, a->ty, types) : nullptr);
       }
       return out;
+    }
+
+    bool isInitializerListType(const Ty* t)
+    {
+      Decl* d = global.initializerListDecl();
+      return d && t && t->kind == TyKind::Class && t->decl == d;
+    }
+
+    // `{a, b, c}` for an InitializerList<E> parameter: the elements in a temporary array, the list
+    // object (a pointer and a count) pointing at them; both live to the end of the statement.
+    std::string initializerListTemporary(const Ty* listTy, BraceInitExpr* b, Node* at)
+    {
+      if (listTy->args.empty())
+        unsupported(at, "an InitializerList without its element type");
+      const Ty* element = listTy->args[0];
+      uint32_t n = uint32_t(b->args.size());
+      const Ty* arrayTy = types.array(element, n);
+      std::string array = newObjectSlot(arrayTy, at);
+      for (uint32_t i = 0; i < n; ++i)
+      {
+        std::string slot = newTemp();
+        fn += "  " + slot + " = getelementptr inbounds " + llType(arrayTy, at) + ", ptr " + array + ", i64 0, i64 " + std::to_string(i) + "\n";
+        initializeFrom(slot, element, b->args[i], at);
+      }
+      if (needsDestruction(arrayTy, at))
+        statementTemps.push_back({array, arrayTy});
+      std::string list = newObjectSlot(listTy, at);
+      StructInfo info = structFor(listTy, at);
+      if (info.fieldDecls.size() < 2)
+        unsupported(at, "an InitializerList class without its two fields");
+      fn += "  store ptr " + array + ", ptr " + gep(info.name, list, info.fieldIndex[info.fieldDecls[0]]) + "\n";
+      fn += "  store i32 " + std::to_string(n) + ", ptr " + gep(info.name, list, info.fieldIndex[info.fieldDecls[1]]) + "\n";
+      return list;
+    }
+
+    // Default-constructs every element of an array of objects at addr.
+    void constructArray(const std::string& addr, const Ty* t, Node* at)
+    {
+      for (uint32_t i = 0; i < t->count; ++i)
+      {
+        std::string element = newTemp();
+        fn += "  " + element + " = getelementptr inbounds " + llType(t, at) + ", ptr " + addr + ", i64 0, i64 " + std::to_string(i) + "\n";
+        if (isClass(t->inner))
+          defaultConstruct(element, t->inner, at);
+        else if (t->inner->kind == TyKind::Array)
+          constructArray(element, t->inner, at);
+        else
+          fn += "  store " + llType(t->inner, at) + " zeroinitializer, ptr " + element + "\n";
+      }
     }
 
     FunctionDecl* findDestructor(ClassDecl* c)
@@ -783,8 +838,11 @@ namespace
           Expr* source = init && init->args.size() == 1 ? init->args[0] : init ? nullptr : v->init;
           if (!source)
             unsupported(at, "a reference member without an initializer");
-          std::string target = isClass(types.stripRef(source->ty)) ? rvalue(source).text : lvalue(source);
-          fn += "  store ptr " + target + ", ptr " + fieldAddr + "\n";
+          withSingleElement(source, at, [&](Expr* one)
+          {
+            std::string target = isClass(types.stripRef(one->ty)) ? rvalue(one).text : lvalue(one);
+            fn += "  store ptr " + target + ", ptr " + fieldAddr + "\n";
+          });
           continue;
         }
         if (init)
@@ -792,7 +850,7 @@ namespace
           if (isClass(ft))
             constructInto(fieldAddr, ft, init->args, at);
           else if (init->args.size() == 1)
-            store(rvalue(init->args[0]), fieldAddr, ft, at);
+            withSingleElement(init->args[0], at, [&](Expr* one) { store(rvalue(one), fieldAddr, ft, at); });
           else if (init->args.empty())
             fn += "  store " + llType(ft, at) + " zeroinitializer, ptr " + fieldAddr + "\n";
           else
@@ -810,7 +868,7 @@ namespace
         else if (isClass(ft))
           initializeMembers(fieldAddr, ft, {}, at);
         else if (ft->kind == TyKind::Array && needsDestruction(ft, at))
-          unsupported(at, "arrays of objects with constructors");
+          constructArray(fieldAddr, ft, at);
         else
           fn += "  store " + llType(ft, at) + " zeroinitializer, ptr " + fieldAddr + "\n";
       }
@@ -1272,6 +1330,22 @@ namespace
 
     // Runs body(i) for each element of the pack that `pattern` expands over, with the pack
     // parameter bound to that element and the function body re-typed for it.
+    // Runs body on an expression, or, for a pack expansion `args...` of exactly one element, on its
+    // pattern with that element bound (a scalar member initialised with `forward<Args>(args)...`).
+    template<typename F>
+    void withSingleElement(Expr* e, Node* at, F&& body)
+    {
+      if (!isPackExpansion(e))
+      {
+        body(e);
+        return;
+      }
+      Expr* pattern = static_cast<UnaryExpr*>(e)->operand;
+      if (packElementCount(pattern, at) != 1)
+        unsupported(at, "a pack of " + std::to_string(packElementCount(pattern, at)) + " elements where one value is expected");
+      forEachPackElement(pattern, at, [&](size_t) { body(pattern); });
+    }
+
     size_t packElementCount(Expr* pattern, Node* at)
     {
       Decl* param = packIn(pattern);
@@ -1909,10 +1983,15 @@ namespace
         s.paramTypes.push_back("ptr");
         s.paramTys.push_back(nullptr);
       }
-      for (const Ty* pt : ft->args)
+      for (size_t i = 0; i < ft->args.size(); ++i)
       {
+        const Ty* pt = ft->args[i];
         if (!pt->isKnown() || types.isDependent(pt))
-          unsupported(f, "a parameter of unknown type");
+        {
+          std::string name = i < f->params.size() && static_cast<ParamDecl*>(f->params[i])->name != UINT32_MAX
+                               ? sym(static_cast<ParamDecl*>(f->params[i])->name) : std::to_string(i + 1);
+          unsupported(f, "a parameter of unknown type (" + name + ": " + types.toString(pt, &symbols) + ")");
+        }
         s.paramTypes.push_back(isAggregate(pt) || pt->isReference() ? "ptr" : llType(pt, f));
         s.paramTys.push_back(pt);
       }
@@ -1946,14 +2025,32 @@ namespace
         if (!requested[name])
         {
           requested[name] = true;
-          // A definition separate from the declaration has its own parameter declarations.
+          // A definition separate from the declaration has its own parameter declarations:
+          // `template<typename Policy> ScrollBar<Policy>::ScrollBar(...)` names the class's
+          // parameters first, then the member's own.
           TemplateArgs defArgs = args;
-          if (def != f && def->templateParams.size() == f->templateParams.size())
-            for (auto& [d, t] : defArgs.pairs)
-              for (size_t i = 0; i < f->templateParams.size(); ++i)
-                if (d == f->templateParams[i])
-                  d = def->templateParams[i];
-          worklist.push_back({def, defArgs, classTy, currentModule, currentFunctionName});
+          if (def != f)
+          {
+            Decl* owner = global.owningClass(f);
+            Span<Decl*> classParams = owner ? owner->templateParams : Span<Decl*>{};
+            size_t classCount = def->templateParams.size() > f->templateParams.size() ? def->templateParams.size() - f->templateParams.size() : 0;
+            if (classCount == classParams.size())
+            {
+              std::vector<std::pair<Decl*, const Ty*>> added;
+              for (auto& [d, t] : defArgs.pairs)
+              {
+                for (size_t i = 0; i < classCount; ++i)
+                  if (d == classParams[i])
+                    added.push_back({def->templateParams[i], t});
+                for (size_t i = 0; i < f->templateParams.size(); ++i)
+                  if (d == f->templateParams[i])
+                    d = def->templateParams[classCount + i];
+              }
+              for (auto& p : added)
+                defArgs.pairs.push_back(p);
+            }
+          }
+          worklist.push_back({def, defArgs, classTy, currentModule, currentFunctionName, name});
         }
         return name;
       }
@@ -2126,6 +2223,10 @@ namespace
         if (isAggregate(types.stripRef(pt)))
         {
           const Ty* cls = types.stripRef(pt);
+          if (arg->kind == NodeKind::BraceInitExpr && isInitializerListType(cls))
+            return "ptr " + initializerListTemporary(cls, static_cast<BraceInitExpr*>(arg), at); // `max({a, b, c})`
+          if (arg->kind == NodeKind::BraceInitExpr && isClass(cls))
+            return "ptr " + convertedTemporary(cls, arg, at); // `f({a, b, c})` with `f(const Rect&)`
           const Ty* argTy = arg->ty && arg->ty->isKnown() && !types.isDependent(arg->ty) ? types.stripRef(arg->ty) : nullptr;
           if (argTy && isClass(cls) && !isClass(argTy))
             return "ptr " + convertedTemporary(cls, arg, at); // `f("text")` with `f(const String&)`, a lambda with `f(const Function<void()>&)`
@@ -2149,6 +2250,14 @@ namespace
       }
       if (pt && isAggregate(pt))
       {
+        if (arg->kind == NodeKind::BraceInitExpr && isInitializerListType(pt))
+          return "ptr " + initializerListTemporary(pt, static_cast<BraceInitExpr*>(arg), at); // `max({a, b, c})`
+        if (arg->kind == NodeKind::BraceInitExpr && isClass(pt))
+        {
+          std::string copy = newObjectSlot(pt, at);
+          constructInto(copy, pt, static_cast<BraceInitExpr*>(arg)->args, at); // `f({a, b, c})`; the callee destroys it
+          return "ptr " + copy;
+        }
         const Ty* argTy = arg->ty && arg->ty->isKnown() && !types.isDependent(arg->ty) ? types.stripRef(arg->ty) : nullptr;
         if (argTy && isClass(pt) && (!isClass(argTy) || (classKey(argTy) != classKey(pt) &&
                                                          !baseInstantiation(argTy, classDef(pt->decl, at), at) &&
@@ -2181,8 +2290,10 @@ namespace
         return "ptr " + copy;
       }
       Value a = rvalue(arg);
+      if (isClass(a.ty) && pt && !isAggregate(pt) && conversionOperator(a.ty, types.unqualified(pt), at))
+        a = convert(a, types.unqualified(pt), at); // `draw(image)` with `operator const Image*()`
       if (isAggregate(a.ty))
-        unsupported(at, "passing a class where a scalar is expected");
+        unsupported(at, "passing a class (" + types.toString(a.ty, &symbols) + ") where a scalar is expected");
       if (pt && a.ty->kind == TyKind::Pointer && (pt->kind == TyKind::Int || pt->kind == TyKind::Char || pt->kind == TyKind::Enum))
         unsupported(at, "passing a pointer (" + types.toString(a.ty, &symbols) + ") where " + types.toString(pt, &symbols) + " is expected");
       if (pt && pt->kind == TyKind::Pointer && (a.ty->kind == TyKind::Int || a.ty->kind == TyKind::Char || a.ty->kind == TyKind::Enum))
@@ -2202,8 +2313,11 @@ namespace
     // constructor, alive until the end of the full expression: what a reference parameter binds to.
     std::string convertedTemporary(const Ty* cls, Expr* arg, Node* at)
     {
-      std::string tmp = newObjectSlot(cls, at);
       Expr* one = arg;
+      if (arg->kind != NodeKind::BraceInitExpr)
+        if (FunctionDecl* ctor = findConstructor(cls, argTypesOf(Span<Expr*>{&one, 1}), at); ctor && (ctor->flags & DF_Explicit))
+          unsupported(at, "converting to " + global.qualifiedName(cls->decl) + " through its explicit constructor (" + global.qualifiedName(ctor) + ")");
+      std::string tmp = newObjectSlot(cls, at);
       constructInto(tmp, cls, Span<Expr*>{&one, 1}, at);
       if (needsDestruction(cls, at))
         statementTemps.push_back({tmp, cls});
@@ -2346,7 +2460,7 @@ namespace
             if (v->builtin == BUILTIN_EnumCount && v->parent)
               return int64_t(enumeratorCount(v->parent));
             const Ty* t = declType(v);
-            if (t && t->isConst && v->init && !locals.count(d))
+            if (t && (t->isConst || (v->flags & DF_Constexpr)) && v->init && !locals.count(d))
             {
               ParsedFile* saved = currentFile;
               currentFile = v->file;
@@ -2941,6 +3055,8 @@ namespace
             }
             return globalFor(static_cast<VariableDecl*>(d), e);
           }
+          if (d->kind == NodeKind::EnumeratorDecl)
+            break; // an enumerator bound to a reference: its value goes to a temporary (below)
           unsupported(e, "taking the address of " + sym(n->name.last().symbol));
         }
         case NodeKind::MemberExpr:
@@ -3025,6 +3141,22 @@ namespace
           return r;
         }
         case NodeKind::ParenExpr: return lvalue(static_cast<ParenExpr*>(e)->inner);
+        case NodeKind::CastExpr:
+        {
+          // `(T&&)value` in forward, `(Base&)derived`: a cast to a reference names the operand
+          // itself; a copy in a temporary would be a dangling reference once returned.
+          auto* c = static_cast<CastExpr*>(e);
+          if (e->ty && e->ty->isReference())
+            return lvalue(c->operand);
+          break;
+        }
+        case NodeKind::NamedCastExpr:
+        {
+          auto* c = static_cast<NamedCastExpr*>(e);
+          if (e->ty && e->ty->isReference() && c->castKind != Kw::dynamic_cast_)
+            return lvalue(c->operand);
+          break;
+        }
         case NodeKind::BinaryExpr:
         {
           auto* b = static_cast<BinaryExpr*>(e);
@@ -3224,7 +3356,7 @@ namespace
     // Finds the best member with the given name (searching bases, nearest class wins) for the
     // argument types and the object's constness. Returns the class type it was found in.
     FunctionDecl* findMemberFunction(const Ty* classTy, const std::string& name, const std::vector<const Ty*>& argTypes,
-                                     const Ty* objectTy, Node* at, const Ty** foundIn)
+                                     const Ty* objectTy, Node* at, const Ty** foundIn, bool templates = false)
     {
       FunctionDecl* found = nullptr;
       std::function<void(const Ty*)> search = [&](const Ty* cls)
@@ -3233,7 +3365,7 @@ namespace
         std::vector<FunctionDecl*> candidates;
         for (Decl* m : c->members)
         {
-          if (m->kind != NodeKind::FunctionDecl || !m->templateParams.empty())
+          if (m->kind != NodeKind::FunctionDecl || (!templates && !m->templateParams.empty()))
             continue;
           auto* f = static_cast<FunctionDecl*>(m);
           if (global.qualifiedName(f).ends_with("::" + name))
@@ -3273,7 +3405,7 @@ namespace
     Value operatorCall(Value object, const std::string& name, Span<Expr*> args, Node* at, bool required)
     {
       const Ty* foundIn = nullptr;
-      FunctionDecl* f = findMemberFunction(object.ty, name, argTypesOf(args), object.ty, at, &foundIn);
+      FunctionDecl* f = findMemberFunction(object.ty, name, argTypesOf(args), object.ty, at, &foundIn, true);
       if (!f)
       {
         if (required)
@@ -3287,7 +3419,10 @@ namespace
         if (baseAddress(object.ty, foundIn, object.text, addr, at))
           thisArg = addr;
       }
-      return callFunction(f, global.classArgsOf(foundIn), foundIn, thisArg, "", args, at);
+      TemplateArgs fnArgs = global.classArgsOf(foundIn);
+      if (!f->templateParams.empty())
+        global.deduceArgs(f, argTypesOf(args), fnArgs); // `template<typename U> bool operator==(const U*) const`
+      return callFunction(f, fnArgs, foundIn, thisArg, "", args, at);
     }
 
     Value arithmetic(P op, Value l, Value r, Node* at)
@@ -3568,14 +3703,30 @@ namespace
       const Ty* ft = fnValue.ty->kind == TyKind::Pointer ? fnValue.ty->inner : fnValue.ty;
       if (!ft || ft->kind != TyKind::Function)
         unsupported(c, "a call that did not resolve to a function (the callee has type " + types.toString(fnValue.ty, &symbols) + ")");
-      std::string args;
+      // The same calling convention as a declared Kov function: classes by pointer (a copy the
+      // callee owns, or the caller's result slot), references as addresses.
+      Signature s;
+      const Ty* ret = ft->inner;
+      if (isClass(ret))
+      {
+        s.hasSret = true;
+        s.returnType = "void";
+      }
+      else
+        s.returnType = ret->isReference() ? "ptr" : llType(ret, c);
+      std::string args, resultAddr;
+      if (s.hasSret)
+      {
+        resultAddr = sret.empty() ? newObjectSlot(ret, c) : sret;
+        args = "ptr " + resultAddr;
+        s.paramTypes.push_back("ptr");
+      }
       size_t position = 0;
       auto addArgument = [&](Expr* arg)
       {
-        Value a = rvalue(arg);
-        if (position < ft->args.size())
-          a = convert(a, ft->args[position], c);
-        args += (position ? ", " : "") + llType(a.ty, c) + " " + a.text;
+        const Ty* pt = position < ft->args.size() ? ft->args[position] : nullptr;
+        std::string text = argumentText(pt, arg, c);
+        args += (args.empty() ? "" : ", ") + text;
         ++position;
       };
       for (Expr* arg : c->args)
@@ -3588,18 +3739,20 @@ namespace
         else
           addArgument(arg);
       }
-      std::string sig = llType(ft->inner, c) + " (";
-      for (size_t i = 0; i < ft->args.size(); ++i)
-        sig += (i ? ", " : "") + llType(ft->args[i], c);
-      sig += std::string(ft->variadic ? (ft->args.empty() ? "..." : ", ...") : "") + ")";
-      if (ft->inner->kind == TyKind::Void)
+      for (const Ty* pt : ft->args)
+        s.paramTypes.push_back(isAggregate(pt) || pt->isReference() ? "ptr" : llType(pt, c));
+      s.variadic = ft->variadic;
+      std::string sig = signatureText(s);
+      if (s.returnType == "void")
       {
         emitCall("", sig + " " + fnValue.text + "(" + args + ")");
+        if (s.hasSret)
+          return {resultAddr, ret, sret.empty()};
         return {"", types.voidType()};
       }
       std::string r = newTemp();
       emitCall(r + " = ", sig + " " + fnValue.text + "(" + args + ")");
-      return {r, types.stripRef(ft->inner)};
+      return {r, ret, false};
     }
 
     // va_start, va_end and va_copy on a C va_list (a char* on x64 Windows): the LLVM intrinsics.
@@ -3920,6 +4073,24 @@ namespace
           Value cond = convert(rvalue(c->cond), types.boolType(), e);
           std::string tL = newLabel("cond.then"), eL = newLabel("cond.else"), jL = newLabel("cond.end");
           fn += "  br i1 " + cond.text + ", label %" + tL + ", label %" + eL + "\n";
+          auto namesObject = [&](Expr* x) { return x && (isLvalueExpression(x) || (x->ty && x->ty->isReference())); };
+          if (isClass(t) && namesObject(c->then) && namesObject(c->else_))
+          {
+            // Both branches name objects (`cond ? a : b` with lvalues or references): the result
+            // is one of them, not a copy.
+            startBlock(tL);
+            std::string a = lvalue(c->then);
+            std::string aEnd = currentBlock;
+            emitBranch(jL);
+            startBlock(eL);
+            std::string b = lvalue(c->else_);
+            std::string bEnd = currentBlock;
+            emitBranch(jL);
+            startBlock(jL);
+            std::string r = newTemp();
+            fn += "  " + r + " = phi ptr [ " + a + ", %" + aEnd + " ], [ " + b + ", %" + bEnd + " ]\n";
+            return {r, t, false};
+          }
           if (isClass(t))
           {
             // Both branches build the one temporary (a copy of an lvalue, or the value itself).
@@ -4152,7 +4323,7 @@ namespace
         Expr* rhsExpr = b->rhs;
         Span<Expr*> one{&rhsExpr, 1};
         const Ty* foundIn = nullptr;
-        if (isClass(lt) && findMemberFunction(types.unqualified(lt), name, argTypesOf(one), types.unqualified(lt), b, &foundIn))
+        if (isClass(lt) && findMemberFunction(types.unqualified(lt), name, argTypesOf(one), types.unqualified(lt), b, &foundIn, true))
           return callRvalue(operatorCall(rvalue(b->lhs), name, one, b, true), b);
         // A free `operator+(const char*, const String&)` and the like.
         if (b->lhs->ty && b->rhs && b->rhs->ty && b->lhs->ty->isKnown() && b->rhs->ty->isKnown())
@@ -4166,6 +4337,23 @@ namespace
         Value l = rvalue(b->lhs);
         if (op == P::Assign)
         {
+          const Ty* lt0 = types.unqualified(types.stripRef(l.ty));
+          const Ty* rt0 = b->rhs->ty && b->rhs->ty->isKnown() ? types.stripRef(b->rhs->ty) : nullptr;
+          if (rt0 && !isClass(rt0) && findConstructor(lt0, {argumentType(b->rhs, b->rhs->ty, types)}, b))
+          {
+            // `flag = InvertColors::True`: the converting constructor makes a temporary to assign from.
+            std::string tmp = convertedTemporary(lt0, b->rhs, b);
+            assignObject(l.text, tmp, l.ty, b, true);
+            return l;
+          }
+          if (rt0 && isClass(rt0) && classKey(rt0) != classKey(lt0) && !baseInstantiation(rt0, classDef(lt0->decl, b), b) &&
+              (conversionOperator(rt0, lt0, b) || findConstructor(lt0, {argumentType(b->rhs, b->rhs->ty, types)}, b)))
+          {
+            // `view = string`: StringView's converting constructor makes the temporary to assign from.
+            std::string tmp = convertedTemporary(lt0, b->rhs, b);
+            assignObject(l.text, tmp, l.ty, b, true);
+            return l;
+          }
           Value r = rvalue(b->rhs);
           if (!isClass(r.ty))
             unsupported(b, "assigning a non-class to a class");
@@ -4782,7 +4970,7 @@ namespace
       else if (isClass(t))
         defaultConstruct(slot, t, v);
       else if (t->kind == TyKind::Array && isClass(t->inner) && hasUserConstructors(classDef(t->inner->decl, v)))
-        unsupported(v, "arrays of objects with constructors");
+        constructArray(slot, t, v); // `StringView text[2];`
       else
         fn += "  store " + llType(t, v) + " zeroinitializer, ptr " + slot + "\n";
       if (needsDestruction(t, v))
@@ -5139,7 +5327,21 @@ namespace
       const Ty* elementTy;
       if (rt->kind == TyKind::Array)
       {
-        std::string base = lvalue(f->range);
+        std::string base;
+        if (f->range->kind == NodeKind::BraceInitExpr)
+        {
+          // `for (X* kids : {&a, &b})`: the elements in a temporary array.
+          auto* b = static_cast<BraceInitExpr*>(f->range);
+          base = newObjectSlot(rt, f);
+          for (size_t i = 0; i < b->args.size(); ++i)
+          {
+            std::string slot = newTemp();
+            fn += "  " + slot + " = getelementptr inbounds " + llType(rt, f) + ", ptr " + base + ", i64 0, i64 " + std::to_string(i) + "\n";
+            initializeFrom(slot, rt->inner, b->args[i], f);
+          }
+        }
+        else
+          base = lvalue(f->range);
         beginV = newTemp();
         fn += "  " + beginV + " = getelementptr inbounds " + llType(rt, f) + ", ptr " + base + ", i64 0, i64 0\n";
         endV = newTemp();
@@ -5349,7 +5551,7 @@ namespace
 
     // --- function definitions ---
 
-    void emitFunction(FunctionDecl* f, const TemplateArgs& args, const Ty* classTy)
+    void emitFunction(FunctionDecl* f, const TemplateArgs& args, const Ty* classTy, const std::string& nameOverride = "")
     {
       if (!conditionHolds(f))
         return; // conditional(false): the function does not exist in this build
@@ -5372,7 +5574,7 @@ namespace
       currentFunction = f;
       currentReturn = ft->inner;
       sretAddr.clear();
-      currentFunctionName = functionName(f, args, classTy);
+      currentFunctionName = nameOverride.empty() ? functionName(f, args, classTy) : nameOverride;
       try
       {
         Signature s = signatureOf(f);
@@ -5386,7 +5588,7 @@ namespace
         }
         if (s.variadic)
           params += params.empty() ? "..." : ", ...";
-        std::string name = functionName(f, args, classTy);
+        std::string name = currentFunctionName;
         declaredNames[name] = true;
         std::string header = "define " + s.returnType + " " + name + "(" + params + ") " + attributeText(f) + "{\nentry:\n";
         pushScope();
@@ -5527,7 +5729,7 @@ CodegenResult generateLLVM(std::vector<std::unique_ptr<ParsedFile>>& files, Glob
     e.worklist.pop_front();
     e.currentModule = inst.module;
     e.currentRequestedBy = inst.requestedBy;
-    e.emitFunction(inst.f, inst.args, inst.classTy);
+    e.emitFunction(inst.f, inst.args, inst.classTy, inst.name);
     e.currentRequestedBy.clear();
   }
   e.finishAssertRuntime();

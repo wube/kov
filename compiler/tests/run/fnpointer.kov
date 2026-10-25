@@ -1,0 +1,29 @@
+// Calls through a function pointer with a pack of parameters: classes by value and by reference; a nested enum reached through two levels of base classes.
+extern "C" int printf(const char* format, ...);
+struct Event { int x; };
+template<typename R, typename... Args>
+struct Holder
+{
+  R (*fn)(Args...) = nullptr;
+  R call(Args... args) { return this->fn(args...); }
+};
+void g(const Event& e) { printf("g %d\n", e.x); }
+void h(Event e) { printf("h %d\n", e.x); }
+struct Clickable { enum class ClickState { IDLE, CLICKED }; int state = 0; void set(ClickState s) { this->state = s == ClickState::CLICKED ? 2 : 1; } };
+struct Button : Clickable {};
+struct TextButton : Button {};
+int main()
+{
+  Event e;
+  e.x = 7;
+  Holder<void, Event> hv;
+  hv.fn = &h;
+  hv.call(e);
+  Holder<void, const Event&> hr;
+  hr.fn = &g;
+  hr.call(e);
+  TextButton b;
+  b.set(TextButton::ClickState::CLICKED);
+  printf("%d\n", b.state);
+  return 0;
+}

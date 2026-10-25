@@ -1,0 +1,197 @@
+// Kov standard library: HashSet<T>, open addressing with linear probing (HashMap without the
+// values; what std::unordered_set converts to). Values need hashOf(value) (see Hash.kov) and
+// operator==. Iteration visits the used slots in table order.
+template<typename T>
+struct HashSetEntry
+{
+  T value;
+  int state = 0; // 0 empty, 1 used, 2 deleted
+};
+
+template<typename T>
+struct HashSetIterator
+{
+  HashSetEntry<T>* slot = nullptr;
+  HashSetEntry<T>* end = nullptr;
+
+  HashSetIterator() {}
+  HashSetIterator(HashSetEntry<T>* slot, HashSetEntry<T>* end) : slot(slot), end(end) { this->skipUnused(); }
+
+  const T& operator*() const { return this->slot->value; }
+  const T* operator->() const { return &this->slot->value; }
+  HashSetIterator<T>& operator++()
+  {
+    ++this->slot;
+    this->skipUnused();
+    return *this;
+  }
+  bool operator==(HashSetIterator<T> other) const { return this->slot == other.slot; }
+  bool operator!=(HashSetIterator<T> other) const { return this->slot != other.slot; }
+
+  void skipUnused()
+  {
+    while (this->slot != this->end && this->slot->state != 1)
+      ++this->slot;
+  }
+};
+
+template<typename T>
+struct HashSet
+{
+  HashSetEntry<T>* entries = nullptr;
+  int capacity = 0; // always a power of two
+  int elementCount = 0; // used entries
+  int usedSlots = 0;    // used + deleted entries
+
+  using iterator = HashSetIterator<T>;
+  using const_iterator = HashSetIterator<T>;
+  using value_type = T;
+
+  HashSet() {}
+  HashSet(const HashSet<T>& other)
+  {
+    for (int i = 0; i < other.capacity; ++i)
+      if (other.entries[i].state == 1)
+        this->insertNew(other.entries[i].value);
+  }
+  HashSet(HashSet<T>&& other) : entries(other.entries), capacity(other.capacity), elementCount(other.elementCount), usedSlots(other.usedSlots)
+  {
+    other.entries = nullptr;
+    other.capacity = 0;
+    other.elementCount = 0;
+    other.usedSlots = 0;
+  }
+  ~HashSet() { this->destroyEntries(); }
+
+  HashSet<T>& operator=(const HashSet<T>& other)
+  {
+    if (this == &other)
+      return *this;
+    this->destroyEntries();
+    for (int i = 0; i < other.capacity; ++i)
+      if (other.entries[i].state == 1)
+        this->insertNew(other.entries[i].value);
+    return *this;
+  }
+  HashSet<T>& operator=(HashSet<T>&& other)
+  {
+    if (this == &other)
+      return *this;
+    this->destroyEntries();
+    this->entries = other.entries;
+    this->capacity = other.capacity;
+    this->elementCount = other.elementCount;
+    this->usedSlots = other.usedSlots;
+    other.entries = nullptr;
+    other.capacity = 0;
+    other.elementCount = 0;
+    other.usedSlots = 0;
+    return *this;
+  }
+
+  int size() const { return this->elementCount; }
+  bool empty() const { return this->elementCount == 0; }
+  bool contains(const T& value) const { return this->findSlot(value) >= 0; }
+  int count(const T& value) const { return this->findSlot(value) >= 0 ? 1 : 0; }
+
+  HashSetIterator<T> begin() const { return HashSetIterator<T>(this->entries, this->entries + this->capacity); }
+  HashSetIterator<T> end() const { return HashSetIterator<T>(this->entries + this->capacity, this->entries + this->capacity); }
+
+  HashSetIterator<T> find(const T& value) const
+  {
+    int slot = this->findSlot(value);
+    if (slot < 0)
+      return this->end();
+    return HashSetIterator<T>(this->entries + slot, this->entries + this->capacity);
+  }
+
+  // True when the value was not there before.
+  bool insert(const T& value)
+  {
+    if (this->findSlot(value) >= 0)
+      return false;
+    this->insertNew(value);
+    return true;
+  }
+
+  bool erase(const T& value)
+  {
+    int slot = this->findSlot(value);
+    if (slot < 0)
+      return false;
+    this->entries[slot].value.~T();
+    this->entries[slot].state = 2;
+    --this->elementCount;
+    return true;
+  }
+
+  void clear() { this->destroyEntries(); }
+
+  // Internals.
+  int findSlot(const T& value) const
+  {
+    if (this->capacity == 0)
+      return -1;
+    size_t mask = this->capacity - 1;
+    size_t i = hashOf(value) & mask;
+    while (true)
+    {
+      HashSetEntry<T>& e = this->entries[i];
+      if (e.state == 0)
+        return -1;
+      if (e.state == 1 && e.value == value)
+        return (int)i;
+      i = (i + 1) & mask;
+    }
+  }
+
+  void insertNew(const T& value)
+  {
+    if ((this->usedSlots + 1) * 4 > this->capacity * 3)
+      this->grow();
+    size_t mask = this->capacity - 1;
+    size_t i = hashOf(value) & mask;
+    while (this->entries[i].state == 1)
+      i = (i + 1) & mask;
+    HashSetEntry<T>& e = this->entries[i];
+    if (e.state == 0)
+      ++this->usedSlots;
+    new (&e.value) T(value);
+    e.state = 1;
+    ++this->elementCount;
+  }
+
+  void grow()
+  {
+    int newCapacity = this->capacity == 0 ? 8 : this->capacity * 2;
+    HashSetEntry<T>* old = this->entries;
+    int oldCapacity = this->capacity;
+    this->entries = (HashSetEntry<T>*)malloc(newCapacity * sizeof(HashSetEntry<T>));
+    for (int i = 0; i < newCapacity; ++i)
+      this->entries[i].state = 0;
+    this->capacity = newCapacity;
+    this->elementCount = 0;
+    this->usedSlots = 0;
+    for (int i = 0; i < oldCapacity; ++i)
+      if (old[i].state == 1)
+      {
+        this->insertNew(old[i].value);
+        old[i].value.~T();
+      }
+    if (old)
+      free(old);
+  }
+
+  void destroyEntries()
+  {
+    for (int i = 0; i < this->capacity; ++i)
+      if (this->entries[i].state == 1)
+        this->entries[i].value.~T();
+    if (this->entries)
+      free(this->entries);
+    this->entries = nullptr;
+    this->capacity = 0;
+    this->elementCount = 0;
+    this->usedSlots = 0;
+  }
+};

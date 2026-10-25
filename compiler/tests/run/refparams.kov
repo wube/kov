@@ -1,0 +1,18 @@
+// References through Function and forward: `int&` modifies the caller, `const Event&` binds without a copy.
+extern "C" int printf(const char* format, ...);
+struct Event { int x; };
+int main()
+{
+  int n = 0;
+  Function<void(Event)> byValue = [&n](Event e) { n += e.x; };
+  Function<void(int&)> byRef = [&n](int& r) { r += 1; n += 100; };
+  Function<void(const Event&)> byConstRef = [&n](const Event& e) { n += e.x * 10; };
+  Event e;
+  e.x = 3;
+  int k = 0;
+  byValue(e);
+  byRef(k);
+  byConstRef(e);
+  printf("%d %d\n", n, k);
+  return 0;
+}

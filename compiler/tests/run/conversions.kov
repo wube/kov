@@ -1,0 +1,91 @@
+// Brace lists as arguments and ranges, enum-like class assignment, constexpr case labels, using-declarations of base methods, `a & b` conditions, enumerators forwarded to T&&, HashSet.
+extern "C" int printf(const char* format, ...);
+struct Rect
+{
+  int x;
+  int y;
+  bool full;
+};
+struct Flag
+{
+  enum class Enum : uint8_t { False, True };
+  static constexpr Enum True = Enum::True;
+  static constexpr Enum False = Enum::False;
+  bool value = false;
+  Flag() {}
+  implicit Flag(Enum e) : value(e == Enum::True) {}
+};
+struct Style
+{
+  constexpr static uint32_t A_DEFINED = 1 << 0;
+  constexpr static uint32_t B_DEFINED = 1 << 1;
+  int which(uint32_t flag)
+  {
+    switch (flag)
+    {
+      case A_DEFINED: return 1;
+      case B_DEFINED: return 2;
+    }
+    return 0;
+  }
+};
+struct Base
+{
+  int caret = 0;
+  void setCaret(int c) { this->caret = c; }
+  void setCaret(Rect r) { this->caret = r.x + r.y; }
+};
+struct Derived : Base
+{
+  using super = Base;
+  using super::setCaret;
+  void setCaret(const char* text) { this->caret = -1; }
+  void position(int p) { this->setCaret(Rect{p, 1, false}); }
+};
+enum class Kind { A, B, C };
+template<typename... Args>
+int sum(Args&&... args) { return (int(args) + ...); }
+int main()
+{
+  Vector<Rect> rects;
+  rects.push_back({1, 2, true});
+  rects.push_back({3, 4, false});
+  Flag flag;
+  flag = Flag::True;
+  Vector<int> a;
+  a.push_back(1);
+  Vector<int> b;
+  b.push_back(2);
+  b.push_back(3);
+  int total = 0;
+  for (Vector<int>* v : {&a, &b})
+    for (int x : *v)
+      total += x;
+  Style style;
+  Derived d;
+  d.position(5);
+  int flags = 6;
+  int mask = 2;
+  int hits = 0;
+  if (flags & mask)
+    ++hits;
+  bool p = true, q = false;
+  if (p && q)
+    ++hits;
+  printf("%d %d %d %d %d %d %d %d\n", rects[1].x, flag.value ? 1 : 0, total, style.which(2), d.caret, hits, sum(Kind::B, 4), rects.size());
+  HashSet<int> set;
+  set.insert(3);
+  set.insert(5);
+  set.insert(3);
+  set.erase(5);
+  set.insert(7);
+  int sumSet = 0;
+  for (int v : set)
+    sumSet += v;
+  HashSet<Rect*> pointers;
+  pointers.insert(&rects[0]);
+  pointers.insert(&rects[1]);
+  pointers.insert(&rects[0]);
+  printf("%d %d %d %d %d\n", set.size(), set.contains(3) ? 1 : 0, set.count(5), sumSet, pointers.size());
+  return 0;
+}

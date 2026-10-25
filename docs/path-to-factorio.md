@@ -186,13 +186,42 @@ The second pass (2026-10-25, later) took Agui from 249 to 103 complaints:
   for copies, moves and aggregates), default arguments carried by the converter from a dropped
   header declaration to the definition, diagnostics naming the instantiation and who requested it.
 
-What is left in Agui, by count: member access on `typeid(x).name()` and on `unordered_set`
-(no `HashSet` yet) (11), class template argument deduction (`ScopedSetter guard(x, true)`, 6),
-ranges over brace lists (5), enumerators passed to forwarding references (25, one fix),
-`NamedBool` assignment from its `Enum` (3), local function-like macros in .cpp files
-(`HANDLE_CASE`, `E(i, j)`, 4), `CLOCKS_PER_SEC` (a cast in a macro body), `constexpr static`
-members as case labels, brace lists as call arguments, a generic lambda, a `using Base::f`
-member, and single cases.
+The third pass (2026-10-25, later) took Agui from 103 to 6 complaints, with several fixes that
+matter beyond Agui:
+
+- **Overload resolution** now rejects a template whose deduction left a parameter dependent
+  (`operator<<(UniquePtr<T>&)` given a `Label&` used to rank as "unknown" and win), checks
+  viability even for a single candidate (`owner == raw` went through the explicit
+  `UniquePtr(T*)` and deleted the object twice), deduces `T&` from a const lvalue as `const T`
+  (so `forward<Args>` works for `const Event&` elements), treats a converting constructor from
+  another instantiation of the same template as a conversion, and takes the callable's
+  parameters into account when a `Function<R(Args...)>` is built from a lambda
+  (`onSliderMove(Function<void()>)` next to `onSliderMove(Function<void(double)>)`).
+- **Code generation**: calls through function pointers use the Kov calling convention
+  (classes and references by pointer, sret); casts to references are lvalues (a `forward`
+  returning a scalar reference used to return the address of a dead temporary); `?:` with two
+  objects yields one of them; brace lists as arguments (`push_back({a, b, c})`,
+  `max({a, b, c})` through `InitializerList<T>`), as ranges, and as member initializers;
+  arrays of objects with constructors; assignment through converting constructors
+  (`invertColors = InvertColors::True`, `view = string`); enumerators bound to references;
+  `constexpr static` members as constants; `using Base::f` members; nested enums of a base
+  through a derived class; local type aliases as variable types; out-of-line constructors of
+  class templates (`template<typename Policy> ScrollBar<Policy>::ScrollBar(...)`).
+- **Class template argument deduction** from a constructor (`ScopedSetter guard(x, true)`).
+- **Converter**: function-like macros defined in a .cpp are expanded at their uses
+  (`HANDLE_CASE`, `E(i, j)`), `unique_ptr<T[]>` becomes `UniqueArray<T>`, std algorithms and
+  `move`/`forward`/`swap` are spelled `::name` (a class's own `move` or a namespace's `anyOf`
+  no longer captures them), `a & b` and `a && b` in conditions are no longer read as reference
+  declarations.
+- **Library**: `HashSet<T>`, `UniqueArray<T>`, `remove`, `max`/`min` of a brace list,
+  `Vector::insert` of rvalues and `erase` returning the next position, `cbegin`/`crbegin`,
+  `String(first, last)`, `Optional == value`, `UniquePtr == pointer`/`nullptr`, `hashOf`
+  for pointers. Tests: `conversions.kov`, `library2.kov`, `callables.kov`, `refparams.kov`,
+  `fnpointer.kov`, `outofline.kov`.
+
+What is left in Agui: `typeid(x).name()` (3 sites; needs a name slot in the vtable), one
+generic lambda (`auto` parameter), and `TextButton::ClickState::CLICKED` inside `ScrollBar`
+(2 sites, under investigation). Then the library links and runs something.
 
 ## The order that gets to a running game
 

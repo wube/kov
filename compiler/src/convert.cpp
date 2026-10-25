@@ -74,11 +74,11 @@ namespace
     {"shared_ptr", "SharedPtr"}, {"weak_ptr", "WeakPtr"}, {"function", "Function"}, {"tuple", "Tuple"}, {"variant", "Variant"},
     {"initializer_list", "InitializerList"}, {"numeric_limits", "Limits"}, {"runtime_error", "RuntimeError"},
     {"logic_error", "LogicError"}, {"exception", "Exception"}, {"out_of_range", "OutOfRange"}, {"invalid_argument", "InvalidArgument"},
-    {"move", "move"}, {"forward", "forward"}, {"swap", "swap"}, {"min", "min"}, {"max", "max"}, {"clamp", "clamp"},
-    {"sort", "sort"}, {"stable_sort", "stableSort"}, {"find", "find"}, {"find_if", "findIf"}, {"remove_if", "removeIf"},
-    {"remove", "remove"}, {"transform", "transform"}, {"count_if", "countIf"}, {"all_of", "allOf"}, {"any_of", "anyOf"},
-    {"none_of", "noneOf"}, {"lower_bound", "lowerBound"}, {"upper_bound", "upperBound"}, {"reverse", "reverse"},
-    {"fill", "fill"}, {"copy", "copy"}, {"accumulate", "accumulate"}, {"begin", "begin"}, {"end", "end"}, {"size", "size"},
+    {"move", "::move"}, {"forward", "::forward"}, {"swap", "::swap"}, {"min", "::min"}, {"max", "::max"}, {"clamp", "::clamp"},
+    {"sort", "::sort"}, {"stable_sort", "::stableSort"}, {"find", "::find"}, {"find_if", "::findIf"}, {"remove_if", "::removeIf"},
+    {"remove", "::remove"}, {"transform", "::transform"}, {"count_if", "::countIf"}, {"all_of", "::allOf"}, {"any_of", "::anyOf"},
+    {"none_of", "::noneOf"}, {"lower_bound", "::lowerBound"}, {"upper_bound", "::upperBound"}, {"reverse", "::reverse"},
+    {"fill", "::fill"}, {"copy", "::copy"}, {"accumulate", "::accumulate"}, {"begin", "begin"}, {"end", "end"}, {"size", "size"},
     {"isnan", "::isnan"}, {"isinf", "::isinf"}, {"abs", "::abs"}, {"floor", "::floor"}, {"ceil", "::ceil"}, {"round", "::round"},
     {"sqrt", "::sqrt"}, {"pow", "::pow"}, {"tolower", "::tolower"}, {"toupper", "::toupper"}, {"size_t", "size_t"},
     {"nullptr_t", "nullptr_t"}, {"to_string", "toString"}, {"make_unique", "makeUnique"}, {"make_shared", "makeShared"},
@@ -187,6 +187,12 @@ namespace
     const SymbolTable& symbols;
     const OverrideKeys* overrides = nullptr; // definitions a hand-written file replaces
     const CarriedDefaults* carriedDefaults = nullptr;
+    struct LocalMacro
+    {
+      std::vector<std::string> params;
+      std::string body;
+    };
+    std::map<std::string, LocalMacro> localMacros; // function-like macros defined in this file, expanded at their uses
     std::set<std::string> replacedFunctions;  // qualified names whose definitions were found and removed
     std::vector<Edit> edits;
     Counts counts;
@@ -396,6 +402,46 @@ namespace
       {
         counts.add("macro known");
         return ""; // its uses are rewritten
+      }
+      if (functionLike)
+      {
+        // A function-like macro of this file (HANDLE_CASE in Listener.cpp): its uses in this file
+        // are expanded in place by convertTokens.
+        size_t close = body.find(')');
+        if (close != std::string::npos)
+        {
+          LocalMacro m;
+          std::string paramText = body.substr(1, close - 1);
+          size_t start = 0;
+          while (start <= paramText.size())
+          {
+            size_t comma = paramText.find(',', start);
+            std::string param = paramText.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+            while (!param.empty() && isspace((unsigned char)param.front()))
+              param.erase(param.begin());
+            while (!param.empty() && isspace((unsigned char)param.back()))
+              param.pop_back();
+            if (!param.empty())
+              m.params.push_back(param);
+            if (comma == std::string::npos)
+              break;
+            start = comma + 1;
+          }
+          m.body = body.substr(close + 1);
+          for (char& ch : m.body)
+            if (ch == '\\' || ch == '\r' || ch == '\n')
+              ch = ' ';
+          while (!m.body.empty() && isspace((unsigned char)m.body.front()))
+            m.body.erase(m.body.begin());
+          while (!m.body.empty() && isspace((unsigned char)m.body.back()))
+            m.body.pop_back();
+          if (!m.body.empty())
+          {
+            localMacros[name] = m;
+            counts.add("local function-like macro");
+            return "";
+          }
+        }
       }
       if (!functionLike && !body.empty())
       {
@@ -622,11 +668,117 @@ namespace
 
     // --- token-level rewrites ---
 
+    // The body of a local macro with its parameters replaced by the argument texts; `#x` quotes,
+    // `##` pastes.
+    std::string expandMacro(const LocalMacro& m, const std::vector<std::string>& args)
+    {
+      std::string out;
+      const std::string& b = m.body;
+      for (size_t i = 0; i < b.size();)
+      {
+        char c = b[i];
+        if (c == '#' && i + 1 < b.size() && b[i + 1] == '#')
+        {
+          while (!out.empty() && out.back() == ' ')
+            out.pop_back();
+          i += 2;
+          while (i < b.size() && b[i] == ' ')
+            ++i;
+          continue;
+        }
+        bool stringize = c == '#';
+        size_t idStart = stringize ? i + 1 : i;
+        if (idStart < b.size() && (isalpha((unsigned char)b[idStart]) || b[idStart] == '_') && (idStart == 0 || stringize || !isIdentChar(b[idStart - 1])))
+        {
+          size_t j = idStart;
+          while (j < b.size() && isIdentChar(b[j]))
+            ++j;
+          std::string word = b.substr(idStart, j - idStart);
+          size_t which = m.params.size();
+          for (size_t k = 0; k < m.params.size(); ++k)
+            if (m.params[k] == word)
+              which = k;
+          if (which < m.params.size())
+            out += stringize ? "\"" + args[which] + "\"" : args[which];
+          else
+            out.append(b, i, j - i);
+          i = j;
+          continue;
+        }
+        if (c == '"' || c == '\'')
+        {
+          size_t j = i + 1;
+          while (j < b.size() && b[j] != c)
+          {
+            if (b[j] == '\\')
+              ++j;
+            ++j;
+          }
+          size_t end = std::min(j + 1, b.size());
+          out.append(b, i, end - i);
+          i = end;
+          continue;
+        }
+        out += c;
+        ++i;
+      }
+      return out;
+    }
+
     void convertTokens()
     {
       for (uint32_t i = 0; i + 2 < toks.size(); ++i)
       {
         const Token& t = toks[i];
+        if (t.getKind() == TokenKind::Identifier && toks[i + 1].is(P::LParen) && !localMacros.empty())
+        {
+          auto lm = localMacros.find(std::string(spelling(i)));
+          if (lm != localMacros.end())
+          {
+            // The arguments: token ranges between top-level commas, up to the matching ')'.
+            std::vector<std::pair<uint32_t, uint32_t>> args;
+            uint32_t j = i + 2, argStart = j;
+            int depth = 0;
+            bool closed = false;
+            for (; j < toks.size(); ++j)
+            {
+              const Token& tj = toks[j];
+              if (tj.is(P::LParen) || tj.is(P::LBracket) || tj.is(P::LBrace))
+                ++depth;
+              else if (tj.is(P::RParen) || tj.is(P::RBracket) || tj.is(P::RBrace))
+              {
+                if (depth == 0)
+                {
+                  closed = tj.is(P::RParen);
+                  break;
+                }
+                --depth;
+              }
+              else if (tj.is(P::Comma) && depth == 0)
+              {
+                args.push_back({argStart, j});
+                argStart = j + 1;
+              }
+              else if (tj.is(P::Semi) || tj.getKind() == TokenKind::End)
+                break;
+            }
+            if (closed)
+            {
+              if (j > argStart || !args.empty())
+                args.push_back({argStart, j});
+              if (args.size() == lm->second.params.size())
+              {
+                std::vector<std::string> argText;
+                for (auto [a0, a1] : args)
+                  argText.push_back(a1 > a0 ? std::string(text.substr(toks[a0].offset, endOffset(a1 - 1) - toks[a0].offset)) : std::string());
+                replace(t.offset, endOffset(j) - t.offset, expandMacro(lm->second, argText));
+                counts.add("local macro expanded");
+                i = j;
+                continue;
+              }
+            }
+          }
+        }
         if (t.getKind() == TokenKind::Identifier && spelling(i) == "std" && toks[i + 1].is(P::ColonColon) &&
             toks[i + 2].getKind() == TokenKind::Identifier)
         {
@@ -637,6 +789,33 @@ namespace
             counts.add("std::" + name + " (no mapping)");
           else
             counts.add("std renamed");
+          if ((name == "unique_ptr" || name == "make_unique") && i + 3 < toks.size() && toks[i + 3].is(P::Less))
+          {
+            // `unique_ptr<T[]>` and `make_unique<T[]>(n)`: the array form is its own class.
+            uint32_t j = i + 4;
+            int depth = 0;
+            for (; j < toks.size(); ++j)
+            {
+              if (toks[j].is(P::Less))
+                ++depth;
+              else if (toks[j].is(P::Greater) || toks[j].is(P::Shr))
+              {
+                if (depth == 0)
+                  break;
+                depth -= toks[j].is(P::Shr) ? 2 : 1;
+                if (depth < 0)
+                  break;
+              }
+              else if (toks[j].is(P::Semi) || toks[j].getKind() == TokenKind::End)
+                break;
+            }
+            if (j < toks.size() && j >= i + 6 && toks[j - 1].is(P::RBracket) && toks[j - 2].is(P::LBracket))
+            {
+              to = name == "unique_ptr" ? "UniqueArray" : "makeUniqueArray";
+              remove(toks[j - 2].offset, endOffset(j - 1) - toks[j - 2].offset);
+              counts.add("unique_ptr<T[]> to UniqueArray");
+            }
+          }
           replace(t.offset, endOffset(i + 2) - t.offset, to);
           i += 2;
           continue;

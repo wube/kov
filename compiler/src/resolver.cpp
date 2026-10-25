@@ -1,4 +1,6 @@
 #include "resolver.hpp"
+#include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -1299,6 +1301,121 @@ struct GlobalScope::Impl
       functionSymbol_ = symbols.intern("Function");
     return functionSymbol_;
   }
+  uint32_t functionImplSymbol_ = UINT32_MAX;
+  uint32_t initializerListSymbol_ = UINT32_MAX;
+  uint32_t functionImplSymbolId()
+  {
+    if (functionImplSymbol_ == UINT32_MAX)
+      functionImplSymbol_ = symbols.intern("FunctionImpl");
+    return functionImplSymbol_;
+  }
+  Decl* initializerListDecl()
+  {
+    if (initializerListSymbol_ == UINT32_MAX)
+      initializerListSymbol_ = symbols.intern("InitializerList");
+    Lookup l;
+    if (lookupInScope(&root, initializerListSymbol_, l, 0) && l.scope && l.scope->owner)
+      return l.scope->owner;
+    return nullptr;
+  }
+  bool isInitializerList(const Ty* t)
+  {
+    return t && t->kind == TyKind::Class && t->decl && t->decl == initializerListDecl();
+  }
+  bool isFunctionImpl(const Ty* t)
+  {
+    if (!t || t->kind != TyKind::Class || !t->decl || t->decl->kind != NodeKind::ClassDecl)
+      return false;
+    const QualifiedName& n = static_cast<ClassDecl*>(t->decl)->name;
+    return !n.empty() && n.last().symbol == functionImplSymbolId();
+  }
+  // Whether a callable of type `a` takes the arguments of FunctionImpl<R, Args...> `impl`: a
+  // lambda or function (pointer) by its parameters; anything else is not checked.
+  bool callableWith(const Ty* a, const Ty* impl, int depth)
+  {
+    a = types.decay(a);
+    const Ty* fn = nullptr;
+    if (a->kind == TyKind::Lambda || a->kind == TyKind::Function)
+      fn = a;
+    else if (a->kind == TyKind::Pointer && a->inner->kind == TyKind::Function)
+      fn = a->inner;
+    else
+      return true;
+    if (impl->args.empty())
+      return true;
+    size_t n = impl->args.size() - 1;
+    if (fn->args.size() != n)
+      return false;
+    for (size_t i = 0; i < n; ++i)
+      if (conversionRank(impl->args[i + 1], fn->args[i], depth + 1) >= NotViable)
+        return false;
+    return true;
+  }
+
+  // `ScopedSetter guard(x, true)`: a class template named without arguments is typed as its own
+  // parameters (what typeOfTypeDecl gives for the primary); the arguments come from a constructor.
+  bool isUndeducedClassTemplate(const Ty* t)
+  {
+    if (!t || t->kind != TyKind::Class || !t->decl)
+      return false;
+    Span<Decl*> params = t->decl->templateParams;
+    if (params.empty() || t->args.size() != params.size())
+      return false;
+    for (size_t i = 0; i < params.size(); ++i)
+      if (t->args[i] != types.param(params[i]))
+        return false;
+    return true;
+  }
+  // The class's arguments deduced from a constructor taking these argument types, or null.
+  const Ty* deduceClassArgs(const Ty* primary, const std::vector<const Ty*>& argTypes)
+  {
+    Scope* s = classScopeOf(primary);
+    if (!s || !s->owner || s->owner->kind != NodeKind::ClassDecl)
+      return nullptr;
+    auto* cls = static_cast<ClassDecl*>(s->owner);
+    for (Decl* m : cls->members)
+    {
+      if (m->kind != NodeKind::FunctionDecl || !(m->flags & DF_Constructor))
+        continue;
+      auto* ctor = static_cast<FunctionDecl*>(m);
+      size_t required = 0;
+      bool pack = false;
+      for (Decl* p : ctor->params)
+      {
+        auto* pd = static_cast<ParamDecl*>(p);
+        if (pd->isPack)
+          pack = true;
+        else if (!pd->defaultValue)
+          ++required;
+      }
+      if (argTypes.size() < required || (!pack && argTypes.size() > ctor->params.size()))
+        continue;
+      const Ty* ft = declaredTypeOf(ctor, nullptr, 0);
+      if (!ft || ft->kind != TyKind::Function)
+        continue;
+      Subst d;
+      deduceCall(ctor, ft, argTypes, d);
+      std::vector<const Ty*> args;
+      bool all = true;
+      for (Decl* p : cls->templateParams)
+      {
+        const Ty* t = d.find(p);
+        if (!t)
+          all = false;
+        else
+          args.push_back(t);
+      }
+      if (!all)
+        continue;
+      bool ok = true;
+      for (size_t i = 0; i < argTypes.size() && i < ft->args.size() && ok; ++i)
+        if (conversionRank(argTypes[i], substitute(ft->args[i], d)) >= NotViable)
+          ok = false;
+      if (ok)
+        return types.classType(cls, Span<const Ty*>{args.data(), uint32_t(args.size())});
+    }
+    return nullptr;
+  }
 
   // The canonical type a resolved name denotes when used as a type.
   const Ty* typeOfTypeDecl(Decl* d, const Lookup& l, const NamePart& lastPart, const TypeContext& ctx, int depth)
@@ -1774,15 +1891,22 @@ struct GlobalScope::Impl
     }
     if (pattern->isReference())
     {
-      // `const T&` binds T to the argument without its reference and top-level const; the
-      // forwarding reference `T&&` given an lvalue of type U binds T to U& (which collapses
-      // the parameter to U&), so that the callee sees an lvalue and copies rather than moves.
+      // `const T&` binds T to the argument without its reference and top-level const; `T&`
+      // keeps the argument's const (`forward(const Event&)` deduces T = const Event, as C++
+      // does); the forwarding reference `T&&` given an lvalue of type U binds T to U& (which
+      // collapses the parameter to U&), so that the callee sees an lvalue and copies rather
+      // than moves.
       const Ty* a = types.stripRef(arg);
       if (pattern->inner->kind == TyKind::Param)
       {
         bool forwarding = pattern->kind == TyKind::RRef && !pattern->inner->isConst && depth == 0;
         if (!out.find(pattern->inner->decl))
-          out.pairs.push_back({pattern->inner->decl, forwarding && arg->kind == TyKind::LRef ? types.lref(a) : types.unqualified(a)});
+        {
+          const Ty* bound = pattern->inner->isConst ? types.unqualified(a) : a;
+          if (forwarding && arg->kind == TyKind::LRef)
+            bound = types.lref(a);
+          out.pairs.push_back({pattern->inner->decl, bound});
+        }
         return;
       }
       deduce(pattern->inner, a, out, depth + 1);
@@ -1977,6 +2101,8 @@ struct GlobalScope::Impl
     if (depth > 4)
       return NotViable;
     const Ty* a = types.stripRef(arg);
+    if (isInitializerList(a) && !isInitializerList(types.stripRef(param)))
+      return 2; // a brace list: it converts to anything else through its elements, which the code generator checks
     if (param->isReference())
     {
       const Ty* pt = param->inner;
@@ -2092,10 +2218,12 @@ struct GlobalScope::Impl
               // `template<typename F> Function(F callable)`: F from the argument.
               const Ty* ft = declaredTypeOf(f, &s, 0);
               deduceCall(f, ft, std::vector<const Ty*>{a}, d);
+              if (isFunctionImpl(p) && !callableWith(a, p, depth))
+                continue; // Function<void(double)> takes no `[]() {}`
             }
             const Ty* pt = declaredTypeOf(f->params[0], &d, 0);
-            if (pt && types.stripRef(pt)->kind == TyKind::Class && types.unqualified(types.stripRef(pt))->decl == p->decl)
-              continue; // The copy constructor is not a conversion.
+            if (pt && types.stripRef(pt)->kind == TyKind::Class && types.unqualified(types.stripRef(pt)) == types.unqualified(p))
+              continue; // The copy constructor is not a conversion (ReverseIterator<const T> from ReverseIterator<T> is).
             if (conversionRank(a, pt, depth + 1) < 4)
               return 4;
           }
@@ -2160,11 +2288,6 @@ struct GlobalScope::Impl
           continue;
         c.thisRank = (!objectConst && constMethod) ? 1 : 0;
       }
-      if (single)
-      {
-        ambiguous = false;
-        return f;
-      }
       const Ty* ft = declaredTypeOf(f, classSubst, 0);
       Subst deduced = classSubst ? *classSubst : Subst{};
       if (!f->templateParams.empty() && ft && ft->kind == TyKind::Function)
@@ -2180,7 +2303,16 @@ struct GlobalScope::Impl
           continue;
         }
         if (!f->templateParams.empty())
+        {
           pt = substitute(pt, deduced);
+          const Ty* at = argTypes[i];
+          if (at && at->isKnown() && !types.isDependent(at) && dependsOn(pt, f->templateParams))
+          {
+            // Deduction failed (`operator<<(UniquePtr<T>&)` given a Label&): not a candidate.
+            ok = false;
+            break;
+          }
+        }
         if (pt->kind == TyKind::Pack)
         {
           // A deduced parameter pack: the remaining arguments match its elements one by one.
@@ -2710,6 +2842,16 @@ struct GlobalScope::Impl
         }
         return r;
       }
+      if (l.decl && l.decl->kind == NodeKind::UsingNameDecl && !static_cast<UsingNameDecl*>(l.decl)->isEnum)
+      {
+        // `using Base::f;` in the class: f means the base's overloads.
+        Lookup target = impl.lookupQualified(static_cast<UsingNameDecl*>(l.decl)->name, cls, nullptr, 0);
+        if (target.found != Found::No && target.decl)
+        {
+          l.decl = target.decl;
+          l.overloads = target.overloads;
+        }
+      }
       if (l.found == Found::No || !l.decl)
       {
         r.why = Why::Member;
@@ -2828,6 +2970,8 @@ struct GlobalScope::Impl
         if (a && a->ty && a->ty->kind == TyKind::Pack)
           for (const Ty* e : a->ty->args)
             out.push_back(argumentType(a, e, types));
+        else if (a && a->kind == NodeKind::BraceInitExpr)
+          out.push_back(braceListType(a, impl.initializerListDecl(), types));
         else
           out.push_back(a ? argumentType(a, a->ty, types) : nullptr);
       }
@@ -2880,6 +3024,24 @@ struct GlobalScope::Impl
             if (!t || call->templateArgCount >= 4)
               break;
             call->templateArgs[call->templateArgCount++] = t;
+          }
+        }
+        {
+          static bool debugCalls = getenv("KOV_DEBUG_CALLS") != nullptr;
+          if (debugCalls)
+          {
+            std::string line = std::string(call ? "call " : "call(no expr) ") + std::string(impl.symbols.name(f->name.last().symbol)) + ":";
+            for (size_t i = 0; call && i < call->templateArgCount; ++i)
+              line += " " + types.toString(call->templateArgs[i], &impl.symbols);
+            line += " | explicit:";
+            if (namePart)
+              for (size_t i = 0; i < namePart->templateArgs.size() && i < f->templateParams.size(); ++i)
+                line += " " + types.toString(impl.templateArgument(namePart->templateArgs[i], f->templateParams[i], ctx(), 0), &impl.symbols);
+            line += " | subst:";
+            if (activeSubst)
+              for (auto& [d, ty] : activeSubst->pairs)
+                line += " " + std::string(impl.symbols.name(static_cast<TemplateParamDecl*>(d)->name)) + "=" + types.toString(ty, &impl.symbols);
+            fprintf(stderr, "%s\n", line.c_str());
           }
         }
         const Ty* result = impl.substitute(fnTy->inner, subst);
@@ -3628,6 +3790,33 @@ struct GlobalScope::Impl
           scope = saved;
           // Deduce `auto` now that the initializer is typed, and cache it on the declaration.
           const Ty* declared = impl.declaredTypeOf(v, activeSubst, 0);
+          if ((!declared || !declared->isKnown()) && v->type && !activeSubst)
+          {
+            // A type only the function's locals know (`using Match = Pair<int, int>;` in the body):
+            // resolved here, where the locals are, and cached for everyone asking later.
+            const Ty* local = typeOf(v->type);
+            if (local && local->isKnown())
+            {
+              v->cachedType.store(local, std::memory_order_release);
+              declared = local;
+            }
+          }
+          if (v->init && !activeSubst && impl.isUndeducedClassTemplate(declared))
+          {
+            // `ScopedSetter guard(x, true)`: the class's arguments from a constructor (CTAD).
+            Span<Expr*> args;
+            if (v->init->kind == NodeKind::FunctionalCastExpr)
+              args = static_cast<FunctionalCastExpr*>(v->init)->args;
+            else if (v->init->kind == NodeKind::BraceInitExpr)
+              args = static_cast<BraceInitExpr*>(v->init)->args;
+            if (const Ty* deduced = impl.deduceClassArgs(declared, argTypesOf(args)))
+            {
+              v->cachedType.store(deduced, std::memory_order_release);
+              if (v->init->kind == NodeKind::FunctionalCastExpr)
+                record(v->init, deduced);
+              declared = deduced;
+            }
+          }
           if (impl.containsAuto(declared))
           {
             const Ty* deduced = v->init && v->init->ty ? impl.deduceAuto(declared, v->init->ty) : types.unknown();
@@ -3781,6 +3970,14 @@ struct GlobalScope::Impl
           auto* f = static_cast<RangeForStmt*>(s);
           size_t mark = locals.mark();
           const Ty* range = walkExpr(f->range);
+          if (f->range->kind == NodeKind::BraceInitExpr)
+          {
+            // `for (X* kids : {&a, &b})`: an array of the first element's type.
+            auto* b = static_cast<BraceInitExpr*>(f->range);
+            const Ty* first = !b->args.empty() && b->args[0]->ty ? types.decay(b->args[0]->ty) : nullptr;
+            if (first && first->isKnown())
+              range = record(f->range, types.array(first, uint32_t(b->args.size())));
+          }
           auto* v = static_cast<VariableDecl*>(f->var);
           walkType(v->type);
           const Ty* declared = impl.declaredTypeOf(v, activeSubst, 0);
@@ -4169,6 +4366,8 @@ Decl* GlobalScope::owningClass(Decl* d)
   return nullptr;
 }
 
+Decl* GlobalScope::initializerListDecl() { return impl->initializerListDecl(); }
+
 Decl* GlobalScope::definitionOf(Decl* d)
 {
   if (!d)
@@ -4379,6 +4578,14 @@ void GlobalScope::retypeFor(FunctionDecl* f, const TemplateArgs& args, const Ty*
       w.locals.push(static_cast<TemplateParamDecl*>(tp)->name, tp);
   w.scope = f->name.parts.size() > 1 ? w.semanticScopeFor(f->name) : impl->lexicalScopeOf(f);
   w.activeSubst = &subst;
+  static bool debugCalls = getenv("KOV_DEBUG_CALLS") != nullptr;
+  if (debugCalls)
+  {
+    std::string line = "retype " + std::string(impl->symbols.name(f->name.last().symbol)) + ":";
+    for (auto& [d, ty] : subst.pairs)
+      line += " " + std::string(impl->symbols.name(static_cast<TemplateParamDecl*>(d)->name)) + "=" + impl->types.toString(ty, &impl->symbols);
+    fprintf(stderr, "%s\n", line.c_str());
+  }
   if (objectType)
     w.thisType = impl->types.pointer(impl->types.unqualified(impl->types.stripRef(objectType)));
   else if (Decl* cls = Impl::enclosingClassDecl(w.scope))

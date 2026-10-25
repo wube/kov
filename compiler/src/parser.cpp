@@ -2865,30 +2865,42 @@ namespace
         conditionMode = true;
         parseDeclarationInner(Scope::Local, {});
         conditionMode = savedMode;
+        bool declared = !inRecovery;
         if (inRecovery)
         {
-          // Not actually a declaration: fall back to an expression.
           inRecovery = false;
           out.diagnostics.pop_back();
-          scratch.resize(mark);
-          restore(save);
         }
-        else
+        if (declared)
         {
           DeclStmt* d = node<DeclStmt>(start);
           d->decls = makeSpan<Decl*>(mark);
           // parseDeclarationInner consumed a ';' only if it was an init-statement.
-          if (toks[pos - 1].is(P::Semi) && allowInit)
+          bool initStatement = toks[pos - 1].is(P::Semi) && allowInit;
+          // A declaration in a condition has an initializer: `flags & MASK` and `a && b` with
+          // variables on both sides are expressions that read like reference declarations.
+          bool uninitialised = false;
+          if (!initStatement)
+            for (Decl* x : d->decls)
+              if (x->kind == NodeKind::VariableDecl && !static_cast<VariableDecl*>(x)->init && !(x->flags & DF_Typedef))
+                uninitialised = true;
+          if (!uninitialised)
           {
-            init = d;
-            parseCondition(init, cond, false);
-            if (!cond)
-              cond = d;
+            if (initStatement)
+            {
+              init = d;
+              parseCondition(init, cond, false);
+              if (!cond)
+                cond = d;
+              return;
+            }
+            cond = d;
             return;
           }
-          cond = d;
-          return;
         }
+        // Not actually a declaration: fall back to an expression.
+        scratch.resize(mark);
+        restore(save);
       }
       Expr* e = parseExpression();
       if (allowInit && accept(P::Semi))

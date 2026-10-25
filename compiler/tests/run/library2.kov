@@ -1,0 +1,82 @@
+// Nested enums through derived classes, class template argument deduction, ?: with references, local type aliases, arrays of objects, brace lists as InitializerList arguments, remove, Vector moves and erase, String ranges, Optional and UniquePtr comparisons, UniqueArray.
+extern "C" int printf(const char* format, ...);
+struct Base
+{
+  enum class State { IDLE, CLICKED };
+  int count = 0;
+};
+struct Derived : Base
+{
+  void setState(Base::State s) { this->count += s == State::CLICKED ? 10 : 1; }
+};
+template<typename T>
+struct ScopedSetter
+{
+  T& target;
+  T old;
+  ScopedSetter(T& target, T value) : target(target), old(target) { target = value; }
+  explicit ScopedSetter(T& target) : target(target), old(target) {}
+  ~ScopedSetter() { this->target = this->old; }
+};
+struct Widget
+{
+  int size = 1;
+  Widget& grow() { this->size *= 2; return *this; }
+  Widget& shrink() { this->size -= 1; return *this; }
+  Widget& resize(bool up) { return up ? this->grow() : this->shrink(); }
+};
+struct Item
+{
+  UniquePtr<int> value;
+  Item(int v) : value(new int(v)) {}
+};
+int main()
+{
+  Derived d;
+  d.setState(Derived::State::CLICKED);
+  bool flag = false;
+  int depth = 0;
+  {
+    ScopedSetter guard(flag, true);
+    ScopedSetter guard2(depth);
+    depth = 5;
+    printf("%d %d ", flag ? 1 : 0, depth);
+  }
+  printf("%d %d\n", flag ? 1 : 0, depth);
+  Widget w;
+  w.resize(true).resize(true);
+  Widget& same = w.resize(false);
+  same.size += 100;
+  using Match = Pair<int, unsigned int>;
+  Pair<int, unsigned int> best = Pair<int, unsigned int>(-1, 0u);
+  best = Match(3, 7u);
+  StringView parts[2];
+  parts[1] = "second";
+  int m = max({4, 9, 2, 7});
+  int n = min({4, 9, 2, 7});
+  Vector<int> v;
+  for (int i = 0; i < 6; ++i)
+    v.push_back(i % 3);
+  v.erase(remove(v.begin(), v.end(), 1), v.end());
+  Vector<Item> items;
+  items.emplace_back(1);
+  items.emplace_back(3);
+  items.insert(items.begin() + 1, Item(2));
+  Item* next = items.erase(items.begin());
+  printf("%d %d %d %d %d %d %d %d %d %d %d\n", d.count, w.size, best.first, best.second, parts[1].size(), parts[0].size(), m, n, v.size(), *next->value, items.size());
+  String s("abcdef");
+  String middle(s.c_str() + 1, s.c_str() + 4);
+  Optional<int> maybe;
+  bool absentDiffers = maybe != 0;
+  maybe = 5;
+  UniquePtr<Widget> owner(new Widget());
+  Widget* raw = owner.get();
+  UniqueArray<bool> flags = makeUniqueArray<bool>(4);
+  flags[2] = true;
+  int trues = 0;
+  for (int i = 0; i < 4; ++i)
+    if (flags[i])
+      ++trues;
+  printf("%s %d %d %d %d\n", middle.c_str(), absentDiffers ? 1 : 0, maybe != 5 ? 1 : 0, owner == raw ? 1 : 0, trues);
+  return 0;
+}

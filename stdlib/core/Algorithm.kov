@@ -110,6 +110,41 @@ T* minElement(T* first, T* last)
   return best;
 }
 
+// Moves the elements equal to value to the end; returns the new end of the kept ones.
+template<typename T, typename V>
+T* remove(T* first, T* last, const V& value)
+{
+  T* out = first;
+  for (; first != last; ++first)
+    if (!(*first == value))
+    {
+      if (out != first)
+        *out = move(*first);
+      ++out;
+    }
+  return out;
+}
+
+// The largest and the smallest of a brace list: `max({a, b, c})`.
+template<typename T>
+T max(InitializerList<T> values)
+{
+  T best = values[0];
+  for (int i = 1; i < values.size(); ++i)
+    if (best < values[i])
+      best = values[i];
+  return best;
+}
+template<typename T>
+T min(InitializerList<T> values)
+{
+  T best = values[0];
+  for (int i = 1; i < values.size(); ++i)
+    if (values[i] < best)
+      best = values[i];
+  return best;
+}
+
 // Moves the elements that satisfy predicate to the end; returns the new end of the kept ones.
 template<typename T, typename F>
 T* removeIf(T* first, T* last, F predicate)

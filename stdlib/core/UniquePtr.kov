@@ -33,6 +33,13 @@ struct UniquePtr
   bool operator!() const { return this->pointer == nullptr; }
   bool operator==(const UniquePtr<T>& other) const { return this->pointer == other.pointer; }
   bool operator!=(const UniquePtr<T>& other) const { return this->pointer != other.pointer; }
+  bool operator==(nullptr_t) const { return this->pointer == nullptr; }
+  bool operator!=(nullptr_t) const { return this->pointer != nullptr; }
+  // Against a plain pointer, of the same class or a base of it.
+  template<typename U>
+  bool operator==(const U* other) const { return this->pointer == other; }
+  template<typename U>
+  bool operator!=(const U* other) const { return this->pointer != other; }
 
   // Deletes the owned object (if any) and owns newPointer instead.
   void reset(T* newPointer)
