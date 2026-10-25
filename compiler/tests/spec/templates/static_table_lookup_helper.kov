@@ -1,0 +1,32 @@
+// spec: a class's static const table keyed by StringView with a nested value struct, defined out of line from a brace list, read through a helper template with an `auto*` return
+// found in src/Util (MathExpressions/Evaluator::NAMED_FUNCTIONS and Util::getMapOrNull)
+namespace Util
+{
+  template<typename Container, typename Key>
+  auto* getMapOrNull(Container& theMap, const Key& keyToFind)
+  {
+    auto it = theMap.find(keyToFind);
+    return it == theMap.end() ? nullptr : &it->second;
+  }
+}
+struct Table
+{
+  struct Entry
+  {
+    int weight;
+  };
+  static const Map<StringView, Entry> ENTRIES;
+  int lookup(StringView name) const
+  {
+    if (const Entry* e = Util::getMapOrNull(ENTRIES, name))
+      return e->weight;
+    return -1;
+  }
+};
+const Map<StringView, Table::Entry> Table::ENTRIES = {{"abs", Entry{1}}, {"log", Entry{2}}};
+int main()
+{
+  Table t;
+  println("{} {} {}", t.lookup("abs"), t.lookup("log"), t.lookup("sin"));
+  return 0;
+}

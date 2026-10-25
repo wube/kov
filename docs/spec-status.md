@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**150 pass, 2 pending, 0 failing, 0 fixed** (152 snippets, 2.8 s).
+**155 pass, 2 pending, 0 failing, 0 fixed** (157 snippets, 2.8 s).
 
 ## Language: statements, expressions, declarations
 
@@ -14,6 +14,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 |---|---|---|---|---|
 | `language/alias_array_function_types.kov` | aliases of array and function types: `using Row = int[3]`, `using Grid = size_t[2][3]`, `using Unary = double(double)` | pass |  |  |
 | `language/alignas.kov` | alignas on a struct | pass | 68 alignas/alignof uses in 15 files |  |
+| `language/array_brace_zero.kov` | an array zero-filled by `= {0}` and `= {}`, with fewer initializers than elements | pass |  |  |
 | `language/arrays_2d.kov` | two-dimensional arrays: nested brace initialisation and indexing | pass |  |  |
 | `language/assign_through_returned_reference.kov` | assigning through a reference returned from a function | pass |  |  |
 | `language/attributes_noexcept.kov` | noexcept, [[nodiscard]], [[maybe_unused]] | pass | 802 noexcept, 215 [[nodiscard]], 46 [[maybe_unused]], 68 alignas/alignof |  |
@@ -21,6 +22,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `language/binary_literals.kov` | binary integer literals (0b1010) | pass |  |  |
 | `language/bitfields.kov` | bit fields | pass | 14 uses in 6 files |  |
 | `language/brace_list_as_value.kov` | a brace list where a value is expected: a call argument `f({1, 2})`, `Alias{}` for an alias of a class and of a scalar, `return {a, b};` | pass |  |  |
+| `language/conditional_mixed_class.kov` | `cond ? "text" : someString` has the class type when one branch converts to the other's class | pass |  |  |
 | `language/const_lambda_variable.kov` | a lambda held by a const variable (`const auto f = [this](int) {...}`), called and passed on | pass | 52 uses in 31 files |  |
 | `language/constexpr_function_bound.kov` | a constexpr function call as an array bound | pass |  |  |
 | `language/constexpr_values.kov` | constexpr constants and constexpr functions | pass | 2643 uses in 808 files (variables), 361 (functions) |  |
@@ -35,6 +37,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `language/goto.kov` | goto | pass | 8 uses in 6 files |  |
 | `language/if_constexpr.kov` | if constexpr on type traits | pass | 411 uses in 107 files |  |
 | `language/integer_types.kov` | fixed-width integers, size_t, conversions and wrap-around | pass |  |  |
+| `language/lambda_to_function_pointer.kov` | a lambda without captures converts to a pointer to function: as an initializer, an argument, and inside an aggregate | pass |  |  |
 | `language/lambdas.kov` | lambdas | pass | 5310 uses in 1206 files |  |
 | `language/literals.kov` | literals: integer suffixes and bases, digit separators, char escapes, raw strings, adjacent literals | pass |  |  |
 | `language/operators_arithmetic.kov` | arithmetic, bit and compound operators | pass |  |  |
@@ -92,6 +95,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/alias_template_over_trait.kov` | an alias template whose target is a type trait (template<typename T> using Plain = RemoveReference<T>;) | pass |  |  |
 | `templates/alias_template_reference.kov` | an alias template producing a reference type | pass |  |  |
 | `templates/alias_templates_traits.kov` | type traits in if constexpr (isPointer, isSame) inside a deduced function template | pass | 169 type trait uses in 77 files |  |
+| `templates/auto_pointer_return_helper.kov` | a function template returning `auto*` from a conditional of nullptr and a pointer, called with const and non-const maps and a transparent key | pass |  |  |
 | `templates/auto_return_templates.kov` | function templates with a deduced (`auto`, `auto&`) return type | pass |  |  |
 | `templates/class_template_default_arguments.kov` | default template arguments of class templates, depending on earlier parameters: `template<class K, class C = Less<K>>` | pass |  |  |
 | `templates/class_template_outofline_members.kov` | members of a class template with a non-type parameter defined out of line | pass |  |  |
@@ -115,6 +119,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/requires_clauses.kov` | constrained templates (requires clauses) | pass | 1274 requires/concept uses in 609 files |  |
 | `templates/several_instantiations_in_one_call.kov` | three instantiations of one function template as arguments of a single variadic call | pass |  |  |
 | `templates/sfinae_enable_if.kov` | enable_if-style overload selection | pass | 1 use (Factorio uses requires clauses instead) |  |
+| `templates/static_table_lookup_helper.kov` | a class's static const table keyed by StringView with a nested value struct, defined out of line from a brace list, read through a helper template with an `auto*` return | pass |  |  |
 | `templates/template_template_parameters.kov` | template template parameters | pass |  |  |
 | `templates/traits_as_values.kov` | type traits used as values (bool isSame<A, B> in an expression, not only in if constexpr) | pass |  |  |
 | `templates/variadic_recursion.kov` | the recursive variadic pattern: f(T first, Rest... rest) calling f(rest...) down to a non-template base case | pass |  |  |

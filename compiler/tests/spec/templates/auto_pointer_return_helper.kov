@@ -1,0 +1,18 @@
+// spec: a function template returning `auto*` from a conditional of nullptr and a pointer, called with const and non-const maps and a transparent key
+// found in src/Util (Util::getMapOrNull(theMap, key): `return it == theMap.end() ? nullptr : &it->second;`)
+template<typename Container, typename Key>
+auto* getMapOrNull(Container& theMap, const Key& keyToFind)
+{
+  auto it = theMap.find(keyToFind);
+  return it == theMap.end() ? nullptr : &it->second;
+}
+int main()
+{
+  Map<String, int> m;
+  m.insert(String("a"), 1);
+  const Map<String, int>& cm = m;
+  int* p = getMapOrNull(m, String("a"));
+  const int* q = getMapOrNull(cm, String("b"));
+  println("{} {}", *p, q == nullptr);
+  return 0;
+}

@@ -1,0 +1,16 @@
+// spec: a lambda without captures converts to a pointer to function: as an initializer, an argument, and inside an aggregate
+// found in src/Util (MathExpressions/Evaluator: tables of NamedFunction{[](Span<double> args) {...}, 1})
+using Unary = double(double);
+struct Named
+{
+  Unary* function;
+  int arity;
+};
+double apply(Unary* f, double x) { return f(x); }
+int main()
+{
+  Unary* twice = [](double x) { return x * 2; };
+  Named table[2] = {{[](double x) { return x + 1; }, 1}, {twice, 1}};
+  println("{} {} {}", apply(twice, 4), table[0].function(1.5), apply([](double x) { return -x; }, 3));
+  return 0;
+}

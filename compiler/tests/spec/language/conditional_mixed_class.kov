@@ -1,0 +1,9 @@
+// spec: `cond ? "text" : someString` has the class type when one branch converts to the other's class
+// found in src/Util (ToStr: `value == UNDEFINED ? "_" : toStr(uint32_t(value))`)
+String name(int value) { return value < 0 ? "_" : toString(value); }
+String other(int value) { return value < 0 ? String("neg") : "pos"; }
+int main()
+{
+  println("{} {} {} {}", name(-1), name(42), other(-1), other(1));
+  return 0;
+}

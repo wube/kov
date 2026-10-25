@@ -67,8 +67,13 @@ namespace
     {"DEV_TOOL_VARIABLE", ""}, {"BEGIN_SUPPRESS_CONVERSIONS", ""}, {"END_SUPPRESS_CONVERSIONS", ""}, {"BEGIN_FORCE_OPTIMIZE", ""},
     {"END_FORCE_OPTIMIZE", ""}, {"SUPPRESS_UBSAN", ""}, {"PADDING_WARNING", ""}, {"errno", "(*_errno())"}};
   // `MACRO(arg)` becomes the text with $1 standing for the argument (`toCStr(x)` is `toStr(x).c_str()`).
+  // The game's Log macros become calls of logAndAbort(const String&), which the Log module (or a
+  // stub next to a smoke test) provides.
   const std::map<std::string, std::string> knownFunctionMacros = {{"FORMAT_STRING", "$1"}, {"WHEN_ASSERT", "$1"}, {"FOR_DEVELOPER", "$1"},
-                                                                  {"toCStr", "toStr($1).c_str()"}};
+                                                                  {"toCStr", "toStr($1).c_str()"},
+                                                                  {"LOG_AND_ABORT", "logAndAbort(ssprintf($1))"},
+                                                                  {"LOG_AND_ABORT_NEVER_THROW", "logAndAbort(ssprintf($1))"},
+                                                                  {"LOG_ENUM_AND_ABORT", "logAndAbort(ssprintf(\"Unknown enum value: %d\", int($1)))"}};
 
   // std:: names and their Kov library spelling. Names not here keep their name and are counted.
   // C library functions become `::name`: inside a namespace with its own `sqrt`, `std::sqrt` meant the C one.

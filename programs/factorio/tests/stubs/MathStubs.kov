@@ -1,0 +1,8 @@
+// Stand-in for the two Math::fabs overloads of the game's Util/Math.hpp, for the Util smoke test
+// (the whole header brings the CPU intrinsics with it, which the math expression evaluator does
+// not need).
+namespace Math
+{
+  double fabs(double v) { return v < 0 ? -v : v; }
+  float fabs(float v) { return v < 0 ? -v : v; }
+}

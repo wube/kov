@@ -2240,6 +2240,57 @@ namespace
       currentFile = savedFile;
     }
 
+    // A lambda without captures used as a pointer to function: a function with the pointer's
+    // signature that calls the lambda's operator with no closure (nothing is captured), defined
+    // once per lambda.
+    std::string lambdaThunk(const Ty* t, const Ty* fnTy, Node* at)
+    {
+      t = types.unqualified(t);
+      LambdaExpr* l = lambdaOf(t);
+      ClosureInfo info = closureFor(t, at);
+      if (!info.captured.empty() || (l && !l->templateParams.empty()))
+        unsupported(at, "a lambda with captures (or a generic one) used as a pointer to function");
+      const Ty* ret = fnTy->inner;
+      const Ty* lambdaRet = t->inner ? t->inner : types.voidType();
+      if (types.unqualified(types.stripRef(ret)) != types.unqualified(types.stripRef(lambdaRet)) || fnTy->args.size() != t->args.size())
+        unsupported(at, "a lambda used as a pointer to a function of another signature");
+      for (size_t i = 0; i < fnTy->args.size(); ++i)
+      {
+        const Ty* pt = fnTy->args[i];
+        if (types.unqualified(types.stripRef(pt)) != types.unqualified(types.stripRef(t->args[i])))
+          unsupported(at, "a lambda used as a pointer to a function of another signature");
+        if (isClass(pt) && needsDestruction(pt, at))
+          unsupported(at, "a lambda used as a pointer to function taking an object with a destructor by value");
+      }
+      std::string name = "@\"" + types.toString(t, &symbols) + "::thunk\"";
+      if (!lambdaInstances.insert(name).second)
+        return name;
+      bool hasSret = isClass(ret);
+      std::string retType = hasSret ? "void" : ret->isReference() ? "ptr" : llType(ret, at);
+      std::string params, args = "ptr null";
+      if (hasSret)
+      {
+        params = "ptr %sret";
+        args += ", ptr %sret";
+      }
+      for (size_t i = 0; i < fnTy->args.size(); ++i)
+      {
+        const Ty* pt = fnTy->args[i];
+        std::string ty = isAggregate(pt) || pt->isReference() ? "ptr" : llType(pt, at);
+        params += (params.empty() ? "" : ", ") + ty + " %a" + std::to_string(i);
+        args += ", " + ty + " %a" + std::to_string(i);
+      }
+      std::string text = "define " + retType + " " + name + "(" + params + ") {\nentry:\n";
+      if (hasSret || ret->kind == TyKind::Void)
+        text += "  call void " + info.functionName + "(" + args + ")\n  ret void\n";
+      else
+        text += "  %r = call " + retType + " " + info.functionName + "(" + args + ")\n  ret " + retType + " %r\n";
+      text += "}\n\n";
+      addDefinition(name, text);
+      ++result.functions;
+      return name;
+    }
+
     // Calls a closure value with arguments.
     Value callClosure(Value closure, Span<Expr*> callArgs, const std::string& sret, Node* at)
     {
@@ -2954,6 +3005,18 @@ namespace
               unsupported(at, "binding an unrelated class to a reference");
           return "ptr " + addr;
         }
+        const Ty* referenced = types.stripRef(pt);
+        if (referenced->kind == TyKind::Pointer && referenced->inner && referenced->inner->kind == TyKind::Function && arg->ty &&
+            isLambda(types.stripRef(arg->ty)))
+        {
+          // `Pair(key, lambda)` with `Pair(const K&, const Fn*&)`: the function pointer, in a slot
+          // the reference can bind to.
+          Value fp = convert(rvalue(arg), referenced, at);
+          std::string slot = "%v" + std::to_string(temp++);
+          allocas += "  " + slot + " = alloca ptr\n";
+          fn += "  store ptr " + fp.text + ", ptr " + slot + "\n";
+          return "ptr " + slot;
+        }
         return "ptr " + lvalue(arg);
       }
       if (pt && isAggregate(pt))
@@ -3000,6 +3063,8 @@ namespace
       Value a = rvalue(arg);
       if (isClass(a.ty) && pt && !isAggregate(pt) && conversionOperator(a.ty, types.unqualified(pt), at))
         a = convert(a, types.unqualified(pt), at); // `draw(image)` with `operator const Image*()`
+      if (isLambda(a.ty) && pt && pt->kind == TyKind::Pointer && pt->inner && pt->inner->kind == TyKind::Function)
+        a = convert(a, pt, at); // a lambda without captures as a pointer to function
       if (isAggregate(a.ty))
         unsupported(at, "passing a class (" + types.toString(a.ty, &symbols) + ") where a scalar is expected");
       if (pt && a.ty->kind == TyKind::Pointer && (pt->kind == TyKind::Int || pt->kind == TyKind::Char || pt->kind == TyKind::Enum))
@@ -3737,6 +3802,8 @@ namespace
       TyKind fk = kindOf(from), tk = kindOf(to);
       auto bitsOf = [&](const Ty* t) -> uint8_t { return t->kind == TyKind::Enum ? uint8_t(enumUnderlying(t->decl)->bits) : t->bits; };
       auto unsignedOf = [&](const Ty* t) { return t->kind == TyKind::Enum ? enumUnderlying(t->decl)->isUnsigned : t->isUnsigned; };
+      if (isLambda(from) && tk == TyKind::Pointer && to->inner && to->inner->kind == TyKind::Function)
+        return {lambdaThunk(from, to->inner, at), to}; // a lambda without captures as a pointer to function
       if (fk == TyKind::Class || tk == TyKind::Class)
       {
         if (fk == TyKind::Class && tk == TyKind::Class)

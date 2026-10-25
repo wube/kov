@@ -1,0 +1,10 @@
+// Stand-in for FloatCast.cpp's failure handler, for the Util smoke test (the original logs through
+// the game's global context).
+void FloatCastCheckFailed(float value, const char* targetType, float converted)
+{
+  logAndAbort(ssprintf("float_cast of %g to %s gave %g", double(value), targetType, double(converted)));
+}
+void FloatCastCheckFailed(double value, const char* targetType, double converted)
+{
+  logAndAbort(ssprintf("float_cast of %g to %s gave %g", value, targetType, converted));
+}

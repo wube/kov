@@ -1,0 +1,21 @@
+// Stand-in for the two map helpers of the game's Util/Util.hpp that the math expression
+// evaluator uses, for the Util smoke test (the whole of Util.hpp pulls in Result, SDL message
+// boxes and regular expressions, which the test does not need).
+namespace Util
+{
+  // The value for key, or nullptr when the map does not have it.
+  template<typename Container, typename Key>
+  auto* getMapOrNull(Container& theMap, const Key& keyToFind)
+  {
+    auto it = theMap.find(keyToFind);
+    return it == theMap.end() ? nullptr : &it->second;
+  }
+
+  // The value for key, or the fallback when the map does not have it.
+  template<typename Container, typename Key, typename Value>
+  Value getMapOrDefault(const Container& theMap, const Key& keyToFind, const Value& fallback)
+  {
+    auto it = theMap.find(keyToFind);
+    return it == theMap.end() ? fallback : it->second;
+  }
+}

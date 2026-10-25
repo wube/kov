@@ -1,0 +1,8 @@
+// Stand-in for the game's Log for the Util smoke test: the converter turns LOG_AND_ABORT and
+// LOG_ENUM_AND_ABORT into logAndAbort(message); here it prints the message and ends the program.
+extern "C" void abort();
+[[noreturn]] void logAndAbort(const String& message)
+{
+  println("abort: {}", message);
+  abort();
+}

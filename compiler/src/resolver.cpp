@@ -283,6 +283,12 @@ struct GlobalScope::Impl
       return nullptr;
     return static_cast<ClassDecl*>(t->decl)->lambda;
   }
+
+  // A symbol's spelling for the KOV_DEBUG_CALLS trace; operators and unnamed parameters have none.
+  std::string debugName(uint32_t symbol) const
+  {
+    return symbol == UINT32_MAX || symbol >= symbols.size() ? std::string("?") : std::string(symbols.name(symbol));
+  }
   static bool isGenericLambda(const Ty* t)
   {
     LambdaExpr* l = lambdaOf(t);
@@ -3772,7 +3778,7 @@ struct GlobalScope::Impl
           static bool debugCalls = getenv("KOV_DEBUG_CALLS") != nullptr;
           if (debugCalls)
           {
-            std::string line = std::string(call ? "call " : "call(no expr) ") + std::string(impl.symbols.name(f->name.last().symbol)) + ":";
+            std::string line = std::string(call ? "call " : "call(no expr) ") + impl.debugName(f->name.last().symbol) + ":";
             for (size_t i = 0; call && i < call->templateArgCount; ++i)
               line += " " + types.toString(call->templateArgs[i], &impl.symbols);
             line += " | args:";
@@ -3785,7 +3791,7 @@ struct GlobalScope::Impl
             line += " | subst:";
             if (activeSubst)
               for (auto& [d, ty] : activeSubst->pairs)
-                line += " " + std::string(impl.symbols.name(static_cast<TemplateParamDecl*>(d)->name)) + "=" + types.toString(ty, &impl.symbols);
+                line += " " + impl.debugName(static_cast<TemplateParamDecl*>(d)->name) + "=" + types.toString(ty, &impl.symbols);
             fprintf(stderr, "%s\n", line.c_str());
           }
         }
@@ -4960,6 +4966,11 @@ struct GlobalScope::Impl
             return record(e, then);
           if (a->isArithmetic() && b->isArithmetic() && a != b)
             return record(e, arithmetic(a, b));
+          // `cond ? "_" : someString`: the class branch's type; the other converts to it.
+          if (b->kind == TyKind::Class && a->kind != TyKind::Class)
+            return record(e, types.unqualified(b));
+          if (a->kind == TyKind::Class && b->kind != TyKind::Class)
+            return record(e, types.unqualified(a));
           return record(e, then);
         }
         case NodeKind::CastExpr:
@@ -5668,9 +5679,9 @@ void GlobalScope::retypeFor(FunctionDecl* f, const TemplateArgs& args, const Ty*
   static bool debugCalls = getenv("KOV_DEBUG_CALLS") != nullptr;
   if (debugCalls)
   {
-    std::string line = "retype " + std::string(impl->symbols.name(f->name.last().symbol)) + ":";
+    std::string line = "retype " + impl->debugName(f->name.last().symbol) + ":";
     for (auto& [d, ty] : subst.pairs)
-      line += " " + std::string(impl->symbols.name(static_cast<TemplateParamDecl*>(d)->name)) + "=" + impl->types.toString(ty, &impl->symbols);
+      line += " " + impl->debugName(static_cast<TemplateParamDecl*>(d)->name) + "=" + impl->types.toString(ty, &impl->symbols);
     fprintf(stderr, "%s\n", line.c_str());
   }
   if (objectType)

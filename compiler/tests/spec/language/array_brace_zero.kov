@@ -1,0 +1,13 @@
+// spec: an array zero-filled by `= {0}` and `= {}`, with fewer initializers than elements
+// found in src/Util (Util::initMortonTable: `uint64_t table[256] = {0};`)
+int main()
+{
+  uint64_t table[256] = {0};
+  int few[4] = {1, 2};
+  double none[3] = {};
+  int sum = 0;
+  for (int i = 0; i < 256; ++i)
+    sum += (int)table[i];
+  println("{} {} {} {}", sum, few[1] + few[3], none[2], (int)sizeof(table));
+  return 0;
+}

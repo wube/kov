@@ -1,0 +1,10 @@
+// Util smoke test: the math expression evaluator (Tokenizer, PostfixTokenizer, Evaluator over
+// FlatMap tables of operators and functions) on a few expressions.
+int main()
+{
+  println("{}", MathExpressions::Evaluator::run("1 + 2 * 3"));
+  println("{}", MathExpressions::Evaluator::run("(1 + 2) * 3"));
+  println("{}", MathExpressions::Evaluator::run("10 / 4"));
+  println("{}", MathExpressions::Evaluator::run("2 * (3 + 4) - 5"));
+  return 0;
+}
