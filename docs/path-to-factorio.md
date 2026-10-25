@@ -7,7 +7,7 @@ hard each site is.
 
 ## Where kovc is
 
-- **Front end.** Parses 99.27% of Factorio's files and types 77% of the expressions and 78% of
+- **Front end.** Parses 99.54% of Factorio's files and types 77% of the expressions and 78% of
   the member accesses in 0.32 s on 32 threads. What it cannot type is the standard library
   (54 k `std::` references), macro-generated code and a tail of resolver gaps (templated
   aliases, dependent members through templated bases).
@@ -446,6 +446,23 @@ rather than a translation). The C import also needs curl's include directory (`U
 the 8.7k unresolved names say Util cannot be compiled alone: the game's root headers (`Log`,
 `GlobalContext`, `RuntimeError`), `Map` and the Lua binding come with it, so the next conversion
 set is Util plus those, with stubs for what the smoke tests do not touch.
+
+The second pass, the same night, closed every parse error. Parser: specifiers after the type
+(`float static f()`, `void inline g()`, `const static int x[]`), array and function types as
+alias targets, operator functions called by name, calling conventions dropped from the tokens of
+every source (as the C importer already did), the `requires` clause before a body no longer read
+as a braced construction, and deduction guides parsed (and dropped by the converter: Kov deduces
+from constructors). Converter: a carried default argument is the text after its `=` with std
+names mapped (`= std::string()` had become `= ()`), a removed friend or declaration takes the
+`template<...>` header and `[[attributes]]` written above it, `FORMAT_ATTR(4, 5)` goes with its
+arguments, `NTAPI`/`WINAPI`/`EXTERNC` are known macros, and `__try`/`__except` become
+`try`/`catch (...)` with a todo naming the dropped filter. Util: 0 parse errors in 304 files,
+85.4% of expressions typed. The whole Factorio front end moved with it, from 99.27% to 99.54% of
+files parsing clean (93 errors in 37 files, down from 208 in 59). Spec: `language/specifier_order`,
+`language/alias_array_function_types`, `language/explicit_operator_call`,
+`interop/calling_convention_pointers`, `templates/requires_clause_before_body`;
+`templates/deduction_guides` stays pending (the `Overload{lambdas...}` idiom needs `using
+Ts::operator()...` and aggregate deduction).
 
 ## The order that gets to a running game
 

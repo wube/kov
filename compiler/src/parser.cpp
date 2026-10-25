@@ -56,6 +56,7 @@ namespace
     uint32_t kwImplicit, kwFallthrough, kwBothConst, kwClassConst, kwAccumulate, kwImport, kwAssert, kwReleaseAssert, kwCaller,
              kwConditional, kwUnderscore, kwConfig, kwNameof, kwCount, kwValues, kwStr, kwTypes, kwFromStr, kwOptional, kwText, kwTag, kwTagField;
     uint8_t pendingAttributes = 0;   // [[noinline]] and friends seen before the current declaration.
+    bool pendingConst = false;       // `const static int x`: the const read among the specifiers, applied to the type that follows.
     Expr* pendingAlignment = nullptr; // alignas(N) seen before the current class.
     Expr* pendingCondition = nullptr; // conditional(expr) seen in the current specifiers.
 
@@ -951,6 +952,22 @@ namespace
       }
     }
 
+    // At `(`: is the balanced parameter list followed by `->` (a deduction guide)?
+    bool deductionGuideAhead() const
+    {
+      int depth = 0;
+      for (uint32_t i = pos; i < toks.size(); ++i)
+      {
+        if (toks[i].is(P::LParen))
+          ++depth;
+        else if (toks[i].is(P::RParen) && --depth == 0)
+          return i + 1 < toks.size() && toks[i + 1].is(P::Arrow);
+        else if (toks[i].is(P::Semi) || toks[i].is(P::LBrace) || toks[i].getKind() == TokenKind::End)
+          return false;
+      }
+      return false;
+    }
+
     // Lookahead for `( Name::Name::* ) (` without allocating.
     bool memberFunctionPointerAhead() const
     {
@@ -1477,13 +1494,30 @@ namespace
         uint32_t save = pos;
         QualifiedName name;
         size_t mark = scratch.size();
-        if (parseQualifiedName(name, true) && at(P::LParen) && isConstructorLikeName(name, scope))
+        if (parseQualifiedName(name, true) && at(P::LParen))
         {
-          Declarator d;
-          d.name = name;
-          parseFunctionSuffix(d);
-          finishFunction(start, nullptr, d, flags, templ, scope);
-          return;
+          if (isConstructorLikeName(name, scope))
+          {
+            Declarator d;
+            d.name = name;
+            parseFunctionSuffix(d);
+            finishFunction(start, nullptr, d, flags, templ, scope);
+            return;
+          }
+          if (templ.present && deductionGuideAhead())
+          {
+            // `template<typename... Ts> Overload(Ts...) -> Overload<Ts...>;`: a deduction guide.
+            // Kov deduces class arguments from constructors; the converter drops these.
+            skipBalanced();
+            while (!at(P::Semi) && !at(TokenKind::End))
+              advance();
+            accept(P::Semi);
+            EmptyDecl* e = decl<EmptyDecl>(start);
+            e->isDeductionGuide = true;
+            e->endToken = pos;
+            pushDecl(e);
+            return;
+          }
         }
         restore(save);
         scratch.resize(mark);
@@ -1494,6 +1528,14 @@ namespace
       {
         error("expected declaration");
         return;
+      }
+      parseDeclSpecifiers(flags); // C++ lets them follow the type: `float static f()`, `void inline g()`, `const static int x[]`
+      if (pendingConst)
+      {
+        ConstType* c = node<ConstType>(start);
+        c->inner = type;
+        type = c;
+        pendingConst = false;
       }
       // Declarators.
       Type* baseType = stripSuffixes(type);
@@ -1574,7 +1616,13 @@ namespace
       for (;;)
       {
         skipAttributes();
-        if (accept(Kw::static_)) flags |= DF_Static;
+        if (at(Kw::const_) && (at(Kw::static_, 1) || at(Kw::inline_, 1) || at(Kw::constexpr_, 1) || at(Kw::extern_, 1) ||
+                              at(Kw::thread_local_, 1) || at(Kw::mutable_, 1)))
+        {
+          advance(); // `const static int x`: the const belongs to the type, read after the specifiers
+          pendingConst = true;
+        }
+        else if (accept(Kw::static_)) flags |= DF_Static;
         else if (accept(Kw::virtual_)) flags |= DF_Virtual;
         else if (accept(Kw::inline_)) flags |= DF_Inline;
         else if (accept(Kw::constexpr_)) flags |= DF_Constexpr;
@@ -2102,6 +2150,8 @@ namespace
         u->type = parseType();
         if (!u->type)
           error("expected type in alias");
+        else
+          u->type = parseAliasSuffixes(u->type);
         expect(P::Semi, "expected ';'");
         pushDecl(u);
         return;
@@ -2122,6 +2172,29 @@ namespace
           break;
       }
       expect(P::Semi, "expected ';'");
+    }
+
+    // The abstract declarator an alias may put after its type: `T[N]`, `R(Args)`, `R(*)(Args)`
+    // (calling conventions are dropped from the tokens before parsing: one convention on x64).
+    Type* parseAliasSuffixes(Type* type)
+    {
+      type = parseTypeSuffixes(type); // pointers, references, (*)(Args), C::*
+      if (at(P::LBracket))
+        return parseArraySuffixes(type);
+      if (at(P::LParen) && !at(P::Star, 1))
+      {
+        // `using Unary = double(double);`: a function type.
+        uint32_t start = pos;
+        Declarator d;
+        parseFunctionSuffix(d);
+        FunctionType* f = node<FunctionType>(start);
+        f->result = type;
+        f->params = d.params;
+        f->isConst = (d.flags & DF_Const) != 0;
+        f->isNoexcept = (d.flags & DF_Noexcept) != 0;
+        return f;
+      }
+      return type;
     }
 
     void parseTemplate(Scope scope, uint32_t flags = 0)
@@ -3898,6 +3971,8 @@ namespace
             case Kw::union_:
             case Kw::enum_:
               return parseTypeAsExpr(start);
+            case Kw::operator_:
+              return parseNameExpr(start); // `operator==(l, r)`: the operator function by name
             default:
               if (isBuiltinTypeKeyword(Kw(tok().id)))
                 return parseTypeAsExpr(start);
@@ -3987,8 +4062,9 @@ namespace
           advance();
         return l;
       }
-      // `Name{...}` is a braced functional cast / aggregate construction.
-      if (at(P::LBrace) && !noGreater)
+      // `Name{...}` is a braced functional cast / aggregate construction (not in a requires
+      // clause, where the brace after the constraint opens the function's body).
+      if (at(P::LBrace) && !noGreater && !inRequires)
       {
         // Distinguish from a block starting after an expression statement: only at expression
         // positions where '{' cannot start a statement. The caller contexts (arguments,
@@ -4470,10 +4546,10 @@ void parseFile(std::vector<Token>& tokens, std::string_view text, SymbolTable& s
                const ConfigValues* config)
 {
   filterDirectives(tokens, text);
-  if (cMode)
   {
-    // C headers: calling conventions and pointer-size modifiers mean nothing here, and they
-    // appear in positions the declarator grammar does not expect, as in `int (__cdecl* f)(void)`.
+    // Calling conventions and pointer-size modifiers mean nothing here (one convention on x64),
+    // and they appear in positions the declarator grammar does not expect, as in
+    // `int (__cdecl* f)(void)` in C headers or `BOOL(__stdcall*)(void)` in converted sources.
     auto isNoise = [&](const Token& t)
     {
       if (TokenKind(t.kind) != TokenKind::Identifier)

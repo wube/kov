@@ -252,7 +252,7 @@ struct UsingNameDecl : Decl { QualifiedName name; bool isEnum = false; };
 struct StaticAssertDecl : Decl { Expr* cond; };
 struct MacroDecl : Decl { uint32_t name; uint32_t endToken; };
 struct ErrorDecl : Decl { uint32_t endToken; };
-struct EmptyDecl : Decl {};
+struct EmptyDecl : Decl { bool isDeductionGuide = false; }; // isDeductionGuide: `template<...> Name(args) -> Name<...>;`, skipped (Kov deduces from constructors)
 struct AsmDecl : Decl {};
 struct FriendDecl : Decl { Type* type; Decl* decl; };
 struct ImportDecl : Decl { uint32_t pathToken; }; // extern "C" import "header.h"; (the string token)

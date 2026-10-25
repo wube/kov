@@ -6,15 +6,13 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**137 pass, 7 pending, 0 failing, 0 fixed** (144 snippets, 2.4 s).
+**142 pass, 2 pending, 0 failing, 0 fixed** (144 snippets, 2.4 s).
 
 ## Language: statements, expressions, declarations
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `language/alias_array_function_types.kov` | aliases of array and function types: `using Row = int[3]`, `using Grid = size_t[2][3]`, `using Unary = double(double)` | pending |  | array and function types are not parsed as alias targets; C:\kov\compiler\tests\spec\language\alias_array_function_types.kov:10: codegen does not support a local of unknown type (r) yet (in @kov.main) |
-| `language/explicit_operator_call.kov` | an operator function called by name: `operator==(a, b)`, `a.operator[](i)` | pending |  | `operator ==` as a function name in an expression is not parsed; C:\kov\compiler\tests\spec\language\explicit_operator_call.kov:6: codegen does not support the statement kind ErrorStmt yet (in @"differ(const Digest&, const Digest&)") |
-| `language/specifier_order.kov` | declaration specifiers in any order: `float static f()`, `void inline g()`, `const static int x[]` in a body | pending |  | specifiers after the type are not parsed; C:\kov\compiler\tests\spec\language\specifier_order.kov:11: codegen does not support the statement kind ErrorStmt yet (in @kov.main) |
+| `language/alias_array_function_types.kov` | aliases of array and function types: `using Row = int[3]`, `using Grid = size_t[2][3]`, `using Unary = double(double)` | pass |  |  |
 | `language/alignas.kov` | alignas on a struct | pass | 68 alignas/alignof uses in 15 files |  |
 | `language/arrays_2d.kov` | two-dimensional arrays: nested brace initialisation and indexing | pass |  |  |
 | `language/assign_through_returned_reference.kov` | assigning through a reference returned from a function | pass |  |  |
@@ -30,6 +28,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `language/designated_initializers.kov` | designated initializers | pass | 45 uses in 21 files |  |
 | `language/enum_class_cxx.kov` | C++-style enum class with underlying type, casts, flags with operators | pass | 961 uses in 701 files |  |
 | `language/exceptions.kov` | exceptions: throw, catch by reference and base, rethrow, cleanup of locals | pass | 3118 throw sites in 853 files, 457 try blocks |  |
+| `language/explicit_operator_call.kov` | an operator function called by name: `operator==(a, b)`, `a.operator[](i)` | pass |  |  |
 | `language/generic_lambda_predicates.kov` | a generic lambda called with lambda arguments that capture locals, other lambdas and this | pass |  |  |
 | `language/generic_lambdas.kov` | generic lambdas (auto parameters) | pass | 330 uses in 168 files |  |
 | `language/goto.kov` | goto | pass | 8 uses in 6 files |  |
@@ -42,6 +41,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `language/range_for.kov` | range-based for | pass | 8577 uses in 1333 files |  |
 | `language/references.kov` | references: lvalue, const binding a temporary, rvalue references and move | pass |  |  |
 | `language/sizeof_array_type.kov` | sizeof of an array type (sizeof(int[4])) | pass |  |  |
+| `language/specifier_order.kov` | declaration specifiers in any order: `float static f()`, `void inline g()`, `const static int x[]` in a body | pass |  |  |
 | `language/static_assert.kov` | static_assert | pass | 470 uses in 237 files |  |
 | `language/static_locals.kov` | function-local statics | pass | static declarations inside functions: part of 7783 static uses in 1983 files |  |
 | `language/structured_bindings.kov` | structured bindings | pass | 459 uses in 204 files |  |
@@ -83,7 +83,6 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
 | `templates/deduction_guides.kov` | deduction guides and the overload-set idiom: `template<typename... Ts> Overload(Ts...) -> Overload<Ts...>;` with `using Ts::operator()...;` | pending |  | deduction guides and pack using-declarations are not parsed; C:\kov\compiler\tests\spec\templates\deduction_guides.kov:8: codegen does not support a local of unknown type (o) yet (in @kov.main) |
-| `templates/requires_clause_before_body.kov` | a requires clause between a member function's qualifiers and its body: `bool operator==(const V&) const requires Comparable<T> { ... }` | pending |  | the clause's expression swallows the body's brace; LINK : fatal error LNK1561: entry point must be defined |
 | `templates/alias_template_conditional.kov` | an alias template over Conditional with a bool parameter (Conditional<Small, int16_t, int64_t>) | pass |  |  |
 | `templates/alias_template_member_access.kov` | an alias template of a class template (template<typename T> using Ptr = UniquePtr<T>;) used as a variable type | pass | 7 alias templates in 6 files |  |
 | `templates/alias_template_nested_args.kov` | an alias template whose target nests the parameter in another template argument (Vector<Pair<T, T>>) | pass |  |  |
@@ -107,6 +106,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/nested_template_instantiation.kov` | a class template instantiated with another instantiation of itself (Stack<Stack<int>>) through a variadic push | pass |  |  |
 | `templates/non_type_parameters.kov` | non-type template parameters: ints, bools, defaults, used in the body | pass |  |  |
 | `templates/partial_specialisation.kov` | partial specialisation of class templates | pass | 8 uses in 5 files |  |
+| `templates/requires_clause_before_body.kov` | a requires clause between a member function's qualifiers and its body: `bool operator==(const V&) const requires Comparable<T> { ... }` | pass |  |  |
 | `templates/requires_clauses.kov` | constrained templates (requires clauses) | pass | 1274 requires/concept uses in 609 files |  |
 | `templates/several_instantiations_in_one_call.kov` | three instantiations of one function template as arguments of a single variadic call | pass |  |  |
 | `templates/sfinae_enable_if.kov` | enable_if-style overload selection | pass | 1 use (Factorio uses requires clauses instead) |  |
@@ -174,10 +174,10 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `interop/calling_convention_pointers.kov` | function pointer types with a Windows calling convention: `BOOL(__stdcall*)(void)`, `VOID(NTAPI*)(DWORD)` (one convention on x64; the word is accepted and ignored) | pending |  | `__stdcall` inside a function pointer type is not parsed; C:\kov\compiler\tests\spec\interop\calling_convention_pointers.kov:8: codegen does not support a local of unknown type (f) yet (in @kov.main) |
 | `interop/c_callbacks.kov` | Kov functions as C callbacks (function pointers with C signatures) and C function pointers stored in Kov | pass |  |  |
 | `interop/c_import_stdlib.kov` | importing C standard headers and using their functions, types and callbacks (qsort) | pass |  |  |
 | `interop/c_import_windows.kov` | importing a C header (`extern "C" import "windows.h";`) and calling into it | pass |  |  |
 | `interop/c_structs_layout.kov` | C-compatible layout: plain structs passed to and filled by C, sizeof agreement, arrays of structs | pass |  |  |
+| `interop/calling_convention_pointers.kov` | function pointer types with a Windows calling convention: `BOOL(__stdcall*)(void)`, `VOID(NTAPI*)(DWORD)` (one convention on x64; the word is accepted and ignored) | pass |  |  |
 | `interop/extern_c_declarations.kov` | hand-written extern "C" declarations, passing Strings and buffers to C | pass |  |  |
 | `interop/sdl_header.kov` | importing SDL3's header (the game's platform layer) and using its types and constants without linking it | pass |  |  |

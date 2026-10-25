@@ -60,6 +60,7 @@ namespace
   // Known object-like and function-like macros of the corpus that have a direct Kov spelling.
   const std::map<std::string, std::string> knownMacros = {
     {"FORMAT_ATTR", ""}, {"TAG_FORMAT_ATTR", ""}, {"VCALL", ""}, {"NO_INLINE", "[[noinline]]"}, {"ALWAYS_INLINE", "[[forceinline]]"},
+    {"NTAPI", ""}, {"WINAPI", ""}, {"APIENTRY", ""}, {"CALLBACK", ""}, {"EXTERNC", "extern \"C\""},
     {"DEV_TOOL_VARIABLE", ""}, {"BEGIN_SUPPRESS_CONVERSIONS", ""}, {"END_SUPPRESS_CONVERSIONS", ""}, {"BEGIN_FORCE_OPTIMIZE", ""},
     {"END_FORCE_OPTIMIZE", ""}, {"SUPPRESS_UBSAN", ""}, {"PADDING_WARNING", ""}, {"errno", "(*_errno())"}};
   const std::map<std::string, std::string> knownFunctionMacros = {{"FORMAT_STRING", "$1"}, {"WHEN_ASSERT", "$1"}, {"FOR_DEVELOPER", "$1"}};
@@ -858,9 +859,57 @@ namespace
           auto km = knownMacros.find(name);
           if (km != knownMacros.end())
           {
+            if (km->second.empty() && toks[i + 1].is(P::LParen) && (name == "FORMAT_ATTR" || name == "TAG_FORMAT_ATTR"))
+            {
+              // `FORMAT_ATTR(4, 5)` after a parameter list: the attribute macro and its arguments go.
+              int depth = 0;
+              uint32_t j = i + 1;
+              for (; j < toks.size(); ++j)
+              {
+                if (toks[j].is(P::LParen))
+                  ++depth;
+                else if (toks[j].is(P::RParen) && --depth == 0)
+                  break;
+              }
+              if (j < toks.size())
+              {
+                remove(t.offset, endOffset(j) - t.offset);
+                counts.add("macro use rewritten");
+                i = j;
+                continue;
+              }
+            }
             replace(t.offset, t.length, km->second);
             counts.add("macro use rewritten");
             continue;
+          }
+          if (name == "__try")
+          {
+            // Structured exception handling: Kov's exceptions are SEH underneath, so `try` catches
+            // what `__try` did; the filter expression is lost (a todo).
+            replace(t.offset, t.length, "try");
+            counts.add("SEH __try to try");
+            continue;
+          }
+          if (name == "__except" && toks[i + 1].is(P::LParen))
+          {
+            int depth = 0;
+            uint32_t j = i + 1;
+            for (; j < toks.size(); ++j)
+            {
+              if (toks[j].is(P::LParen))
+                ++depth;
+              else if (toks[j].is(P::RParen) && --depth == 0)
+                break;
+            }
+            if (j < toks.size())
+            {
+              todo(t.offset, "SEH __except filter dropped: " + std::string(text.substr(toks[i + 1].offset, endOffset(j) - toks[i + 1].offset)));
+              replace(t.offset, endOffset(j) - t.offset, "catch (...)");
+              counts.add("SEH __except to catch (...)");
+              i = j;
+              continue;
+            }
           }
           auto kf = knownFunctionMacros.find(name);
           if (kf != knownFunctionMacros.end() && toks[i + 1].is(P::LParen))
@@ -939,6 +988,12 @@ namespace
         {
           removeDecl(d); // no friends in Kov; `friend class X;` would read as a nested class
           counts.add("friend declarations removed");
+          continue;
+        }
+        if (d->kind == NodeKind::EmptyDecl && static_cast<EmptyDecl*>(d)->isDeductionGuide)
+        {
+          removeDecl(d); // Kov deduces class arguments from constructors
+          counts.add("deduction guides removed");
           continue;
         }
         switch (d->kind)
@@ -1086,6 +1141,27 @@ namespace
       uint32_t start = toks[d->token].offset;
       while (start > 0 && text[start - 1] != '\n' && text[start - 1] != ';' && text[start - 1] != '{' && text[start - 1] != '}')
         --start;
+      // A `template<...>` header or `[[attributes]]` alone on the lines above belong to it too
+      // (`template<size_t N2> friend class ImmutableString;` written on two lines).
+      for (;;)
+      {
+        if (start == 0 || text[start - 1] != '\n')
+          break;
+        uint32_t prevEnd = start - 1;
+        uint32_t prevStart = prevEnd;
+        while (prevStart > 0 && text[prevStart - 1] != '\n')
+          --prevStart;
+        std::string_view prev = text.substr(prevStart, prevEnd - prevStart);
+        while (!prev.empty() && isspace((unsigned char)prev.front()))
+          prev.remove_prefix(1);
+        while (!prev.empty() && isspace((unsigned char)prev.back()))
+          prev.remove_suffix(1);
+        bool header = prev.size() > 8 && prev.substr(0, 8) == "template" && prev.back() == '>';
+        bool attribute = prev.size() > 4 && prev.substr(0, 2) == "[[" && prev.substr(prev.size() - 2) == "]]";
+        if (!header && !attribute)
+          break;
+        start = prevStart;
+      }
       uint32_t end = d->endToken > d->token && d->endToken <= toks.size() ? endOffset(d->endToken - 1) : start;
       // Take the rest of the line too when nothing else is on it.
       uint32_t lineEnd = end;
@@ -1595,9 +1671,37 @@ std::string convertToKov(const std::vector<ConvertInput>& inputs, GlobalScope& g
           uint32_t end = parameterEndIn(*in.tokens, dv->token);
           if (end == UINT32_MAX || end <= dv->token)
             continue;
-          uint32_t from = (*in.tokens)[dv->token].offset;
+          // The text after the parameter's `=` (the expression node's token can sit inside it:
+          // `std::string()` starts at its parenthesis), with std:: names mapped as elsewhere.
+          uint32_t fromTok = dv->token;
+          for (uint32_t k = f->params[i]->token, depth = 0; k < end; ++k)
+          {
+            const Token& tk = (*in.tokens)[k];
+            if (tk.is(P::LParen) || tk.is(P::LBracket) || tk.is(P::LBrace))
+              ++depth;
+            else if (tk.is(P::RParen) || tk.is(P::RBracket) || tk.is(P::RBrace))
+              --depth;
+            else if (tk.is(P::Assign) && depth == 0)
+            {
+              fromTok = k + 1;
+              break;
+            }
+          }
+          uint32_t from = (*in.tokens)[fromTok].offset;
           uint32_t to = (*in.tokens)[end - 1].offset + (*in.tokens)[end - 1].length;
-          carriedDefaults[def].push_back({i, std::string(in.text.substr(from, to - from))});
+          std::string value(in.text.substr(from, to - from));
+          for (size_t at = value.find("std::"); at != std::string::npos; at = value.find("std::", at))
+          {
+            size_t nameEnd = at + 5;
+            while (nameEnd < value.size() && (isalnum((unsigned char)value[nameEnd]) || value[nameEnd] == '_'))
+              ++nameEnd;
+            std::string name = value.substr(at + 5, nameEnd - at - 5);
+            auto it = stdNames.find(name);
+            std::string to = it == stdNames.end() ? name : it->second;
+            value.replace(at, nameEnd - at, to);
+            at += to.size();
+          }
+          carriedDefaults[def].push_back({i, value});
         }
       }
     };

@@ -1,6 +1,5 @@
 // spec: declaration specifiers in any order: `float static f()`, `void inline g()`, `const static int x[]` in a body
 // found in src/Util (AUSLBlendData, Prefetch, AsteroidCollectorNavmesh)
-// pending: specifiers after the type are not parsed
 struct Blend
 {
   float static skew(float t, float rate) { return t * rate; }

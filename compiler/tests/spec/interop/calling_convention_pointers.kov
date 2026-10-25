@@ -1,6 +1,5 @@
 // spec: function pointer types with a Windows calling convention: `BOOL(__stdcall*)(void)`, `VOID(NTAPI*)(DWORD)` (one convention on x64; the word is accepted and ignored)
 // found in src/Util (SystemUtil: functions looked up with GetProcAddress)
-// pending: `__stdcall` inside a function pointer type is not parsed
 extern "C" import "windows.h";
 using GetTickCountFn = DWORD(__stdcall*)(void);
 int main()

@@ -504,7 +504,8 @@ Void backend, adds a `Label`, runs one `logic()` step and prints the label's siz
 ten characters of a 10-pixel font, the first GUI layout computed by code kovc compiled. Getting
 there took seven compiler fixes for code that compiled and linked but ran wrong, listed in
 docs/path-to-factorio.md ("Agui links and runs"); the Factorio front-end numbers did not move
-(99.27% of files parse clean, 77.7% of expressions typed). Test suite: 40 programs.
+(99.54% of files parse clean since the Util pass of 2026-10-25, 77.7% of expressions typed). Test
+suite: 40 programs, plus the specification suite of 144 snippets (compiler/tests/spec).
 
 ## Lessons
 

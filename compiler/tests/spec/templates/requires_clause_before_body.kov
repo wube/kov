@@ -1,6 +1,5 @@
 // spec: a requires clause between a member function's qualifiers and its body: `bool operator==(const V&) const requires Comparable<T> { ... }`
 // found in src/Util (Container/StaticVector)
-// pending: the clause's expression swallows the body's brace
 template<typename T> constexpr bool Comparable = true;
 template<typename T>
 struct Box

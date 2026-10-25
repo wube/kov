@@ -1,6 +1,5 @@
 // spec: aliases of array and function types: `using Row = int[3]`, `using Grid = size_t[2][3]`, `using Unary = double(double)`
 // found in src/Util (SmallVector, RadixSort, MathExpressions/Evaluator)
-// pending: array and function types are not parsed as alias targets
 using Row = int[3];
 using Grid = int[2][3];
 using Unary = double(double);
