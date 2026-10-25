@@ -1638,7 +1638,10 @@ struct GlobalScope::Impl
           if (ctx.subst)
             for (const Subst::Pair& p : ctx.subst->pairs)
               s.pairs.push_back(p);
-          TypeContext actx{lexicalScopeOf(u), nullptr, &s, u->file ? u->file->tokens : nullptr, u->file ? u->file->text : std::string_view()};
+          LocalStack own; // the alias's parameters, found by name while its type is converted
+          for (Decl* p : params)
+            own.push(static_cast<TemplateParamDecl*>(p)->name, p);
+          TypeContext actx{lexicalScopeOf(u), &own, &s, u->file ? u->file->tokens : nullptr, u->file ? u->file->text : std::string_view()};
           return convertType(u->type, actx, depth + 1);
         }
         return declaredTypeOf(d, ctx.subst, depth + 1); // under the instantiation's arguments, if any
@@ -1726,6 +1729,8 @@ struct GlobalScope::Impl
                 }
                 return types.unknown();
               }
+            if (n->name.parts.size() == 2)
+              return types.dependentMember(types.param(l.decl), n->name.parts[1].symbol); // `T::Unit`: resolved when T is known
             return types.param(l.decl);
           }
           if (ctx.subst)
@@ -1985,6 +1990,7 @@ struct GlobalScope::Impl
             return true;
         return false;
       case TyKind::Pointer: case TyKind::LRef: case TyKind::RRef: case TyKind::Array: case TyKind::MemberPointer:
+      case TyKind::DependentMember:
         return dependsOn(t->inner, params);
       case TyKind::Function: case TyKind::Class: case TyKind::Lambda:
         if (dependsOn(t->inner, params))
@@ -2003,6 +2009,8 @@ struct GlobalScope::Impl
   {
     if (!pattern || !arg || depth > 16 || !arg->isKnown())
       return;
+    if (pattern->kind == TyKind::DependentMember)
+      return; // `typename T::Unit` is not a deduced context
     if (pattern->kind == TyKind::Param)
     {
       // `T value` takes the decayed argument; inside a pointer or a class (`T*`, `Vector<T>`) T
@@ -2174,6 +2182,26 @@ struct GlobalScope::Impl
         if (const Ty* r = s.find(t->decl))
           return types.qualified(r, t->isConst || r->isConst, t->isVolatile || r->isVolatile); // T = const int keeps its const
         return t;
+      case TyKind::DependentMember:
+      {
+        // `T::Unit` with T now a class: the member type inside it.
+        const Ty* sub = substitute(t->inner, s, depth + 1);
+        if (sub && sub->kind == TyKind::Class && sub->decl)
+          if (Scope* inside = classScopeOf(sub))
+          {
+            Lookup inner;
+            if (lookupInScope(inside, uint32_t(t->value), inner, depth + 1) && inner.decl)
+            {
+              Subst s2 = sub->args.empty() ? Subst{} : substFor(sub);
+              TypeContext c2{inside, nullptr, &s2};
+              NamePart part{};
+              part.symbol = uint32_t(t->value);
+              const Ty* r = typeOfTypeDecl(inner.decl, inner, part, c2, depth + 1);
+              return types.qualified(r, t->isConst || (r && r->isConst), t->isVolatile);
+            }
+          }
+        return sub == t->inner ? t : types.dependentMember(sub, uint32_t(t->value));
+      }
       case TyKind::Pointer: return types.qualified(types.pointer(substitute(t->inner, s, depth + 1)), t->isConst, t->isVolatile);
       case TyKind::LRef: return types.lref(substitute(t->inner, s, depth + 1));
       case TyKind::RRef: return types.rref(substitute(t->inner, s, depth + 1));

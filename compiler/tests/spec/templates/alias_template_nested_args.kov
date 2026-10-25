@@ -1,5 +1,4 @@
 // spec: an alias template whose target nests the parameter in another template argument (Vector<Pair<T, T>>)
-// pending: the element type stays Pair<T, T>, so a Pair<int, int> is "an unrelated class"
 template<typename T> using Pairs = Vector<Pair<T, T>>;
 int main()
 {

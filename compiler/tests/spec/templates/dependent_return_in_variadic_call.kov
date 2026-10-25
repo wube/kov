@@ -1,5 +1,4 @@
 // spec: a call whose return type is dependent (typename T::Unit) used directly as a variadic argument
-// pending: println("{}", scaled(m)) is "passing a non-class to a class parameter"; storing the result in an int first works
 struct Meters { using Unit = int; static const int scale = 100; Unit value = 3; };
 template<typename T> typename T::Unit scaled(const T& t) { return t.value * T::scale; }
 int main()

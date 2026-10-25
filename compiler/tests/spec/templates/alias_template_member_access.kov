@@ -1,6 +1,5 @@
 // spec: an alias template of a class template (template<typename T> using Ptr = UniquePtr<T>;) used as a variable type
 // factorio: 7 alias templates in 6 files
-// pending: `p->v` through the alias has an unknown type (the same through UniquePtr<Big> works)
 template<typename T> using Ptr = UniquePtr<T>;
 struct Big { int v = 2; };
 int main()

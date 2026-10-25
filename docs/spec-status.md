@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**96 pass, 34 pending, 0 failing, 0 fixed** (130 snippets, 1.8 s).
+**101 pass, 29 pending, 0 failing, 0 fixed** (130 snippets, 1.9 s).
 
 ## Language: statements, expressions, declarations
 
@@ -78,22 +78,22 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
 | `templates/alias_template_conditional.kov` | an alias template over Conditional with a bool parameter (Conditional<Small, int16_t, int64_t>) | pending |  | `Index<true>` has an unknown type; C:\kov\compiler\tests\spec\templates\alias_template_conditional.kov:6: codegen does not support a local of unknown type (a) yet (in @kov.main) |
-| `templates/alias_template_member_access.kov` | an alias template of a class template (template<typename T> using Ptr = UniquePtr<T>;) used as a variable type | pending | 7 alias templates in 6 files | `p->v` through the alias has an unknown type (the same through UniquePtr<Big> works); C:\kov\compiler\tests\spec\templates\alias_template_member_access.kov:12: codegen does not support a parameter of unknown type (args: <unknown>) yet (in @kov.main) |
-| `templates/alias_template_nested_args.kov` | an alias template whose target nests the parameter in another template argument (Vector<Pair<T, T>>) | pending |  | the element type stays Pair<T, T>, so a Pair<int, int> is "an unrelated class"; C:\kov\compiler\tests\spec\templates\alias_template_nested_args.kov:7: codegen does not support binding an unrelated class to a reference yet (in @kov.main) |
-| `templates/alias_template_over_trait.kov` | an alias template whose target is a type trait (template<typename T> using Plain = RemoveReference<T>;) | pending |  | a variable of type Plain<int&> has an unknown type; C:\kov\compiler\tests\spec\templates\alias_template_over_trait.kov:6: codegen does not support a local of unknown type (y) yet (in @kov.main) |
-| `templates/alias_template_reference.kov` | an alias template producing a reference type | pending |  | `template<typename T> using Ref = RemoveReference<T>&;` gives a variable of unknown type; C:\kov\compiler\tests\spec\templates\alias_template_reference.kov:8: codegen does not support an assignment to an expression of unknown type yet (in @kov.main) |
 | `templates/class_template_outofline_members.kov` | members of a class template with a non-type parameter defined out of line | pending |  | `Ring<int, 3>::push` is referenced but never defined (link error); templates.class_template_outofline_members.exe.21.o : error LNK2019: unresolved external symbol Ring<int32, 3>::push(const int32&) referenced in function kov.main |
-| `templates/dependent_return_in_variadic_call.kov` | a call whose return type is dependent (typename T::Unit) used directly as a variadic argument | pending |  | println("{}", scaled(m)) is "passing a non-class to a class parameter"; storing the result in an int first works; C:\kov\compiler\tests\spec\templates\dependent_return_in_variadic_call.kov:8: codegen does not support passing a non-class to a class parameter yet (in @kov.main) |
 | `templates/nested_template_instantiation.kov` | a class template instantiated with another instantiation of itself (Stack<Stack<int>>) through a variadic push | pending |  | `nested.push()` with an empty pack picks emplace_back(const T&) and emits a call without its argument (malformed IR); C:\kov\compiler\tests\spec\templates\nested_template_instantiation.kov:7: codegen does not support a call to Vector::emplace_back without an argument for its parameter value (and the overload resolution let it through) yet (in @"Stack<Stack<int32>>::push<>()", requested by @kov.main) |
 | `templates/requires_clauses.kov` | constrained templates (requires clauses) | pending | 1274 requires/concept uses in 609 files | requires clauses are parsed but not enforced (the first overload is taken for both calls); concepts are not implemented; line 1: got `42 3`, expected `42 not integral` |
 | `templates/sfinae_enable_if.kov` | enable_if-style overload selection | pending | 1 use (Factorio uses requires clauses instead) | EnableIf substitution failure does not remove the overload; C:\kov\compiler\tests\spec\templates\sfinae_enable_if.kov:8: codegen does not support a call to kind whose template arguments could not be deduced yet (in @kov.main) |
 | `templates/template_template_parameters.kov` | template template parameters | pending |  | template template parameters are not implemented; C:\kov\compiler\tests\spec\templates\template_template_parameters.kov:10: codegen does not support a call to countAll whose template arguments could not be deduced yet (in @kov.main) |
+| `templates/alias_template_member_access.kov` | an alias template of a class template (template<typename T> using Ptr = UniquePtr<T>;) used as a variable type | pass | 7 alias templates in 6 files |  |
+| `templates/alias_template_nested_args.kov` | an alias template whose target nests the parameter in another template argument (Vector<Pair<T, T>>) | pass |  |  |
+| `templates/alias_template_over_trait.kov` | an alias template whose target is a type trait (template<typename T> using Plain = RemoveReference<T>;) | pass |  |  |
+| `templates/alias_template_reference.kov` | an alias template producing a reference type | pass |  |  |
 | `templates/alias_templates_traits.kov` | type traits in if constexpr (isPointer, isSame) inside a deduced function template | pass | 169 type trait uses in 77 files |  |
 | `templates/class_template_static_members.kov` | a static data member of a class template is one object per instantiation | pass |  |  |
 | `templates/class_templates.kov` | class templates: members, nested typedefs, static constexpr functions, several instantiations | pass |  |  |
 | `templates/ctad.kov` | class template argument deduction from constructor arguments | pass |  |  |
 | `templates/dependent_member_typedef.kov` | a member typedef of a dependent instantiation as a return type (typename Vector<T>::iterator) | pass |  |  |
 | `templates/dependent_names.kov` | dependent names: T::Type, T::constant, this-> in templates, a dependent return type | pass |  |  |
+| `templates/dependent_return_in_variadic_call.kov` | a call whose return type is dependent (typename T::Unit) used directly as a variadic argument | pass |  |  |
 | `templates/enum_template_parameters.kov` | enum values as non-type template arguments | pass |  |  |
 | `templates/forwarding_conversions.kov` | forwarding a string literal through a variadic member template into a String constructor (emplace_back("x")) | pass |  |  |
 | `templates/function_templates.kov` | function templates: deduction, explicit arguments, overloading with non-templates, full specialisation | pass | 592 full specialisations in 61 files |  |

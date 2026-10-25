@@ -23,6 +23,7 @@ enum class TyKind : uint8_t
   Class,   // decl = ClassDecl (definition if known), args = template arguments (empty for non-templates)
   Enum,    // decl = EnumDecl
   Param,   // decl = TemplateParamDecl: dependent on a template parameter
+  DependentMember, // inner = a dependent type, value = a member's symbol: `T::Unit`, resolved when T is substituted
   Lambda,  // inner = return type (null if unknown), args = parameters; decl = the LambdaExpr owner (unused)
   MemberPointer, // inner = member type, decl = owning class decl (may be null)
   Auto,    // Placeholder inside a declared type, replaced by deduction.
@@ -76,6 +77,7 @@ public:
   const Ty* classType(Decl* decl, Span<const Ty*> args);
   const Ty* enumType(Decl* decl);
   const Ty* param(Decl* decl);
+  const Ty* dependentMember(const Ty* of, uint32_t symbol); // `T::Unit`
   const Ty* valueType(const Ty* of, int64_t value); // a non-type template argument
   // instance: a hash of the enclosing instantiation's arguments, so that a lambda written in a
   // template is a different type (with its own closure and function) in each instantiation.

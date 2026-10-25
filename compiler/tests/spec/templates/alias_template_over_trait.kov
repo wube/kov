@@ -1,5 +1,4 @@
 // spec: an alias template whose target is a type trait (template<typename T> using Plain = RemoveReference<T>;)
-// pending: a variable of type Plain<int&> has an unknown type
 template<typename T> using Plain = RemoveReference<T>;
 int main()
 {

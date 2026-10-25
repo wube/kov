@@ -226,6 +226,14 @@ const Ty* TypeTable::param(Decl* decl)
   return intern(t);
 }
 
+const Ty* TypeTable::dependentMember(const Ty* of, uint32_t symbol)
+{
+  Ty t{TyKind::DependentMember};
+  t.inner = of;
+  t.value = symbol;
+  return intern(t);
+}
+
 const Ty* TypeTable::lambda(const Ty* result, Span<const Ty*> params, Decl* closure, int64_t instance)
 {
   Ty t{TyKind::Lambda};
@@ -296,7 +304,7 @@ bool TypeTable::isDependent(const Ty* t) const
     return false;
   switch (t->kind)
   {
-    case TyKind::Param: case TyKind::Auto: return true;
+    case TyKind::Param: case TyKind::Auto: case TyKind::DependentMember: return true;
     case TyKind::Pointer: case TyKind::LRef: case TyKind::RRef: case TyKind::Array: case TyKind::Value:
       return isDependent(t->inner);
     case TyKind::MemberPointer:
@@ -389,6 +397,7 @@ std::string TypeTable::toString(const Ty* t, const SymbolTable* symbols) const
       break;
     case TyKind::Enum: s += declName(t->decl); break;
     case TyKind::Param: s += declName(t->decl); break;
+    case TyKind::DependentMember: s += toString(t->inner, symbols) + "::" + (symbols ? std::string(symbols->name(uint32_t(t->value))) : std::string("?")); break;
     case TyKind::Value:
       s += t->inner && t->inner->kind == TyKind::Bool ? (t->value ? "true" : "false") : std::to_string(t->value);
       break;
