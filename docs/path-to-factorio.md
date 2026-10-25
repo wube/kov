@@ -362,13 +362,21 @@ checked against the suite, the 40 end-to-end tests and the CommonUtil and Agui s
    so a generic lambda can be a template argument. `auto&`, `const auto*` and plain `auto`
    returns of function templates take the written shape of the deduced type and are recorded on
    the call like any deduced arguments. `Table.cpp` converts as written; its override is gone.
+7. **`for constexpr`** (design.md 8.2), the first of the section 8 features: `for constexpr
+   (typename T : types<A, B>)` and `for constexpr (int i : {1, 2, 4})` inside functions. The loop
+   variable is a template parameter of the body; the body is re-typed and generated once per
+   element exactly as a pack expansion is (the resolver's per-instantiation re-typing with the
+   element bound, then the statement emitted under those arguments), so `T::name()`,
+   `squared<i>()` and `int buffer[i + 1]` work in it. Spec: `kov/for_constexpr_values`,
+   `kov/for_constexpr_types`, `kov/for_constexpr_constant`; `kov/for_constexpr_switch` (one
+   `case` per type) is the next step.
 
-The suite went from 80 pass / 49 pending to 124 pass / 9 pending; the Factorio front end stayed
+The suite went from 80 pass / 49 pending to 127 pass / 8 pending; the Factorio front end stayed
 at 99.27% parsed and 77.6-77.8% typed (members of dependent qualifiers now count as dependent
 instead of being guessed from the primary template). Left pending, in order of Factorio use:
-the Kov-only features of design.md section 8 (`for constexpr`, reflection, typed unions,
-`fromStr`, tests), `Variant` (superseded by typed unions), pointers to member functions, template
-template parameters, and the SDL header import.
+the rest of design.md section 8 (reflection, typed unions, `fromStr`, `case` labels from `for
+constexpr`, tests), `Variant` (superseded by typed unions), pointers to member functions,
+template template parameters, and the SDL header import.
 
 ## The order that gets to a running game
 

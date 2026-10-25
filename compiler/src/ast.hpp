@@ -88,7 +88,7 @@ struct Span
   X(VariableDecl) X(UsingAliasDecl) X(UsingDirectiveDecl) X(UsingNameDecl) X(TemplateParamDecl) \
   X(StaticAssertDecl) X(MacroDecl) X(ErrorDecl) X(EmptyDecl) X(AsmDecl) X(FriendDecl) X(ImportDecl) \
   /* statements */ \
-  X(BlockStmt) X(ExprStmt) X(DeclStmt) X(IfStmt) X(AssertStmt) X(ForStmt) X(RangeForStmt) X(WhileStmt) \
+  X(BlockStmt) X(ExprStmt) X(DeclStmt) X(IfStmt) X(AssertStmt) X(ForStmt) X(RangeForStmt) X(ForConstexprStmt) X(WhileStmt) \
   X(DoStmt) X(SwitchStmt) X(CaseStmt) X(DefaultStmt) X(ReturnStmt) X(BreakStmt) X(ContinueStmt) \
   X(GotoStmt) X(LabelStmt) X(TryStmt) X(EmptyStmt) X(ErrorStmt) X(FallthroughStmt) X(AsmStmt) X(MacroStmt) \
   /* expressions */ \
@@ -261,6 +261,10 @@ struct IfStmt : Stmt { Stmt* init = nullptr; Node* cond; Stmt* then; Stmt* else_
 struct AssertStmt : Stmt { Expr* cond; uint32_t startToken, endToken; bool release = false; }; // tokens of the expression text // assert(cond); release_assert(cond);
 struct ForStmt : Stmt { Stmt* init = nullptr; Node* cond = nullptr; Expr* step = nullptr; Stmt* body; };
 struct RangeForStmt : Stmt { Decl* var; Expr* range; Stmt* body; };
+// `for constexpr (typename T : types<A, B>) body`, `for constexpr (int i : {1, 2, 4}) body`: var is a
+// TemplateParamDecl (a type, or a value with valueType), list a `types<...>` NamedType, a brace list of
+// constants or an expression naming a list; the body is instantiated once per element (design.md 8.2).
+struct ForConstexprStmt : Stmt { Decl* var; Node* list; Stmt* body; };
 struct WhileStmt : Stmt { Node* cond; Stmt* body; };
 struct DoStmt : Stmt { Stmt* body; Expr* cond; };
 struct SwitchStmt : Stmt { Stmt* init = nullptr; Node* cond; Stmt* body; };

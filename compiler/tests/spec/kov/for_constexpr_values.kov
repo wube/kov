@@ -1,6 +1,5 @@
 // spec: for constexpr over a list of constants
 // design.md 8.2
-// pending: for constexpr is not implemented
 int table[8];
 int main()
 {

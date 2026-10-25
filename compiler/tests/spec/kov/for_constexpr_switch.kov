@@ -1,0 +1,18 @@
+// spec: for constexpr inside a switch, one case per type (design.md 8.2)
+// pending: case labels produced inside a for constexpr body are not implemented
+struct A { static const int kind = 1; static const char* name() { return "a"; } };
+struct B { static const int kind = 2; static const char* name() { return "b"; } };
+const char* nameOf(int kind)
+{
+  switch (kind)
+  {
+    for constexpr (typename T : types<A, B>)
+      case T::kind: return T::name();
+  }
+  return "?";
+}
+int main()
+{
+  println("{} {} {}", nameOf(1), nameOf(2), nameOf(3));
+  return 0;
+}

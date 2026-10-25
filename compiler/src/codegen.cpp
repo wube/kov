@@ -1845,6 +1845,7 @@ namespace
           visit(static_cast<ForStmt*>(n)->body);
           break;
         case NodeKind::RangeForStmt: visit(static_cast<RangeForStmt*>(n)->range); visit(static_cast<RangeForStmt*>(n)->body); break;
+        case NodeKind::ForConstexprStmt: visit(static_cast<ForConstexprStmt*>(n)->body); break;
         case NodeKind::WhileStmt: visit(static_cast<WhileStmt*>(n)->cond); visit(static_cast<WhileStmt*>(n)->body); break;
         case NodeKind::DoStmt: visit(static_cast<DoStmt*>(n)->body); visit(static_cast<DoStmt*>(n)->cond); break;
         case NodeKind::SwitchStmt:
@@ -6419,6 +6420,9 @@ namespace
         case NodeKind::RangeForStmt:
           rangeFor(static_cast<RangeForStmt*>(s));
           break;
+        case NodeKind::ForConstexprStmt:
+          forConstexpr(static_cast<ForConstexprStmt*>(s));
+          break;
         case NodeKind::CaseStmt:
         case NodeKind::DefaultStmt:
           unsupported(s, "a case label outside a switch body");
@@ -6534,6 +6538,76 @@ namespace
       destroyTemps();
       emitBranch(cL);
       startBlock(eL);
+    }
+
+    // `types<A, B, C>`: the compile-time list of types (design.md 8.1).
+    bool isTypesList(const NamedType* n)
+    {
+      return n->name.parts.size() == 1 && n->name.parts[0].hasTemplateArgs && sym(n->name.parts[0].symbol) == "types";
+    }
+
+    // `for constexpr (typename T : types<A, B>) body` / `for constexpr (int i : {1, 2}) body`: the
+    // body once per element, re-typed and emitted with the loop variable bound to the element (a
+    // type, or a constant), the way a pack expansion binds each element in turn.
+    void forConstexpr(ForConstexprStmt* f)
+    {
+      auto* var = static_cast<TemplateParamDecl*>(f->var);
+      if (!currentFunction)
+        unsupported(f, "for constexpr outside a function");
+      TemplateArgs none;
+      TemplateArgs original = currentArgs ? *currentArgs : none;
+      std::vector<const Ty*> elements;
+      Node* list = f->list;
+      if (list && list->kind == NodeKind::NamedType && isTypesList(static_cast<NamedType*>(list)))
+      {
+        if (!var->isType)
+          unsupported(f, "a list of types for a for constexpr value variable");
+        for (Node* arg : static_cast<NamedType*>(list)->name.parts[0].templateArgs)
+        {
+          if (!arg || uint8_t(arg->kind) > uint8_t(NodeKind::PackType))
+            unsupported(f, "an element of types<...> that is not a type");
+          const Ty* t = global.typeOfAstIn(static_cast<Type*>(arg), currentFunction, original);
+          if (!t || !t->isKnown())
+            unsupported(f, "an element of types<...> whose type is unknown");
+          elements.push_back(t);
+        }
+      }
+      else if (list && list->kind == NodeKind::BraceInitExpr)
+      {
+        if (var->isType)
+          unsupported(f, "a list of values for a for constexpr type variable");
+        const Ty* elementTy = var->valueType ? global.typeOfAstIn(var->valueType, currentFunction, original) : nullptr;
+        if (!elementTy || !elementTy->isKnown() || elementTy->kind == TyKind::Auto)
+          unsupported(f, "a for constexpr value variable without a written type");
+        for (Expr* e : static_cast<BraceInitExpr*>(list)->args)
+        {
+          std::optional<int64_t> v = evalConst(e);
+          if (!v)
+            unsupported(e, "a for constexpr element that is not a constant");
+          elements.push_back(types.valueType(elementTy, *v));
+        }
+      }
+      else
+        unsupported(f, "a for constexpr list that is neither types<...> nor a brace list of constants");
+      const TemplateArgs* savedArgs = currentArgs;
+      for (const Ty* element : elements)
+      {
+        TemplateArgs elementArgs = original;
+        bool bound = false;
+        for (auto& [d, t] : elementArgs.pairs)
+          if (d == var)
+            t = element, bound = true;
+        if (!bound)
+          elementArgs.pairs.push_back({var, element});
+        global.retypeFor(currentFunction, elementArgs, currentClassTy);
+        currentArgs = &elementArgs;
+        pushScope();
+        statement(f->body);
+        popScope();
+        currentArgs = savedArgs;
+      }
+      if (!elements.empty())
+        global.retypeFor(currentFunction, original, currentClassTy);
     }
 
     void rangeFor(RangeForStmt* f)

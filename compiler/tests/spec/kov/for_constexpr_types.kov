@@ -1,6 +1,5 @@
 // spec: for constexpr over a list of types
 // design.md 8.1 and 8.2
-// pending: type lists and for constexpr are not implemented
 struct A { static const char* name() { return "a"; } };
 struct B { static const char* name() { return "b"; } };
 int main()

@@ -41,6 +41,7 @@ namespace
       kwCount = symbols.intern("count");
       kwValues = symbols.intern("values");
       kwStr = symbols.intern("str");
+      kwTypes = symbols.intern("types");
       kwImplicit = symbols.intern("implicit");
       kwFallthrough = symbols.intern("fallthrough");
       kwBothConst = symbols.intern("both_const");
@@ -48,7 +49,7 @@ namespace
       kwAccumulate = symbols.intern("accumulate");
     }
     uint32_t kwImplicit, kwFallthrough, kwBothConst, kwClassConst, kwAccumulate, kwImport, kwAssert, kwReleaseAssert, kwCaller,
-             kwConditional, kwUnderscore, kwConfig, kwNameof, kwCount, kwValues, kwStr;
+             kwConditional, kwUnderscore, kwConfig, kwNameof, kwCount, kwValues, kwStr, kwTypes;
     uint8_t pendingAttributes = 0;   // [[noinline]] and friends seen before the current declaration.
     Expr* pendingAlignment = nullptr; // alignas(N) seen before the current class.
     Expr* pendingCondition = nullptr; // conditional(expr) seen in the current specifiers.
@@ -2954,10 +2955,50 @@ namespace
       cond = e;
     }
 
+    // `for constexpr (typename T : types<A, B>) body` / `for constexpr (int i : {1, 2, 4}) body`
+    // (design.md 8.2): the loop variable is a template parameter of the body, which is instantiated
+    // once per element of the list.
+    Stmt* parseForConstexpr(uint32_t start)
+    {
+      ForConstexprStmt* s = node<ForConstexprStmt>(start);
+      if (!expect(P::LParen, "expected '(' after for constexpr"))
+        return s;
+      TemplateParamDecl* v = decl<TemplateParamDecl>(pos);
+      if (accept(Kw::typename_) || accept(Kw::class_))
+        v->isType = true;
+      else
+      {
+        v->isType = false;
+        v->valueType = parseType();
+        if (!v->valueType)
+          error("expected the type of the for constexpr variable");
+      }
+      if (atIdent())
+      {
+        v->name = tok().id;
+        advance();
+      }
+      else
+        error("expected the name of the for constexpr variable");
+      s->var = v;
+      expect(P::Colon, "expected ':' in for constexpr");
+      if (at(P::LBrace))
+        s->list = parseBraceInit();
+      else if (atIdent(kwTypes) && at(P::Less, 1))
+        s->list = parseType(); // types<A, B, C>
+      else
+        s->list = parseExpression();
+      expect(P::RParen, "expected ')' after for constexpr");
+      s->body = parseStatement();
+      return s;
+    }
+
     Stmt* parseFor()
     {
       uint32_t start = pos;
       advance();
+      if (accept(Kw::constexpr_))
+        return parseForConstexpr(start);
       if (!expect(P::LParen, "expected '(' after for"))
         return nullptr;
       // Range-for: `for (decl : range)`. Detect by scanning for ':' before ';' at depth 0.
@@ -4074,6 +4115,7 @@ namespace
   template<> constexpr NodeKind Parser::nodeKindOf<IfStmt>() { return NodeKind::IfStmt; }
   template<> constexpr NodeKind Parser::nodeKindOf<ForStmt>() { return NodeKind::ForStmt; }
   template<> constexpr NodeKind Parser::nodeKindOf<RangeForStmt>() { return NodeKind::RangeForStmt; }
+  template<> constexpr NodeKind Parser::nodeKindOf<ForConstexprStmt>() { return NodeKind::ForConstexprStmt; }
   template<> constexpr NodeKind Parser::nodeKindOf<WhileStmt>() { return NodeKind::WhileStmt; }
   template<> constexpr NodeKind Parser::nodeKindOf<DoStmt>() { return NodeKind::DoStmt; }
   template<> constexpr NodeKind Parser::nodeKindOf<SwitchStmt>() { return NodeKind::SwitchStmt; }

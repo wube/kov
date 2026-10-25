@@ -1,0 +1,15 @@
+// spec: the for constexpr value is a compile-time constant: a template argument, an array bound
+// design.md 8.2
+template<int N> int squared() { return N * N; }
+int main()
+{
+  int sum = 0;
+  for constexpr (int i : {1, 2, 3})
+  {
+    int buffer[i + 1];
+    buffer[i] = squared<i>();
+    sum += buffer[i];
+  }
+  println("{}", sum);
+  return 0;
+}

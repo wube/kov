@@ -1281,7 +1281,9 @@ struct GlobalScope::Impl
             if (b.symbol == n->name.parts[0].symbol)
               return b.value; // a parameter of the constexpr function being evaluated
         Lookup l = lookupQualified(n->name, ctx.scope, ctx.locals, depth + 1, ctx.subst);
-        return constOfDecl(l.decl, ctx, depth);
+        // A name the context cannot see (a for constexpr variable in `int buffer[i + 1]`): the
+        // declaration the type checker bound where the name is written.
+        return constOfDecl(l.decl ? l.decl : n->resolved, ctx, depth);
       }
       case NodeKind::MemberExpr:
       {
@@ -2848,6 +2850,12 @@ struct GlobalScope::Impl
     int instantiationDepth = 0;
     // Return statements inside lambdas / auto functions record their type here.
     std::vector<const Ty*> returnFrames;
+
+    // `types<A, B, C>`: the compile-time list of types of design.md 8.1 (a builtin name).
+    bool isTypesList(const NamedType* n) const
+    {
+      return n->name.parts.size() == 1 && n->name.parts[0].hasTemplateArgs && symbols.name(n->name.parts[0].symbol) == "types";
+    }
 
     TokenScope tokenScope; // this walker's file is where literals are read from, lookups included
     Walker(Impl& impl, ResolveStats& stats, const std::vector<Token>& tokens, std::string_view text)
@@ -4642,6 +4650,24 @@ struct GlobalScope::Impl
           locals.pop(mark);
           break;
         }
+        case NodeKind::ForConstexprStmt:
+        {
+          // The loop variable is a template parameter of the body: in the generic pass the body
+          // depends on it; the code generator re-types it per element (as a pack expansion).
+          auto* f = static_cast<ForConstexprStmt*>(s);
+          size_t mark = locals.mark();
+          auto* v = static_cast<TemplateParamDecl*>(f->var);
+          walkType(v->valueType);
+          if (f->list && f->list->kind == NodeKind::NamedType && isTypesList(static_cast<NamedType*>(f->list)))
+            for (Node* arg : static_cast<NamedType*>(f->list)->name.parts[0].templateArgs)
+              walkNode(arg); // `types<A, B>`: the elements; the list itself is the compiler's
+          else
+            walkNode(f->list);
+          locals.push(v->name, v);
+          walkStmt(f->body);
+          locals.pop(mark);
+          break;
+        }
         case NodeKind::WhileStmt:
         {
           auto* w = static_cast<WhileStmt*>(s);
@@ -5463,7 +5489,7 @@ void GlobalScope::retypeFor(FunctionDecl* f, const TemplateArgs& args, const Ty*
   w.scope = impl->lexicalScopeOf(f);
   if (f->name.parts.size() > 1)
     w.scope = w.semanticScopeFor(f->name);
-  w.activeSubst = &subst;
+  w.activeSubst = subst.pairs.empty() ? nullptr : &subst; // no arguments: the generic pass again (lambda types keep their identity)
   static bool debugCalls = getenv("KOV_DEBUG_CALLS") != nullptr;
   if (debugCalls)
   {

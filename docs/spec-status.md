@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**124 pass, 9 pending, 0 failing, 0 fixed** (133 snippets, 2.2 s).
+**127 pass, 8 pending, 0 failing, 0 fixed** (135 snippets, 2.1 s).
 
 ## Language: statements, expressions, declarations
 
@@ -145,13 +145,15 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
 | `kov/enum_from_str.kov` | Direction::fromStr returning an Optional | pending |  | fromStr waits for Optional<E> to be constructible from the compiler; C:\kov\compiler\tests\spec\kov\enum_from_str.kov:10: codegen does not support a call that did not resolve yet (in @kov.main) |
-| `kov/for_constexpr_types.kov` | for constexpr over a list of types | pending |  | type lists and for constexpr are not implemented; C:\kov\compiler\tests\spec\kov\for_constexpr_types.kov:9: codegen does not support the statement kind ErrorStmt yet (in @kov.main) |
-| `kov/for_constexpr_values.kov` | for constexpr over a list of constants | pending |  | for constexpr is not implemented; C:\kov\compiler\tests\spec\kov\for_constexpr_values.kov:7: codegen does not support the statement kind ErrorStmt yet (in @kov.main) |
-| `kov/reflection_members.kov` | members(T) with m.name, m.type and object.[m] | pending |  | reflection is not implemented; C:\kov\compiler\tests\spec\kov\reflection_members.kov:9: codegen does not support the statement kind ErrorStmt yet (in @"describe<Settings>(const Settings&)", requested by @kov.main) |
+| `kov/for_constexpr_switch.kov` | for constexpr inside a switch, one case per type (design.md 8.2) | pending |  | case labels produced inside a for constexpr body are not implemented; C:\kov\compiler\tests\spec\kov\for_constexpr_switch.kov:10: codegen does not support a case label outside a switch body yet (in @"nameOf(int32)") |
+| `kov/reflection_members.kov` | members(T) with m.name, m.type and object.[m] | pending |  | reflection is not implemented; C:\kov\compiler\tests\spec\kov\reflection_members.kov:9: codegen does not support a for constexpr list that is neither types<...> nor a brace list of constants yet (in @"describe<Settings>(const Settings&)", requested by @kov.main) |
 | `kov/typed_unions.kov` | typed unions (`union enum`) | pending |  | typed unions are not implemented; C:\kov\compiler\tests\spec\kov\typed_unions.kov:10: codegen does not support a local of unknown type (p) yet (in @kov.main) |
 | `kov/asserts_and_config.kov` | assert and release_assert statements, config constants with if constexpr, conditional functions, CallerLocation | pass |  |  |
 | `kov/attributes_inline.kov` | [[noinline]] and [[forceinline]] attributes | pass |  |  |
 | `kov/config_values.kov` | config constants from the command line (`--config name=value`, `--release`) as compile-time values | pass |  |  |
+| `kov/for_constexpr_constant.kov` | the for constexpr value is a compile-time constant: a template argument, an array bound | pass |  |  |
+| `kov/for_constexpr_types.kov` | for constexpr over a list of types | pass |  |  |
+| `kov/for_constexpr_values.kov` | for constexpr over a list of constants | pass |  |  |
 | `kov/implicit_constructors.kov` | `implicit` constructors convert, others do not (Kov's default is explicit) | pass |  |  |
 | `kov/nameof.kov` | nameof(expr) as a string literal | pass |  |  |
 | `kov/no_includes_order_independence.kov` | no includes, declaration order does not matter: uses before definitions, mutually recursive types | pass |  |  |
