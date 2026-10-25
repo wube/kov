@@ -6,26 +6,25 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**80 pass, 49 pending, 0 failing, 0 fixed** (129 snippets, 1.9 s).
+**86 pass, 43 pending, 0 failing, 0 fixed** (129 snippets, 1.7 s).
 
 ## Language: statements, expressions, declarations
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
 | `language/alignas.kov` | alignas on a struct | pending | 68 alignas/alignof uses in 15 files | alignas is accepted and ignored, and alignof returns the size (12) instead of the alignment; line 1: got `12 12`, expected `16 16` |
-| `language/arrays_2d.kov` | two-dimensional arrays: nested brace initialisation and indexing | pending |  | grid[1][2] reads 0 instead of 6 (nested initialisation or indexing of the second dimension); line 1: got `0 20 6 4`, expected `6 20 6 4` |
-| `language/assign_through_returned_reference.kov` | assigning through a reference returned from a function | pending |  | `pick(x, y, false) = 20` leaves y unchanged (the returned reference is not an lvalue to codegen); line 1: got `1 2`, expected `6 20` |
-| `language/binary_literals.kov` | binary integer literals (0b1010) | pending |  | a binary literal evaluates to 0; line 1: got `0 0`, expected `10 240` |
 | `language/bitfields.kov` | bit fields | pending | 14 uses in 6 files | bit field values work but every field takes a whole unit (sizeof 12 instead of 4); line 1: got `1 6 0 12`, expected `1 6 0 4` |
 | `language/constexpr_function_bound.kov` | a constexpr function call as an array bound | pending |  | the bound evaluates to 0 (the array has no storage and writes into it crash the program); line 1: got `0`, expected `8` |
 | `language/designated_initializers.kov` | designated initializers | pending | 45 uses in 21 files | designators are ignored, the values are taken positionally (1 3 0 instead of 1 0 3); line 1: got `1 3 0`, expected `1 0 3` |
 | `language/generic_lambdas.kov` | generic lambdas (auto parameters) | pending | 330 uses in 168 files | generic lambdas are not implemented (Agui's one site is a hand-written override); C:\kov\compiler\tests\spec\language\generic_lambdas.kov:6: codegen does not support a local of unknown type (twice) yet (in @kov.main) |
 | `language/goto.kov` | goto | pending | 8 uses in 6 files | goto is parsed but not generated; C:\kov\compiler\tests\spec\language\goto.kov:12: codegen does not support the statement kind GotoStmt yet (in @kov.main) |
 | `language/sizeof_array_type.kov` | sizeof of an array type (sizeof(int[4])) | pending |  | sizeof of a written array type is not supported; C:\kov\compiler\tests\spec\language\sizeof_array_type.kov:5: codegen does not support this sizeof yet (in @kov.main) |
-| `language/structured_bindings.kov` | structured bindings | pending | 459 uses in 204 files | `auto& [w, h] = s;` on a struct crashes the compiler; `auto [a, b] = pair` does not compile either; the compiler crashed (exit 0xC0000005) |
 | `language/wide_strings.kov` | wide string literals and WString | pending | 44 uses in 10 files (literals), 58 (std::wstring) | no wide string literals yet; line 1: got `5 26999`, expected `4 119` |
+| `language/arrays_2d.kov` | two-dimensional arrays: nested brace initialisation and indexing | pass |  |  |
+| `language/assign_through_returned_reference.kov` | assigning through a reference returned from a function | pass |  |  |
 | `language/attributes_noexcept.kov` | noexcept, [[nodiscard]], [[maybe_unused]] | pass | 802 noexcept, 215 [[nodiscard]], 46 [[maybe_unused]], 68 alignas/alignof |  |
 | `language/auto_variables.kov` | auto variables | pass | 6641 uses in 1428 files |  |
+| `language/binary_literals.kov` | binary integer literals (0b1010) | pass |  |  |
 | `language/constexpr_values.kov` | constexpr constants and constexpr functions | pass | 2643 uses in 808 files (variables), 361 (functions) |  |
 | `language/decltype.kov` | decltype | pass | 163 uses in 57 files |  |
 | `language/default_arguments.kov` | default arguments | pass | 32235 uses in 4539 files |  |
@@ -41,6 +40,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `language/references.kov` | references: lvalue, const binding a temporary, rvalue references and move | pass |  |  |
 | `language/static_assert.kov` | static_assert | pass | 470 uses in 237 files |  |
 | `language/static_locals.kov` | function-local statics | pass | static declarations inside functions: part of 7783 static uses in 1983 files |  |
+| `language/structured_bindings.kov` | structured bindings | pass | 459 uses in 204 files |  |
 | `language/switch.kov` | switch with fallthrough and default | pass | 1682 uses in 697 files |  |
 | `language/ternary_comma_sizeof.kov` | conditional operator with objects, comma operator, sizeof of expressions | pass |  |  |
 | `language/thread_local.kov` | thread_local variables | pass | 15 uses in 13 files |  |
@@ -51,16 +51,16 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `classes/aggregate_default_members.kov` | aggregate initialisation leaves omitted members with their default member initializers | pending |  | an omitted member of a brace-initialised aggregate is zeroed, not given its default (width is 0, not 1); line 1: got `4 0`, expected `4 1` |
 | `classes/conversion_operators.kov` | two conversion operators on one class (operator bool and operator String) | pending | 376 conversion operators in 292 files | both conversion operators get the symbol `operator?() const` and the IR has a duplicate definition; C:\kov\compiler\build\spec\classes.conversion_operators.exe.21.ll:69:13: error: invalid redefinition of function 'Vec::operator?() const' |
-| `classes/copy_semantics.kov` | copying and moving objects with owned resources, assignment, self-contained counts | pending |  | `Tracker a = make();` copies the returned local instead of moving it (3 copies, C++ makes 2); line 1: got `3 true 1 0`, expected `2 true 1 0` |
 | `classes/dynamic_cast.kov` | dynamic_cast | pending | 443 uses in 244 files | dynamic_cast is not implemented (design.md section 9: single inheritance, type descriptor behind the vtable); line 1: got `true false`, expected `true true` |
 | `classes/member_function_pointers.kov` | pointers to member functions | pending | 3 uses in 3 files | pointers to member functions are not implemented; C:\kov\compiler\tests\spec\classes\member_function_pointers.kov:12: codegen does not support the statement kind ErrorStmt yet (in @kov.main) |
 | `classes/nested_struct_in_template.kov` | a struct nested in a class template, with members of the parameter type | pending |  | the nested struct's member of type T has an unknown type; C:\kov\compiler\tests\spec\classes\nested_struct_in_template.kov:6: codegen does not support a member of unknown type (value) yet (in @kov.main) |
+| `classes/aggregate_default_members.kov` | aggregate initialisation leaves omitted members with their default member initializers | pass |  |  |
 | `classes/aggregates_and_brace_init.kov` | aggregate initialisation, default member initializers, arrays of structs, nested braces | pass |  |  |
 | `classes/anonymous_members.kov` | anonymous struct and union members | pass |  |  |
 | `classes/const_and_mutable.kov` | const member functions, const overloads, mutable members, const objects | pass | 198 mutable members in 127 files |  |
 | `classes/constructors.kov` | constructors: default, converting, explicit, copy, move, delegating, = default, = delete | pass | 2065 `= default`, 904 `= delete`, 1100 delegating, 2035 explicit |  |
+| `classes/copy_semantics.kov` | copying and moving objects with owned resources, assignment, self-contained counts | pass |  |  |
 | `classes/destructors_raii.kov` | destructor order: scope exit, temporaries, members, early return | pass |  |  |
 | `classes/friends.kov` | friend functions and friend classes | pass | 459 uses in 269 files |  |
 | `classes/interfaces.kov` | abstract interfaces implemented by several classes, held through base pointers in containers | pass |  |  |

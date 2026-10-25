@@ -1571,6 +1571,23 @@ namespace
 
     // --- declarators ---
 
+    // `auto`, possibly under `const` and `&`/`&&`: the type a structured binding is declared with.
+    static bool autoUnderRefs(Type* t)
+    {
+      while (t)
+      {
+        if (t->kind == NodeKind::LRefType)
+          t = static_cast<LRefType*>(t)->referenced;
+        else if (t->kind == NodeKind::RRefType)
+          t = static_cast<RRefType*>(t)->referenced;
+        else if (t->kind == NodeKind::ConstType)
+          t = static_cast<ConstType*>(t)->inner;
+        else
+          break;
+      }
+      return t && t->kind == NodeKind::AutoType;
+    }
+
     void parseDeclarator(Declarator& d, Scope scope)
     {
       d.type = parseTypeSuffixes(d.type);
@@ -1599,8 +1616,7 @@ namespace
         if (atIdent())
           parseQualifiedName(d.name, true);
         // Array suffix inside the parens.
-        while (at(P::LBracket))
-          inner = parseArraySuffix(inner);
+        inner = parseArraySuffixes(inner);
         if (!expect(P::RParen, "expected ')' in declarator"))
           return;
         if (at(P::LParen))
@@ -1619,12 +1635,11 @@ namespace
         }
         else
           d.type = inner;
-        while (at(P::LBracket))
-          d.type = parseArraySuffix(d.type);
+        d.type = parseArraySuffixes(d.type);
         return;
       }
-      // Structured binding: auto [a, b] = ...
-      if (at(P::LBracket) && d.type->kind == NodeKind::AutoType)
+      // Structured binding: auto [a, b] = ..., also auto& [a, b] and const auto& [a, b]
+      if (at(P::LBracket) && autoUnderRefs(d.type))
       {
         advance();
         std::vector<Expr*> names;
@@ -1654,8 +1669,8 @@ namespace
         }
       }
       skipAttributes();
-      while (at(P::LBracket) && !at(P::LBracket, 1))
-        d.type = parseArraySuffix(d.type);
+      if (at(P::LBracket) && !at(P::LBracket, 1))
+        d.type = parseArraySuffixes(d.type);
       if (at(P::LParen) && !d.name.empty())
       {
         // Function, unless this is a variable with parenthesised initializer. Decide by looking
@@ -1681,6 +1696,22 @@ namespace
       a->size = at(P::RBracket) ? nullptr : parseExpression();
       expect(P::RBracket, "expected ']'");
       return a;
+    }
+
+    // Every `[N]` after a declarator: `int a[2][3]` is an array of 2 arrays of 3 ints, so the
+    // last suffix is the innermost type.
+    Type* parseArraySuffixes(Type* element)
+    {
+      std::vector<ArrayType*> suffixes;
+      while (at(P::LBracket))
+        suffixes.push_back(static_cast<ArrayType*>(parseArraySuffix(nullptr)));
+      Type* result = element;
+      for (size_t i = suffixes.size(); i-- > 0;)
+      {
+        suffixes[i]->element = result;
+        result = suffixes[i];
+      }
+      return result;
     }
 
     bool looksLikeParameterList(Scope scope)
@@ -2830,7 +2861,7 @@ namespace
           else if (at(P::LParen) && (at(P::Star, 1) || at(P::Amp, 1)) && atIdent(2) &&
                    ((at(P::RParen, 3) && at(P::LParen, 4)) || at(P::LBracket, 3)))
             result = true; // function pointer declarator `R (*f)(...)`; `f(*p);` and `f(&x);` are calls
-          else if (at(P::LBracket) && t->kind == NodeKind::AutoType)
+          else if (at(P::LBracket) && autoUnderRefs(t))
             result = true;
         }
       }
@@ -3512,8 +3543,7 @@ namespace
         error("expected type after new");
         return n;
       }
-      while (at(P::LBracket))
-        n->type = parseArraySuffix(n->type);
+      n->type = parseArraySuffixes(n->type);
       mark = scratch.size();
       if (accept(P::LParen))
       {

@@ -1172,6 +1172,8 @@ struct GlobalScope::Impl
             digits += c;
         try
         {
+          if (digits.size() > 2 && digits[0] == '0' && (digits[1] == 'b' || digits[1] == 'B'))
+            return std::stoll(digits.substr(2), nullptr, 2); // 0b1010
           return std::stoll(digits, nullptr, 0);
         }
         catch (...)
@@ -2678,6 +2680,45 @@ struct GlobalScope::Impl
     const Ty* typeOf(Type* t) { return impl.convertType(t, ctx(), 0); }
 
     // Type of a name expression from the declaration it resolved to.
+    // `auto [a, b] = pair;`: the type of the binding named `symbol`, the matching data member (or
+    // array element) of the hidden object the declaration names; null when symbol is no binding.
+    const Ty* bindingType(VariableDecl* v, uint32_t symbol)
+    {
+      size_t index = v->structuredBindings.size();
+      for (size_t i = 0; i < v->structuredBindings.size(); ++i)
+        if (static_cast<NameExpr*>(v->structuredBindings[i])->name.last().symbol == symbol)
+          index = i;
+      if (index == v->structuredBindings.size())
+        return nullptr;
+      const Ty* t = impl.declaredTypeOf(v, activeSubst, 0);
+      if (t && impl.containsAuto(t))
+        t = v->init && v->init->ty ? impl.deduceAuto(t, v->init->ty) : nullptr;
+      if (!t || !t->isKnown())
+        return unknown(Why::Auto);
+      bool isConst = types.stripRef(t)->isConst;
+      const Ty* object = types.unqualified(types.stripRef(t));
+      if (object->kind == TyKind::Array)
+        return isConst ? types.qualified(object->inner, true, false) : object->inner;
+      if (object->kind != TyKind::Class)
+        return unknown(Why::Unsupported);
+      Scope* cs = impl.classScopeOf(object);
+      if (!cs || !cs->owner || cs->owner->kind != NodeKind::ClassDecl)
+        return unknown(Why::Unsupported);
+      size_t seen = 0;
+      for (Decl* m : static_cast<ClassDecl*>(cs->owner)->members)
+      {
+        if (m->kind != NodeKind::VariableDecl || (m->flags & (DF_Static | DF_Typedef)))
+          continue;
+        if (seen++ == index)
+        {
+          Subst s = object->args.empty() ? Subst{} : impl.substFor(object);
+          const Ty* mt = impl.declaredTypeOf(m, object->args.empty() ? activeSubst : &s, 0);
+          return mt && isConst ? types.qualified(mt, true, false) : mt;
+        }
+      }
+      return unknown(Why::Unsupported);
+    }
+
     const Ty* typeOfResolvedName(const Lookup& l, const NamePart& lastPart, Expr* e)
     {
       Decl* d = l.decl;
@@ -2687,6 +2728,9 @@ struct GlobalScope::Impl
       {
         case NodeKind::VariableDecl:
         {
+          if (auto* v = static_cast<VariableDecl*>(d); !v->structuredBindings.empty())
+            if (const Ty* bt = bindingType(v, lastPart.symbol))
+              return bt;
           const Ty* t = impl.declaredTypeOf(d, activeSubst, 0);
           if (impl.containsAuto(t))
           {
@@ -3541,7 +3585,8 @@ struct GlobalScope::Impl
           for (size_t i = 0; i < end; ++i)
             if (s[i] != '\'')
               digits += s[i];
-          unsigned long long value = strtoull(digits.c_str(), nullptr, 0);
+          bool binary = digits.size() > 2 && digits[0] == '0' && (digits[1] == 'b' || digits[1] == 'B');
+          unsigned long long value = binary ? strtoull(digits.c_str() + 2, nullptr, 2) : strtoull(digits.c_str(), nullptr, 0);
           bool decimal = !hex && !(digits.size() > 1 && digits[0] == '0');
           if (longs < 2)
           {

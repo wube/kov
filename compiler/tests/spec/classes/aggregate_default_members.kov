@@ -1,5 +1,4 @@
 // spec: aggregate initialisation leaves omitted members with their default member initializers
-// pending: an omitted member of a brace-initialised aggregate is zeroed, not given its default (width is 0, not 1)
 struct Point { int x = 0; int y = 0; };
 struct Line { Point from; Point to; int width = 1; };
 int main()

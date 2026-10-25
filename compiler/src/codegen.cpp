@@ -1019,25 +1019,103 @@ namespace
       }
       if (!hasUserConstructors(c))
       {
+        // An aggregate: the values fill the fields in order; the fields left over get their
+        // default member initializers (or default construction), as in C++.
         StructInfo info = structFor(t, at);
         fn += "  store " + llType(t, at) + " zeroinitializer, ptr " + addr + "\n";
+        if (info.polymorphic)
+        {
+          useVtable(info);
+          fn += "  store ptr " + info.vtableName + ", ptr " + addr + "\n";
+        }
         size_t i = 0;
         for (Decl* d : info.fieldDecls)
         {
-          if (i >= args.size())
-            break;
           std::string fieldAddr = gep(info.name, addr, info.fieldIndex[d]);
-          initializeFrom(fieldAddr, info.fieldTypes[info.fieldIndex[d]], args[i++], at);
+          const Ty* ft = info.fieldTypes[info.fieldIndex[d]];
+          if (i < args.size())
+          {
+            initializeFrom(fieldAddr, ft, args[i++], at);
+            continue;
+          }
+          if (d->kind != NodeKind::VariableDecl)
+            continue;
+          auto* v = static_cast<VariableDecl*>(d);
+          if (v->init)
+            initializeFrom(fieldAddr, ft, v->init, v);
+          else if (isClass(ft))
+            defaultConstruct(fieldAddr, ft, at);
+          else if (ft->kind == TyKind::Array && needsDestruction(ft, at))
+            constructArray(fieldAddr, ft, at);
         }
         return;
       }
       unsupported(at, "a constructor of " + global.qualifiedName(c) + " taking " + std::to_string(args.size()) + " arguments");
     }
 
+    // `auto [a, b] = pair;`: e names a binding of the hidden local v; out gets the address of the
+    // matching data member (or array element). False when e is not one of v's bindings.
+    bool bindingAddress(VariableDecl* v, Node* e, std::string& out)
+    {
+      if (v->structuredBindings.empty() || !e || e->kind != NodeKind::NameExpr)
+        return false;
+      uint32_t symbol = static_cast<NameExpr*>(e)->name.last().symbol;
+      size_t index = v->structuredBindings.size();
+      for (size_t i = 0; i < v->structuredBindings.size(); ++i)
+        if (static_cast<NameExpr*>(v->structuredBindings[i])->name.last().symbol == symbol)
+          index = i;
+      if (index == v->structuredBindings.size())
+        return false;
+      auto it = locals.find(v);
+      if (it == locals.end())
+        unsupported(e, "a structured binding outside its function");
+      std::string base = it->second.addr;
+      if (it->second.isRef)
+      {
+        std::string r = newTemp();
+        fn += "  " + r + " = load ptr, ptr " + base + "\n";
+        base = r;
+      }
+      const Ty* object = types.unqualified(types.stripRef(it->second.ty));
+      if (object->kind == TyKind::Array)
+      {
+        std::string r = newTemp();
+        fn += "  " + r + " = getelementptr inbounds " + llType(object->inner, e) + ", ptr " + base + ", i64 " + std::to_string(index) + "\n";
+        out = r;
+        return true;
+      }
+      if (!isClass(object))
+        unsupported(e, "a structured binding of something that is neither a class nor an array");
+      StructInfo info = structFor(object, e); // copy: fieldAddress may add structs
+      if (index >= info.fieldDecls.size() || !fieldAddress(object, info.fieldDecls[index], base, out, e))
+        unsupported(e, "a structured binding of a class without that many data members");
+      return true;
+    }
+
+    // `return result;` naming a local object or a by-value parameter of the returned class: it is
+    // moved into the result, not copied (C++'s implicit move on return).
+    Decl* returnedLocalObject(Expr* e)
+    {
+      if (!e || e->kind != NodeKind::NameExpr)
+        return nullptr;
+      Decl* d = static_cast<NameExpr*>(e)->resolved;
+      if (!d || (d->kind != NodeKind::VariableDecl && d->kind != NodeKind::ParamDecl) || (d->flags & DF_Static))
+        return nullptr;
+      if (d->kind == NodeKind::VariableDecl && !static_cast<VariableDecl*>(d)->structuredBindings.empty())
+        return nullptr;
+      auto it = locals.find(d);
+      if (it == locals.end() || it->second.isRef || !isClass(it->second.ty) || classKey(it->second.ty) != classKey(currentReturn))
+        return nullptr;
+      return d;
+    }
+
     // The address of the object a variable or parameter declaration names (what lvalue gives a
     // name expression): a local, a field of this, or a global.
     std::string addressOfDecl(Decl* d, Node* e)
     {
+      if (d->kind == NodeKind::VariableDecl)
+        if (std::string bound; bindingAddress(static_cast<VariableDecl*>(d), e, bound))
+          return bound;
       auto it = locals.find(d);
       if (it != locals.end())
       {
@@ -2619,6 +2697,8 @@ namespace
               digits.pop_back();
             try
             {
+              if (digits.size() > 2 && digits[0] == '0' && (digits[1] == 'b' || digits[1] == 'B'))
+                return int64_t(std::stoull(digits.substr(2), nullptr, 2)); // 0b1010
               return int64_t(std::stoull(digits, nullptr, 0));
             }
             catch (...)
@@ -3387,6 +3467,9 @@ namespace
           Decl* d = n->resolved;
           if (!d)
             unsupported(e, "an unresolved name (" + sym(n->name.last().symbol) + ")");
+          if (d->kind == NodeKind::VariableDecl)
+            if (std::string bound; bindingAddress(static_cast<VariableDecl*>(d), e, bound))
+              return bound;
           auto it = locals.find(d);
           if (it != locals.end())
           {
@@ -3540,6 +3623,31 @@ namespace
           std::string slot = newObjectSlot(v.ty, e);
           fn += "  store " + llType(v.ty, e) + " " + v.text + ", ptr " + slot + "\n";
           return slot;
+        }
+        case NodeKind::ConditionalExpr:
+        {
+          auto* c = static_cast<ConditionalExpr*>(e);
+          auto namesObject = [&](Expr* x) { return x && (isLvalueExpression(x) || (x->ty && x->ty->isReference())); };
+          if (c->then && namesObject(c->then) && namesObject(c->else_))
+          {
+            // `first ? a : b` with two lvalues is an lvalue: the address of the chosen one.
+            Value cond = convert(rvalue(c->cond), types.boolType(), e);
+            std::string tL = newLabel("cond.then"), eL = newLabel("cond.else"), jL = newLabel("cond.end");
+            fn += "  br i1 " + cond.text + ", label %" + tL + ", label %" + eL + "\n";
+            startBlock(tL);
+            std::string a = lvalue(c->then);
+            std::string aEnd = currentBlock;
+            emitBranch(jL);
+            startBlock(eL);
+            std::string b = lvalue(c->else_);
+            std::string bEnd = currentBlock;
+            emitBranch(jL);
+            startBlock(jL);
+            std::string r = newTemp();
+            fn += "  " + r + " = phi ptr [ " + a + ", %" + aEnd + " ], [ " + b + ", %" + bEnd + " ]\n";
+            return r;
+          }
+          break;
         }
         default:
           break;
@@ -5419,7 +5527,7 @@ namespace
     {
       const Ty* t = declType(v);
       if (!t || !t->isKnown() || types.isDependent(t))
-        unsupported(v, "a local of unknown type (" + sym(v->name.last().symbol) + ")");
+        unsupported(v, "a local of unknown type (" + (v->name.empty() ? std::string("[bindings]") : sym(v->name.last().symbol)) + ")");
       if ((v->flags & DF_Static) && !(v->flags & DF_Typedef))
       {
         staticLocal(v, t);
@@ -5513,7 +5621,10 @@ namespace
           {
             if (!r->value)
               unsupported(s, "return without a value");
-            initializeFrom(sretAddr, currentReturn, r->value, s);
+            if (returnedLocalObject(r->value))
+              moveConstruct(sretAddr, lvalue(r->value), currentReturn, s); // `return result;`: the local is moved, as in C++
+            else
+              initializeFrom(sretAddr, currentReturn, r->value, s);
           }
           else if (currentReturn->isReference())
             retText = isAggregate(types.stripRef(currentReturn)) ? rvalue(r->value).text : lvalue(r->value);

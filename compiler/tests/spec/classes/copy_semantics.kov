@@ -1,5 +1,4 @@
 // spec: copying and moving objects with owned resources, assignment, self-contained counts
-// pending: `Tracker a = make();` copies the returned local instead of moving it (3 copies, C++ makes 2)
 struct Tracker
 {
   static int copies;

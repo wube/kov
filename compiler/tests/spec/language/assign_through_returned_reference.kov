@@ -1,5 +1,4 @@
 // spec: assigning through a reference returned from a function
-// pending: `pick(x, y, false) = 20` leaves y unchanged (the returned reference is not an lvalue to codegen)
 int& pick(int& a, int& b, bool first) { return first ? a : b; }
 int main()
 {

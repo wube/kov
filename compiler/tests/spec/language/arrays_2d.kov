@@ -1,5 +1,4 @@
 // spec: two-dimensional arrays: nested brace initialisation and indexing
-// pending: grid[1][2] reads 0 instead of 6 (nested initialisation or indexing of the second dimension)
 extern "C" int printf(const char* format, ...);
 int main()
 {

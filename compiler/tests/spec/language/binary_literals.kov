@@ -1,5 +1,4 @@
 // spec: binary integer literals (0b1010)
-// pending: a binary literal evaluates to 0
 int main()
 {
   int bin = 0b1010;
