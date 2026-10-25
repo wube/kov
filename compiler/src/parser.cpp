@@ -492,8 +492,8 @@ namespace
           parts.resize(partMark);
           return false;
         }
-        if (part.special == 0 && at(P::Less))
-          tryParseTemplateArgs(part, typeContext);
+        if ((part.special == 0 || part.special == 1) && at(P::Less))
+          tryParseTemplateArgs(part, typeContext); // `~Vector<int>`: the arguments name the class, the destructor needs none
         parts.push_back(part);
         if (at(P::ColonColon) && !at(P::Star, 1) && (atIdent(1) || at(P::Tilde, 1) || at(Kw::operator_, 1) || at(Kw::template_, 1)))
         {
@@ -1421,6 +1421,22 @@ namespace
       // Specifiers.
       uint32_t flags = 0;
       parseDeclSpecifiers(flags);
+      if ((flags & DF_Friend) && (atIdent() || at(P::ColonColon)))
+      {
+        // `friend Description;`: a friend class named without the keyword, the same declaration
+        // as `friend class Description;` (and as little of a member as that one).
+        uint32_t save = pos;
+        ClassDecl* c = decl<ClassDecl>(pos);
+        c->keyword = Kw::class_;
+        c->flags |= flags;
+        if (parseQualifiedName(c->name, true, false) && at(P::Semi))
+        {
+          advance();
+          pushDecl(c);
+          return;
+        }
+        restore(save);
+      }
       if (at(Kw::using_))
       {
         parseUsing(templ);

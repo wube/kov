@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**156 pass, 2 pending, 0 failing, 0 fixed** (158 snippets, 2.7 s).
+**158 pass, 2 pending, 0 failing, 0 fixed** (160 snippets, 2.7 s).
 
 ## Language: statements, expressions, declarations
 
@@ -72,6 +72,8 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `classes/copy_semantics.kov` | copying and moving objects with owned resources, assignment, self-contained counts | pass |  |  |
 | `classes/destructors_raii.kov` | destructor order: scope exit, temporaries, members, early return | pass |  |  |
 | `classes/dynamic_cast.kov` | dynamic_cast | pass | 443 uses in 244 files |  |
+| `classes/explicit_destructor_call.kov` | an explicit destructor call names the type directly, through an alias, or with the class template's arguments (`list.~Vector<int>()`) | pass |  |  |
+| `classes/friend_declarations.kov` | `friend Name;` names a friend class without the keyword; friend declarations of classes and functions declare no member and no nested class | pass |  |  |
 | `classes/friends.kov` | friend functions and friend classes | pass | 459 uses in 269 files |  |
 | `classes/inherited_constructors.kov` | inherited constructors (using Base::Base;) in a class with members of its own | pass | Agui's Filler, Frame and others |  |
 | `classes/interfaces.kov` | abstract interfaces implemented by several classes, held through base pointers in containers | pass |  |  |

@@ -1,0 +1,37 @@
+// spec: an explicit destructor call names the type directly, through an alias, or with the class template's arguments (`list.~Vector<int>()`)
+// found in src/Util (PropertyTree: `this->stringValue.~StringType()`, `this->listValue.~vector()`)
+struct Holder
+{
+  using Str = String;
+  union
+  {
+    int number;
+    String text;
+    Vector<int> list;
+  };
+  int kind;
+  Holder() : number(0), kind(0) {}
+  void setText(const char* s) { this->clear(); new (&this->text) String(s); this->kind = 1; }
+  void setList() { this->clear(); new (&this->list) Vector<int>(); this->kind = 2; }
+  void clear()
+  {
+    if (this->kind == 1)
+      this->text.~Str();
+    else if (this->kind == 2)
+      this->list.~Vector<int>();
+    this->kind = 0;
+  }
+  ~Holder() { this->clear(); }
+};
+int main()
+{
+  Holder h;
+  h.setText("hello");
+  println("{} {}", h.kind, h.text);
+  h.setList();
+  h.list.push_back(3);
+  println("{} {}", h.kind, h.list.size());
+  h.setText("again");
+  println("{} {}", h.kind, h.text);
+  return 0;
+}

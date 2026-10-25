@@ -791,6 +791,17 @@ namespace
             }
           }
         }
+        if (t.getKind() == TokenKind::Identifier && i >= 2 && toks[i - 1].is(P::Tilde) && (toks[i - 2].is(P::Dot) || toks[i - 2].is(P::Arrow)) &&
+            i + 1 < toks.size() && (toks[i + 1].is(P::LParen) || toks[i + 1].is(P::Less)))
+        {
+          // `value.~vector()`: the destructor of a std class, by the class's Kov name.
+          auto it = stdNames.find(std::string(spelling(i)));
+          if (it != stdNames.end() && it->second.find("::") == std::string::npos && isupper((unsigned char)it->second[0]))
+          {
+            replace(t.offset, endOffset(i) - t.offset, it->second);
+            counts.add("std renamed");
+          }
+        }
         if (t.getKind() == TokenKind::Identifier && spelling(i) == "std" && toks[i + 1].is(P::ColonColon) &&
             toks[i + 2].getKind() == TokenKind::Identifier)
         {

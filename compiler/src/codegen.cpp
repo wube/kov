@@ -381,7 +381,7 @@ namespace
         for (Decl* m : c->members)
         {
           const Ty* ft = nullptr;
-          if (m->kind == NodeKind::VariableDecl && !(m->flags & (DF_Static | DF_Typedef)))
+          if (m->kind == NodeKind::VariableDecl && !(m->flags & (DF_Static | DF_Typedef | DF_Friend)))
             ft = global.typeOfDeclIn(m, args);
           else if (m->kind == NodeKind::ClassDecl && static_cast<ClassDecl*>(m)->name.empty() && static_cast<ClassDecl*>(m)->isDefinition)
             ft = types.classType(m, {});
@@ -494,11 +494,12 @@ namespace
           info.fieldTypes.push_back(ft);
           continue;
         }
-        if (m->kind != NodeKind::VariableDecl || (m->flags & (DF_Static | DF_Typedef)))
+        if (m->kind != NodeKind::VariableDecl || (m->flags & (DF_Static | DF_Typedef | DF_Friend)))
           continue;
         const Ty* ft = global.typeOfDeclIn(m, args);
         if (!ft || !ft->isKnown() || types.isDependent(ft))
-          unsupported(m, "a member of unknown type (" + sym(static_cast<VariableDecl*>(m)->name.last().symbol) + ")");
+          unsupported(m, "a member of unknown type (" +
+                             (static_cast<VariableDecl*>(m)->name.empty() ? std::string("unnamed") : sym(static_cast<VariableDecl*>(m)->name.last().symbol)) + ")");
         if (Expr* widthExpr = static_cast<VariableDecl*>(m)->bitfield)
         {
           // `unsigned level : 3;`: consecutive bit fields of one type share a storage unit of that

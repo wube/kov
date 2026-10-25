@@ -1,0 +1,27 @@
+// spec: `friend Name;` names a friend class without the keyword; friend declarations of classes and functions declare no member and no nested class
+// found in src/Util (PropertyItem: `friend Description;` crashed the code generator; `friend class Other;` made a nested class without a definition)
+class Description;
+class Item
+{
+  friend Description;
+  friend class Other;
+  friend bool operator==(const Item& a, const Item& b);
+public:
+  Item(int value) : value(value) {}
+  int get() const { return this->value; }
+private:
+  int value;
+};
+class Other
+{
+public:
+  int twice(const Item& item) const { return item.value * 2; }
+};
+bool operator==(const Item& a, const Item& b) { return a.value == b.value; }
+int main()
+{
+  Item a(1), b(1), c(2);
+  Other other;
+  println("{} {} {} {}", a.get(), a == b, a == c, other.twice(c));
+  return 0;
+}

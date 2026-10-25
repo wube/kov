@@ -462,6 +462,8 @@ struct GlobalScope::Impl
       case NodeKind::ClassDecl:
       {
         auto* c = static_cast<ClassDecl*>(d);
+        if (c->flags & DF_Friend)
+          break; // `friend class Other;` names no nested class and no member
         if (c->name.parts.size() > 1)
         {
           // `struct A::B { ... }`: attach once A exists.
