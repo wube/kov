@@ -289,8 +289,8 @@ struct CallExpr : Expr
   Expr* callee;
   Span<Expr*> args;
   // Deduced template arguments of the called function template, in parameter order (filled by
-  // the type checker; at most 4, which is all code generation supports).
-  const Ty* templateArgs[4] = {};
+  // the type checker; at most 8, which is all code generation supports).
+  const Ty* templateArgs[8] = {};
   uint8_t templateArgCount = 0;
 };
 struct IndexExpr : Expr { Expr* base; Span<Expr*> args; };

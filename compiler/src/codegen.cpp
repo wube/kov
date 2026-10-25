@@ -43,6 +43,12 @@ namespace
     const Ty* primaryBase = nullptr;          // the polymorphic first base, whose descriptor the chain continues with
     bool isUnion = false;                     // all members at offset 0, storage sized for the largest
     std::vector<std::pair<Decl*, uint32_t>> anonymous; // anonymous struct/union members -> field index
+    std::unordered_map<Decl*, std::pair<uint32_t, uint32_t>> bitfields; // member -> (shift, width) inside its storage field
+  };
+  struct BitfieldInfo
+  {
+    uint32_t shift, width;
+    const Ty* unit; // the storage unit's (integer) type
   };
 
   struct Emitter
@@ -107,6 +113,7 @@ namespace
     std::unordered_map<Decl*, std::vector<Local>> packLocals; // one local per element of a parameter pack
     std::unordered_map<const Ty*, StructInfo> structs;
     std::unordered_map<Decl*, std::string> globals;
+    std::unordered_map<Decl*, BitfieldInfo> bitfieldOf; // bit-field members of every laid-out class
     bool dyncastEmitted = false; // the @kov.dyncast helper is in `decls`
     std::unordered_map<uint32_t, std::string> labelBlocks; // goto labels of the current function -> their blocks
     Span<uint32_t> pendingDesignators;                        // of the brace list constructInto is about to consume
@@ -466,6 +473,9 @@ namespace
       info.vtableKeys = keys;
       info.vtable = impls;
       info.vtableOwners = owners;
+      int bitUnitIndex = -1;    // the storage field the current run of bit fields shares
+      const Ty* bitUnitType = nullptr;
+      uint32_t bitUsed = 0;
       for (Decl* m : c->members)
       {
         if (m->kind == NodeKind::ClassDecl && static_cast<ClassDecl*>(m)->name.empty() && static_cast<ClassDecl*>(m)->isDefinition)
@@ -484,6 +494,37 @@ namespace
         const Ty* ft = global.typeOfDeclIn(m, args);
         if (!ft || !ft->isKnown() || types.isDependent(ft))
           unsupported(m, "a member of unknown type (" + sym(static_cast<VariableDecl*>(m)->name.last().symbol) + ")");
+        if (Expr* widthExpr = static_cast<VariableDecl*>(m)->bitfield)
+        {
+          // `unsigned level : 3;`: consecutive bit fields of one type share a storage unit of that
+          // type while their widths fit; each remembers its shift and width.
+          ParsedFile* savedFile = currentFile;
+          currentFile = c->file ? c->file : currentFile;
+          std::optional<int64_t> w = evalConst(widthExpr);
+          currentFile = savedFile;
+          if (!w || *w <= 0)
+            unsupported(m, "a bit field whose width is not a constant");
+          const Ty* unit = types.unqualified(ft);
+          if (unit->kind == TyKind::Enum)
+            unit = enumUnderlying(unit->decl);
+          if (unit->kind == TyKind::Bool)
+            unit = types.intType(8, true);
+          uint32_t unitBits = uint32_t(sizeOf(unit, m) * 8), width = uint32_t(*w);
+          if (bitUnitIndex < 0 || bitUnitType != unit || bitUsed + width > unitBits)
+          {
+            bitUnitIndex = int(info.fieldTypes.size());
+            bitUnitType = unit;
+            bitUsed = 0;
+            info.fieldTypes.push_back(unit);
+            info.fieldDecls.push_back(m); // the first field of the unit stands for the unit in memberwise work
+          }
+          info.fieldIndex[m] = uint32_t(bitUnitIndex);
+          info.bitfields[m] = {bitUsed, width};
+          bitfieldOf[m] = {bitUsed, width, unit};
+          bitUsed += width;
+          continue;
+        }
+        bitUnitIndex = -1;
         info.fieldIndex[m] = uint32_t(info.fieldTypes.size());
         info.fieldDecls.push_back(m);
         info.fieldTypes.push_back(ft);
@@ -1222,6 +1263,55 @@ namespace
       if (it == locals.end() || it->second.isRef || !isClass(it->second.ty) || classKey(it->second.ty) != classKey(currentReturn))
         return nullptr;
       return d;
+    }
+
+    // A bit field's value: the storage unit shifted and masked (sign-extended for signed types).
+    Value loadBitfield(const std::string& addr, const BitfieldInfo& bits, const Ty* memberTy, Node* at)
+    {
+      std::string unitLl = llType(bits.unit, at);
+      uint32_t unitBits = uint32_t(sizeOf(bits.unit, at) * 8);
+      std::string unit = newTemp(), r;
+      fn += "  " + unit + " = load " + unitLl + ", ptr " + addr + "\n";
+      const Ty* valueTy = types.unqualified(memberTy);
+      bool isSigned = (valueTy->kind == TyKind::Int || valueTy->kind == TyKind::Char) && !valueTy->isUnsigned;
+      if (isSigned)
+      {
+        std::string left = newTemp();
+        fn += "  " + left + " = shl " + unitLl + " " + unit + ", " + std::to_string(unitBits - bits.shift - bits.width) + "\n";
+        r = newTemp();
+        fn += "  " + r + " = ashr " + unitLl + " " + left + ", " + std::to_string(unitBits - bits.width) + "\n";
+      }
+      else
+      {
+        std::string shifted = newTemp();
+        fn += "  " + shifted + " = lshr " + unitLl + " " + unit + ", " + std::to_string(bits.shift) + "\n";
+        r = newTemp();
+        uint64_t mask = bits.width >= 64 ? ~0ull : ((1ull << bits.width) - 1);
+        fn += "  " + r + " = and " + unitLl + " " + shifted + ", " + std::to_string(mask) + "\n";
+      }
+      Value asUnit{r, bits.unit};
+      if (valueTy->kind == TyKind::Bool)
+      {
+        std::string b = newTemp();
+        fn += "  " + b + " = icmp ne " + unitLl + " " + r + ", 0\n";
+        return {b, valueTy};
+      }
+      return convert(asUnit, valueTy, at);
+    }
+
+    // Writes a bit field: the other bits of the storage unit stay as they are.
+    void storeBitfield(Value v, const std::string& addr, const BitfieldInfo& bits, const Ty* memberTy, Node* at)
+    {
+      std::string unitLl = llType(bits.unit, at);
+      Value asUnit = convert(v, bits.unit, at);
+      uint64_t mask = bits.width >= 64 ? ~0ull : ((1ull << bits.width) - 1);
+      std::string old = newTemp(), cleared = newTemp(), masked = newTemp(), shifted = newTemp(), merged = newTemp();
+      fn += "  " + old + " = load " + unitLl + ", ptr " + addr + "\n";
+      fn += "  " + cleared + " = and " + unitLl + " " + old + ", " + std::to_string(~(mask << bits.shift)) + "\n";
+      fn += "  " + masked + " = and " + unitLl + " " + asUnit.text + ", " + std::to_string(mask) + "\n";
+      fn += "  " + shifted + " = shl " + unitLl + " " + masked + ", " + std::to_string(bits.shift) + "\n";
+      fn += "  " + merged + " = or " + unitLl + " " + cleared + ", " + shifted + "\n";
+      fn += "  store " + unitLl + " " + merged + ", ptr " + addr + "\n";
     }
 
     // The address of the object a variable or parameter declaration names (what lvalue gives a
@@ -4868,6 +4958,8 @@ namespace
           if (m->resolved && m->resolved->kind == NodeKind::EnumeratorDecl)
             return {std::to_string(enumeratorValue(static_cast<EnumeratorDecl*>(m->resolved))), e->ty};
           std::string addr = lvalue(e);
+          if (m->resolved && bitfieldOf.count(m->resolved))
+            return loadBitfield(addr, bitfieldOf[m->resolved], types.stripRef(e->ty), e);
           return load(addr, e->ty, e);
         }
         case NodeKind::IndexExpr:
@@ -5367,12 +5459,19 @@ namespace
         if (!t || !t->isKnown())
           unsupported(b, "an assignment to an expression of unknown type");
         Value rhs = rvalue(b->rhs);
+        const BitfieldInfo* bits = nullptr;
+        if (b->lhs->kind == NodeKind::MemberExpr)
+          if (Decl* d = static_cast<MemberExpr*>(b->lhs)->resolved; d && bitfieldOf.count(d))
+            bits = &bitfieldOf[d];
         if (op != P::Assign)
         {
-          Value old = load(addr, t, b);
+          Value old = bits ? loadBitfield(addr, *bits, t, b) : load(addr, t, b);
           rhs = arithmetic(baseOp(op), old, rhs, b);
         }
-        store(rhs, addr, t, b);
+        if (bits)
+          storeBitfield(convert(rhs, t, b), addr, *bits, t, b);
+        else
+          store(rhs, addr, t, b);
         return convert(rhs, t, b);
       }
       Value l = rvalue(b->lhs);

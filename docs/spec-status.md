@@ -6,13 +6,12 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**117 pass, 14 pending, 0 failing, 0 fixed** (131 snippets, 2.0 s).
+**119 pass, 12 pending, 0 failing, 0 fixed** (131 snippets, 2.0 s).
 
 ## Language: statements, expressions, declarations
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `language/bitfields.kov` | bit fields | pending | 14 uses in 6 files | bit field values work but every field takes a whole unit (sizeof 12 instead of 4); line 1: got `1 6 0 12`, expected `1 6 0 4` |
 | `language/generic_lambdas.kov` | generic lambdas (auto parameters) | pending | 330 uses in 168 files | generic lambdas are not implemented (Agui's one site is a hand-written override); C:\kov\compiler\tests\spec\language\generic_lambdas.kov:6: codegen does not support a local of unknown type (twice) yet (in @kov.main) |
 | `language/alignas.kov` | alignas on a struct | pass | 68 alignas/alignof uses in 15 files |  |
 | `language/arrays_2d.kov` | two-dimensional arrays: nested brace initialisation and indexing | pass |  |  |
@@ -20,6 +19,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `language/attributes_noexcept.kov` | noexcept, [[nodiscard]], [[maybe_unused]] | pass | 802 noexcept, 215 [[nodiscard]], 46 [[maybe_unused]], 68 alignas/alignof |  |
 | `language/auto_variables.kov` | auto variables | pass | 6641 uses in 1428 files |  |
 | `language/binary_literals.kov` | binary integer literals (0b1010) | pass |  |  |
+| `language/bitfields.kov` | bit fields | pass | 14 uses in 6 files |  |
 | `language/constexpr_function_bound.kov` | a constexpr function call as an array bound | pass |  |  |
 | `language/constexpr_values.kov` | constexpr constants and constexpr functions | pass | 2643 uses in 808 files (variables), 361 (functions) |  |
 | `language/decltype.kov` | decltype | pass | 163 uses in 57 files |  |
@@ -78,7 +78,6 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
 | `templates/auto_return_templates.kov` | function templates with a deduced (`auto`, `auto&`) return type | pending |  | the return type stays `auto` at the call (`firstOf(p)` has "the type auto"); C:\kov\compiler\tests\spec\templates\auto_return_templates.kov:9: codegen does not support the type auto of BinaryExpr yet (in @kov.main) |
-| `templates/nested_template_instantiation.kov` | a class template instantiated with another instantiation of itself (Stack<Stack<int>>) through a variadic push | pending |  | `nested.push()` with an empty pack picks emplace_back(const T&) and emits a call without its argument (malformed IR); C:\kov\compiler\tests\spec\templates\nested_template_instantiation.kov:7: codegen does not support a call to Vector::emplace_back without an argument for its parameter value (and the overload resolution let it through) yet (in @"Stack<Stack<int32>>::push<>()", requested by @kov.main) |
 | `templates/template_template_parameters.kov` | template template parameters | pending |  | template template parameters are not implemented; C:\kov\compiler\tests\spec\templates\template_template_parameters.kov:10: codegen does not support a call to countAll whose template arguments could not be deduced yet (in @kov.main) |
 | `templates/alias_template_conditional.kov` | an alias template over Conditional with a bool parameter (Conditional<Small, int16_t, int64_t>) | pass |  |  |
 | `templates/alias_template_member_access.kov` | an alias template of a class template (template<typename T> using Ptr = UniquePtr<T>;) used as a variable type | pass | 7 alias templates in 6 files |  |
@@ -98,6 +97,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/function_templates.kov` | function templates: deduction, explicit arguments, overloading with non-templates, full specialisation | pass | 592 full specialisations in 61 files |  |
 | `templates/member_template_in_class_template.kov` | a member function template of a class template converting its argument to T (names.add("a") into Stack<String>) | pass |  |  |
 | `templates/member_templates_explicit.kov` | member function templates called with explicit arguments, static member templates | pass |  |  |
+| `templates/nested_template_instantiation.kov` | a class template instantiated with another instantiation of itself (Stack<Stack<int>>) through a variadic push | pass |  |  |
 | `templates/non_type_parameters.kov` | non-type template parameters: ints, bools, defaults, used in the body | pass |  |  |
 | `templates/partial_specialisation.kov` | partial specialisation of class templates | pass | 8 uses in 5 files |  |
 | `templates/requires_clauses.kov` | constrained templates (requires clauses) | pass | 1274 requires/concept uses in 609 files |  |

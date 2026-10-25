@@ -1,6 +1,5 @@
 // spec: bit fields
 // factorio: 14 uses in 6 files
-// pending: bit field values work but every field takes a whole unit (sizeof 12 instead of 4)
 struct Flags
 {
   unsigned visible : 1;

@@ -914,8 +914,11 @@ struct GlobalScope::Impl
         // `Limits<int>::max`: the specialisation for these arguments, when there is one.
         std::vector<const Ty*> args;
         TypeContext actx{context, locals, subst};
-        for (Node* a : part.templateArgs)
-          args.push_back(uint8_t(a->kind) <= uint8_t(NodeKind::PackType) ? convertType(static_cast<Type*>(a), actx, depth + 1) : types.unknown());
+        for (size_t i = 0; i < part.templateArgs.size(); ++i)
+        {
+          Decl* param = i < step.decl->templateParams.size() ? step.decl->templateParams[i] : nullptr;
+          args.push_back(templateArgument(part.templateArgs[i], param, actx, depth + 1)); // types, and constants for value parameters
+        }
         if (const Ty* spec = matchSpecialization(step, args, depth))
         {
           step.decl = spec->decl;
@@ -3322,11 +3325,57 @@ struct GlobalScope::Impl
 
     // Argument types of a call; a pack expansion `args...` contributes one type per element.
     // Lvalues present themselves as lvalue references (argumentType).
+    // The parameter pack an expansion pattern expands (the first pack parameter named in it), or null.
+    Decl* packParamIn(Node* n, int depth = 0)
+    {
+      if (!n || depth > 32)
+        return nullptr;
+      switch (n->kind)
+      {
+        case NodeKind::NameExpr:
+        {
+          Decl* d = static_cast<NameExpr*>(n)->resolved;
+          return d && d->kind == NodeKind::ParamDecl && static_cast<ParamDecl*>(d)->isPack ? d : nullptr;
+        }
+        case NodeKind::ParenExpr: return packParamIn(static_cast<ParenExpr*>(n)->inner, depth + 1);
+        case NodeKind::UnaryExpr: return packParamIn(static_cast<UnaryExpr*>(n)->operand, depth + 1);
+        case NodeKind::CastExpr: return packParamIn(static_cast<CastExpr*>(n)->operand, depth + 1);
+        case NodeKind::NamedCastExpr: return packParamIn(static_cast<NamedCastExpr*>(n)->operand, depth + 1);
+        case NodeKind::MemberExpr: return packParamIn(static_cast<MemberExpr*>(n)->base, depth + 1);
+        case NodeKind::CallExpr:
+        {
+          auto* c = static_cast<CallExpr*>(n);
+          if (Decl* d = packParamIn(c->callee, depth + 1))
+            return d;
+          for (Expr* a : c->args)
+            if (Decl* d = packParamIn(a, depth + 1))
+              return d;
+          return nullptr;
+        }
+        default: return nullptr;
+      }
+    }
+
+    // `f(forward<Args>(args)...)` under an instantiation with an empty Args: no argument at all.
+    bool isEmptyExpansion(Expr* a)
+    {
+      if (!a || a->kind != NodeKind::UnaryExpr || static_cast<UnaryExpr*>(a)->isKeyword ||
+          P(static_cast<UnaryExpr*>(a)->op) != P::Ellipsis || !static_cast<UnaryExpr*>(a)->postfix)
+        return false;
+      Decl* pd = packParamIn(static_cast<UnaryExpr*>(a)->operand);
+      if (!pd)
+        return false;
+      const Ty* pt = impl.declaredTypeOf(pd, activeSubst, 0);
+      return pt && pt->kind == TyKind::Pack && pt->args.empty();
+    }
+
     std::vector<const Ty*> argTypesOf(const Span<Expr*>& args)
     {
       std::vector<const Ty*> out;
       for (Expr* a : args)
       {
+        if (isEmptyExpansion(a))
+          continue;
         if (a && a->ty && a->ty->kind == TyKind::Pack)
           for (const Ty* e : a->ty->args)
             out.push_back(argumentType(a, e, types));
@@ -3412,7 +3461,7 @@ struct GlobalScope::Impl
           for (Decl* p : f->templateParams)
           {
             const Ty* t = subst.find(p);
-            if (!t || call->templateArgCount >= 4)
+            if (!t || call->templateArgCount >= 8)
               break;
             call->templateArgs[call->templateArgCount++] = t;
           }
