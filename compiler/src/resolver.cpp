@@ -214,6 +214,25 @@ struct GlobalScope::Impl
 {
   SymbolTable& symbols;
   TypeTable types;
+  // The tokens of the file being resolved on this thread: constants in template arguments
+  // (`Num<1>::Type`) are read from them when a lookup's own TypeContext carries none.
+  static thread_local const std::vector<Token>* fallbackTokens;
+  static thread_local std::string_view fallbackText;
+  struct TokenScope
+  {
+    const std::vector<Token>* savedTokens;
+    std::string_view savedText;
+    TokenScope(const std::vector<Token>* tokens, std::string_view text) : savedTokens(fallbackTokens), savedText(fallbackText)
+    {
+      fallbackTokens = tokens;
+      fallbackText = text;
+    }
+    ~TokenScope()
+    {
+      fallbackTokens = savedTokens;
+      fallbackText = savedText;
+    }
+  };
   Scope root{ScopeKind::Namespace, nullptr, nullptr, 256};
   std::mutex deferredMutex;
   std::vector<std::pair<Decl*, Scope*>> deferredQualified; // Out-of-line class/enum definitions.
@@ -1271,11 +1290,13 @@ struct GlobalScope::Impl
         auto* l = static_cast<LiteralExpr*>(e);
         if (l->literalKind == TokenKind::Keyword)
           return l->keyword == Kw::true_ ? 1 : l->keyword == Kw::false_ ? 0 : std::optional<int64_t>();
-        if (l->literalKind != TokenKind::Number || !ctx.tokens)
+        const std::vector<Token>* toks = ctx.tokens ? ctx.tokens : fallbackTokens;
+        std::string_view text = ctx.tokens ? ctx.text : fallbackText;
+        if (l->literalKind != TokenKind::Number || !toks)
           return std::nullopt;
-        const Token& t = (*ctx.tokens)[std::min<size_t>(l->token, ctx.tokens->size() - 1)];
+        const Token& t = (*toks)[std::min<size_t>(l->token, toks->size() - 1)];
         std::string digits;
-        for (char c : ctx.text.substr(t.offset, t.length))
+        for (char c : text.substr(t.offset, t.length))
           if (c != '\'')
             digits += c;
         try
@@ -1433,7 +1454,11 @@ struct GlobalScope::Impl
       bool constant = l.decl && ((l.decl->kind == NodeKind::VariableDecl && !(l.decl->flags & DF_Typedef)) || l.decl->kind == NodeKind::EnumeratorDecl ||
                                  (l.decl->kind == NodeKind::TemplateParamDecl && !static_cast<TemplateParamDecl*>(l.decl)->isType));
       if (constant)
+      {
         v = constOfDecl(l.decl, ctx, depth);
+        if (!v && l.decl->kind == NodeKind::TemplateParamDecl)
+          return types.param(l.decl); // `Num<I>` in a template: the argument is still the parameter (dependent)
+      }
       else
         return convertType(static_cast<Type*>(arg), ctx, depth + 1);
     }
@@ -1744,7 +1769,23 @@ struct GlobalScope::Impl
         if (n->name.parts.size() == 1 && n->name.parts[0].hasTemplateArgs)
           if (const Ty* trait = typeTrait(n->name.parts[0], ctx, depth))
             return trait;
-        Lookup l = lookupQualified(n->name, ctx.scope, ctx.locals, depth + 1);
+        // Under an instantiation the qualifier's arguments are known: `Pick<1, A, B>::Type` with
+        // A = int finds the member in the specialisation those arguments pick.
+        Lookup l = lookupQualified(n->name, ctx.scope, ctx.locals, depth + 1, ctx.subst);
+        if (n->name.parts.size() == 2 && !n->name.parts[1].hasTemplateArgs && n->name.parts[0].hasTemplateArgs)
+        {
+          // `Num<I>::Type` with I still a parameter: the member of whichever specialisation the
+          // arguments pick once they are known; the primary's member must not stand in for it.
+          QualifiedName prefix = n->name;
+          prefix.parts.count -= 1;
+          Lookup pl = lookupQualified(prefix, ctx.scope, ctx.locals, depth + 1, ctx.subst);
+          if (pl.decl && pl.decl->kind == NodeKind::ClassDecl)
+          {
+            const Ty* q = typeOfTypeDecl(pl.decl, pl, prefix.last(), ctx, depth + 1);
+            if (q && q->kind == TyKind::Class && types.isDependent(q))
+              return types.dependentMember(q, n->name.parts[1].symbol);
+          }
+        }
         if (l.found == Found::No)
         {
           if (n->name.parts.size() == 1)
@@ -2230,6 +2271,25 @@ struct GlobalScope::Impl
   }
 
   // Applies a substitution to a canonical type.
+  // An instantiation of a primary class template whose arguments pick a specialisation: that
+  // specialisation's type; otherwise the type as given.
+  const Ty* resolveSpecialization(const Ty* classTy, int depth)
+  {
+    Decl* d = classTy ? classTy->decl : nullptr;
+    if (!d || d->kind != NodeKind::ClassDecl || d->templateParams.empty() || (d->flags & DF_Specialization) || classTy->args.empty() || depth > 24)
+      return classTy;
+    const QualifiedName& name = static_cast<ClassDecl*>(d)->name;
+    if (name.empty())
+      return classTy;
+    Lookup l;
+    if (!lookupInScope(lexicalScopeOf(d), name.last().symbol, l, depth + 1) || !l.overloads)
+      return classTy;
+    std::vector<const Ty*> args(classTy->args.begin(), classTy->args.end());
+    if (const Ty* spec = matchSpecialization(l, args, depth + 1))
+      return spec;
+    return classTy;
+  }
+
   // A parameter whose type became a pack (`Args...` -> int, String), also under a reference or a
   // pointer (`Args&&...` -> int&&, String&&): appends one type per element and returns true.
   bool spliceIfPack(const Ty* sub, std::vector<const Ty*>& out)
@@ -2264,9 +2324,12 @@ struct GlobalScope::Impl
         return t;
       case TyKind::DependentMember:
       {
-        // `T::Unit` with T now a class: the member type inside it.
+        // `T::Unit` with T now a class, `Num<I>::Type` with I now known: the member type inside
+        // it (inside the specialisation the arguments pick, when there is one).
         const Ty* sub = substitute(t->inner, s, depth + 1);
-        if (sub && sub->kind == TyKind::Class && sub->decl)
+        if (sub && sub->kind == TyKind::Class && !types.isDependent(sub))
+          sub = resolveSpecialization(sub, depth + 1);
+        if (sub && sub->kind == TyKind::Class && sub->decl && !types.isDependent(sub))
           if (Scope* inside = classScopeOf(sub))
           {
             Lookup inner;
@@ -2716,8 +2779,9 @@ struct GlobalScope::Impl
     // Return statements inside lambdas / auto functions record their type here.
     std::vector<const Ty*> returnFrames;
 
+    TokenScope tokenScope; // this walker's file is where literals are read from, lookups included
     Walker(Impl& impl, ResolveStats& stats, const std::vector<Token>& tokens, std::string_view text)
-      : impl(impl), types(impl.types), stats(stats), symbols(impl.symbols), tokens(tokens), text(text), scope(&impl.root)
+      : impl(impl), types(impl.types), stats(stats), symbols(impl.symbols), tokens(tokens), text(text), scope(&impl.root), tokenScope(&tokens, text)
     {
     }
 
@@ -4842,11 +4906,15 @@ FunctionDecl* GlobalScope::findFreeOperator(uint32_t punctuator, const Ty* lhs, 
 
 const Ty* GlobalScope::typeOfDecl(Decl* d) { return impl->declaredTypeOf(d, nullptr, 0); }
 
+thread_local const std::vector<Token>* GlobalScope::Impl::fallbackTokens = nullptr;
+thread_local std::string_view GlobalScope::Impl::fallbackText;
+
 const Ty* GlobalScope::typeOfAst(Type* t, Decl* context)
 {
   Impl::DeclContext dc;
   impl->declContextFor(context, dc);
   ParsedFile* file = context ? context->file : nullptr;
+  Impl::TokenScope tokenScope(file ? file->tokens : nullptr, file ? file->text : std::string_view());
   return impl->convertType(t, Impl::TypeContext{dc.scope, &dc.params, nullptr, file ? file->tokens : nullptr, file ? file->text : std::string_view()}, 0);
 }
 
@@ -5073,6 +5141,7 @@ const Ty* GlobalScope::typeOfAstIn(Type* t, Decl* context, const TemplateArgs& a
   impl->declContextFor(context, dc);
   Subst s = toSubst(args);
   ParsedFile* file = context ? context->file : nullptr;
+  Impl::TokenScope tokenScope(file ? file->tokens : nullptr, file ? file->text : std::string_view());
   return impl->convertType(t, Impl::TypeContext{dc.scope, &dc.params, args.empty() ? nullptr : &s, file ? file->tokens : nullptr,
                                                 file ? file->text : std::string_view()}, 0);
 }

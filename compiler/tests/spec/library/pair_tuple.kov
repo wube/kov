@@ -1,6 +1,5 @@
 // spec: Pair (std::pair) and makePair; Tuple
 // factorio: 354 pair uses in 199 files, 51 tuple
-// pending: Tuple with get<N> is not in the library yet
 int main()
 {
   Pair<String, int> p = makePair(String("a"), 1);

@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**119 pass, 12 pending, 0 failing, 0 fixed** (131 snippets, 2.0 s).
+**120 pass, 11 pending, 0 failing, 0 fixed** (131 snippets, 2.0 s).
 
 ## Language: statements, expressions, declarations
 
@@ -111,7 +111,6 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `library/pair_tuple.kov` | Pair (std::pair) and makePair; Tuple | pending | 354 pair uses in 199 files, 51 tuple | Tuple with get<N> is not in the library yet; C:\kov\compiler\tests\spec\library\pair_tuple.kov:12: codegen does not support a parameter of unknown type (4: <unknown>) yet (in @kov.main) |
 | `library/variant.kov` | Variant (std::variant) | pending | 24 uses in 15 files (Kov's answer is the typed union, design.md 8.5) | Variant is not in the library; typed unions (`union enum`) are the planned replacement; C:\kov\compiler\tests\spec\library\variant.kov:6: codegen does not support a local of unknown type (v) yet (in @kov.main) |
 | `library/algorithms.kov` | algorithms (std::sort, find_if, count_if, all_of/any_of, reverse, lower_bound, remove_if, min/max/clamp) | pass | 466 algorithm calls in 247 files |  |
 | `library/array_span.kov` | Array<T, N> and Span<T> (std::array, std::span) | pass | 372 std::array uses in 193 files, 147 std::span |  |
@@ -127,6 +126,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `library/memory_c.kov` | memcpy, memset, memcmp, strlen, malloc/free through the library's C declarations | pass | 164 mem* calls in 84 files, 48 str* calls |  |
 | `library/optional.kov` | Optional (std::optional): value, hasValue, nullopt, assignment, comparison, valueOr | pass | 1587 uses in 658 files |  |
 | `library/ordered_map_set.kov` | ordered Map and Set (std::map/std::set): iteration in key order, lower bound | pass | 827 std::map uses in 422 files, 641 std::set in 293 files |  |
+| `library/pair_tuple.kov` | Pair (std::pair) and makePair; Tuple | pass | 354 pair uses in 199 files, 51 tuple |  |
 | `library/shared_ptr.kov` | SharedPtr and WeakPtr (std::shared_ptr/weak_ptr) | pass | 99 shared_ptr uses in 50 files, 8 weak_ptr |  |
 | `library/sort_default_order.kov` | ::sort by operator< (no comparator) | pass |  |  |
 | `library/string.kov` | String (std::string): building, comparison, search, substrings, c_str, iteration | pass | 11491 uses in 2434 files |  |

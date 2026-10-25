@@ -310,6 +310,50 @@ and the library's missing `Map`, `Tuple`, `Array`/`Span`, `SharedPtr`, `Variant`
 Small library additions came out of it too: `memset`, `abs(int)`, the C math functions,
 `OutOfRange`/`InvalidArgument`, `UniquePtr = nullptr`.
 
+## Working down the suite (2026-10-25, evening)
+
+kovarex's rule for the suite: fix errors first. In that order, one commit per few fixes, each
+checked against the suite, the 40 end-to-end tests and the CommonUtil and Agui smoke tests:
+
+1. **Crashes.** `auto& [w, h] = s;` crashed the compiler: the parser only recognised bindings
+   under a plain `auto`, and the resolver and code generator had nothing for them. Bindings now
+   type and address the matching member (or array element) of the hidden object, by value and
+   by reference.
+2. **Silent miscompiles.** Aggregate initialisation dropped default member initializers of the
+   members left out; `int a[2][3]` was built as `int[3][2]`; `cond ? a : b` was no lvalue, so
+   `pick(x, y) = 20` wrote into a temporary; `0b1010` was 0; `return local;` copied instead of
+   moving; two conversion operators shared one symbol; a `Derived*` to a base after the vtable
+   pointer was not adjusted and null did not survive the adjustment (found the same day by the
+   Agui smoke test).
+3. **Silently ignored.** Partial specialisations (the primary was used), static members of class
+   templates (one object for all instantiations), designated initializers (taken positionally),
+   constexpr functions as array bounds (bound 0), requires clauses (not consulted), alignas,
+   bit-field widths, dynamic_cast (static), `goto`.
+4. **Compile-time gaps.** Enum values as template arguments; a template calling itself deducing
+   its own parameters afresh; `Args&&...` packs under references and `T(forward<Args>(args)...)`
+   for scalar T; alias templates (their parameters were invisible while the target was converted);
+   `typename T::Unit` and `Num<I>::Type` as dependent member types resolved on substitution (a
+   new type kind, `DependentMember`), with value arguments matching specialisations; nested
+   classes of class templates carrying the enclosing arguments; out-of-line members of templates
+   with value parameters; default template arguments of function templates after deduction
+   (`EnableIf` removes a candidate); `Conditional`; `sizeof(T[N])`; wide string literals; calls
+   leaving a required parameter without an argument are now an error instead of a call with
+   garbage (which is what `agui::label()` in the smoke test had been).
+5. **Library.** `Map`, `Array<T, N>`, `Span<T>` (Vector and Array convert to it), `Tuple` with
+   `get<I>`, `SharedPtr`/`WeakPtr`, `Thread`, `Mutex`, `LockGuard`, `UniqueLock`,
+   `ConditionVariable`, `Atomic` (SRW locks, CreateThread, and `kov_atomic_*` builtins the
+   compiler turns into atomic instructions), `Vector` from a brace list, `memset`, `abs(int)`,
+   the C math functions, `OutOfRange`/`InvalidArgument`.
+
+The suite went from 80 pass / 49 pending to 120 pass / 11 pending; the Factorio front end stayed
+at 99.27% parsed and 77.6-77.8% typed (members of dependent qualifiers now count as dependent
+instead of being guessed from the primary template). Left pending, in order of Factorio use:
+generic lambdas (330 uses; the closure's call operator needs instantiating per call, which the
+lambda machinery does not do yet), the Kov-only features of design.md section 8 (`for constexpr`,
+reflection, typed unions, `fromStr`, tests), `Variant` (superseded by typed unions), auto-return
+function templates, pointers to member functions, template template parameters, and the SDL
+header import.
+
 ## The order that gets to a running game
 
 1. Decide exceptions and RTTI; implement them (they shape what the converter emits).
