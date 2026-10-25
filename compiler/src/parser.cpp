@@ -50,6 +50,7 @@ namespace
     uint32_t kwImplicit, kwFallthrough, kwBothConst, kwClassConst, kwAccumulate, kwImport, kwAssert, kwReleaseAssert, kwCaller,
              kwConditional, kwUnderscore, kwConfig, kwNameof, kwCount, kwValues, kwStr;
     uint8_t pendingAttributes = 0;   // [[noinline]] and friends seen before the current declaration.
+    Expr* pendingAlignment = nullptr; // alignas(N) seen before the current class.
     Expr* pendingCondition = nullptr; // conditional(expr) seen in the current specifiers.
 
     void parseTranslationUnit()
@@ -373,8 +374,11 @@ namespace
         }
         else if (at(Kw::alignas_) && at(P::LParen, 1))
         {
+          // `alignas(16)`: kept for the class declared next (ignored elsewhere for now).
           advance();
-          skipBalanced();
+          advance();
+          pendingAlignment = parseExpression();
+          expect(P::RParen, "expected ')' after alignas");
         }
         else if (atIdent() && (spelling() == "__declspec" || spelling() == "__attribute__" || spelling() == "__pragma" ||
                                spelling() == "alignas") && at(P::LParen, 1))
@@ -2255,6 +2259,8 @@ namespace
       ClassDecl* c = decl<ClassDecl>(start);
       c->keyword = keyword;
       c->flags |= flags;
+      c->alignment = pendingAlignment;
+      pendingAlignment = nullptr;
       c->templateParams = templ.params;
       c->isTemplate = templ.present;
       if (templ.present && templ.params.empty())

@@ -2476,6 +2476,68 @@ struct GlobalScope::Impl
     std::vector<bool> refs; // per rank: the parameter is a reference
   };
 
+  // The value of a requires clause under the deduced arguments: boolean traits (`isIntegral<T>`),
+  // `!`, `&&`, `||`, parentheses, true/false and constants. A clause this cannot evaluate holds
+  // (concepts and expression requirements are not checked).
+  std::optional<bool> constraintValue(Expr* e, FunctionDecl* f, const Subst& s, int depth = 0)
+  {
+    if (!e || depth > 16)
+      return std::nullopt;
+    switch (e->kind)
+    {
+      case NodeKind::ParenExpr: return constraintValue(static_cast<ParenExpr*>(e)->inner, f, s, depth + 1);
+      case NodeKind::LiteralExpr:
+      {
+        auto* l = static_cast<LiteralExpr*>(e);
+        if (l->literalKind == TokenKind::Keyword && (l->keyword == Kw::true_ || l->keyword == Kw::false_))
+          return l->keyword == Kw::true_;
+        return std::nullopt;
+      }
+      case NodeKind::UnaryExpr:
+      {
+        auto* u = static_cast<UnaryExpr*>(e);
+        if (u->isKeyword ? Kw(u->op) == Kw::not_ : P(u->op) == P::Bang)
+          if (std::optional<bool> v = constraintValue(u->operand, f, s, depth + 1))
+            return !*v;
+        return std::nullopt;
+      }
+      case NodeKind::BinaryExpr:
+      {
+        auto* b = static_cast<BinaryExpr*>(e);
+        bool andOp = b->isKeyword ? Kw(b->op) == Kw::and_ : P(b->op) == P::AndAnd;
+        bool orOp = b->isKeyword ? Kw(b->op) == Kw::or_ : P(b->op) == P::OrOr;
+        if (!andOp && !orOp)
+          return std::nullopt;
+        std::optional<bool> l = constraintValue(b->lhs, f, s, depth + 1), r = constraintValue(b->rhs, f, s, depth + 1);
+        if (andOp)
+          return (l && !*l) || (r && !*r) ? std::optional<bool>(false) : (l && r ? std::optional<bool>(true) : std::nullopt);
+        return (l && *l) || (r && *r) ? std::optional<bool>(true) : (l && r ? std::optional<bool>(false) : std::nullopt);
+      }
+      case NodeKind::NameExpr:
+      {
+        auto* n = static_cast<NameExpr*>(e);
+        if (n->name.parts.size() != 1 || !n->name.parts[0].hasTemplateArgs || !isBoolTraitName(n->name.parts[0].symbol))
+          return std::nullopt;
+        LocalStack own;
+        for (Decl* p : f->templateParams)
+          own.push(static_cast<TemplateParamDecl*>(p)->name, p);
+        TypeContext ctx{lexicalScopeOf(f), &own, &s, f->file ? f->file->tokens : nullptr, f->file ? f->file->text : std::string_view()};
+        std::vector<const Ty*> args = traitArgs(n->name.parts[0], ctx, depth + 1);
+        if (args.empty())
+          return std::nullopt;
+        return traitValue(symbols.name(n->name.parts[0].symbol), args);
+      }
+      default:
+        return std::nullopt;
+    }
+  }
+
+  bool requiresHolds(FunctionDecl* f, const Subst& deduced)
+  {
+    std::optional<bool> v = constraintValue(f->requiresClause, f, deduced);
+    return !v || *v;
+  }
+
   // Picks the best candidate by C++'s rule (better in one argument, not worse in any); on a tie
   // the non-template, then the first one. Null when no candidate is viable.
   FunctionDecl* chooseAmong(const std::vector<FunctionDecl*>& candidates, const std::vector<const Ty*>& argTypes,
@@ -2551,6 +2613,8 @@ struct GlobalScope::Impl
         c.ranks.push_back(r);
         c.refs.push_back(pt->isReference());
       }
+      if (ok && f->requiresClause && !requiresHolds(f, deduced))
+        ok = false; // `requires isIntegral<T>`: the constraint fails for these arguments
       if (ok)
         viable.push_back(std::move(c));
     }

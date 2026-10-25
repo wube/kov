@@ -6,16 +6,15 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**109 pass, 21 pending, 0 failing, 0 fixed** (130 snippets, 1.9 s).
+**112 pass, 18 pending, 0 failing, 0 fixed** (130 snippets, 2.0 s).
 
 ## Language: statements, expressions, declarations
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `language/alignas.kov` | alignas on a struct | pending | 68 alignas/alignof uses in 15 files | alignas is accepted and ignored, and alignof returns the size (12) instead of the alignment; line 1: got `12 12`, expected `16 16` |
 | `language/bitfields.kov` | bit fields | pending | 14 uses in 6 files | bit field values work but every field takes a whole unit (sizeof 12 instead of 4); line 1: got `1 6 0 12`, expected `1 6 0 4` |
 | `language/generic_lambdas.kov` | generic lambdas (auto parameters) | pending | 330 uses in 168 files | generic lambdas are not implemented (Agui's one site is a hand-written override); C:\kov\compiler\tests\spec\language\generic_lambdas.kov:6: codegen does not support a local of unknown type (twice) yet (in @kov.main) |
-| `language/wide_strings.kov` | wide string literals and WString | pending | 44 uses in 10 files (literals), 58 (std::wstring) | no wide string literals yet; line 1: got `5 26999`, expected `4 119` |
+| `language/alignas.kov` | alignas on a struct | pass | 68 alignas/alignof uses in 15 files |  |
 | `language/arrays_2d.kov` | two-dimensional arrays: nested brace initialisation and indexing | pass |  |  |
 | `language/assign_through_returned_reference.kov` | assigning through a reference returned from a function | pass |  |  |
 | `language/attributes_noexcept.kov` | noexcept, [[nodiscard]], [[maybe_unused]] | pass | 802 noexcept, 215 [[nodiscard]], 46 [[maybe_unused]], 68 alignas/alignof |  |
@@ -46,6 +45,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `language/thread_local.kov` | thread_local variables | pass | 15 uses in 13 files |  |
 | `language/unions.kov` | unions | pass | 47 uses in 39 files |  |
 | `language/variadic_c_functions.kov` | calling C variadic functions and C-style ... declarations | pass |  |  |
+| `language/wide_strings.kov` | wide string literals and WString | pass | 44 uses in 10 files (literals), 58 (std::wstring) |  |
 
 ## Classes and objects
 
@@ -78,7 +78,6 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
 | `templates/nested_template_instantiation.kov` | a class template instantiated with another instantiation of itself (Stack<Stack<int>>) through a variadic push | pending |  | `nested.push()` with an empty pack picks emplace_back(const T&) and emits a call without its argument (malformed IR); C:\kov\compiler\tests\spec\templates\nested_template_instantiation.kov:7: codegen does not support a call to Vector::emplace_back without an argument for its parameter value (and the overload resolution let it through) yet (in @"Stack<Stack<int32>>::push<>()", requested by @kov.main) |
-| `templates/requires_clauses.kov` | constrained templates (requires clauses) | pending | 1274 requires/concept uses in 609 files | requires clauses are parsed but not enforced (the first overload is taken for both calls); concepts are not implemented; line 1: got `42 3`, expected `42 not integral` |
 | `templates/sfinae_enable_if.kov` | enable_if-style overload selection | pending | 1 use (Factorio uses requires clauses instead) | EnableIf substitution failure does not remove the overload; C:\kov\compiler\tests\spec\templates\sfinae_enable_if.kov:8: codegen does not support a call to kind whose template arguments could not be deduced yet (in @kov.main) |
 | `templates/template_template_parameters.kov` | template template parameters | pending |  | template template parameters are not implemented; C:\kov\compiler\tests\spec\templates\template_template_parameters.kov:10: codegen does not support a call to countAll whose template arguments could not be deduced yet (in @kov.main) |
 | `templates/alias_template_conditional.kov` | an alias template over Conditional with a bool parameter (Conditional<Small, int16_t, int64_t>) | pass |  |  |
@@ -101,6 +100,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/member_templates_explicit.kov` | member function templates called with explicit arguments, static member templates | pass |  |  |
 | `templates/non_type_parameters.kov` | non-type template parameters: ints, bools, defaults, used in the body | pass |  |  |
 | `templates/partial_specialisation.kov` | partial specialisation of class templates | pass | 8 uses in 5 files |  |
+| `templates/requires_clauses.kov` | constrained templates (requires clauses) | pass | 1274 requires/concept uses in 609 files |  |
 | `templates/several_instantiations_in_one_call.kov` | three instantiations of one function template as arguments of a single variadic call | pass |  |  |
 | `templates/traits_as_values.kov` | type traits used as values (bool isSame<A, B> in an expression, not only in if constexpr) | pass |  |  |
 | `templates/variadic_recursion.kov` | the recursive variadic pattern: f(T first, Rest... rest) calling f(rest...) down to a non-template base case | pass |  |  |

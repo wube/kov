@@ -204,6 +204,7 @@ struct ClassDecl : Decl
   bool isFinal = false;
   bool isClassConst = false;
   bool isClosure = false;         // Synthetic class standing for a lambda's closure type.
+  Expr* alignment = nullptr;      // `struct alignas(16) X`: the alignment written.
   LambdaExpr* lambda = nullptr;   // The lambda, for closures.
 };
 struct EnumeratorDecl : Decl { uint32_t name; Expr* value = nullptr; };

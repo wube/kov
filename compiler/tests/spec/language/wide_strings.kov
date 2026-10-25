@@ -1,6 +1,5 @@
 // spec: wide string literals and WString
 // factorio: 44 uses in 10 files (literals), 58 (std::wstring)
-// pending: no wide string literals yet
 int main()
 {
   const wchar_t* w = L"wide";

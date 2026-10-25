@@ -294,6 +294,7 @@ namespace
             size = (size + a - 1) / a * a + sizeOf(f, at);
             align = std::max(align, a);
           }
+          align = std::max(align, declaredAlignment(t, at)); // `struct alignas(16) X`
           size = (size + align - 1) / align * align;
           return std::max<uint64_t>(size, 1);
         }
@@ -312,10 +313,23 @@ namespace
           uint64_t align = 1;
           for (const Ty* f : structFor(t, at).fieldTypes)
             align = std::max(align, alignOf(f, at));
-          return align;
+          return std::max(align, declaredAlignment(t, at));
         }
         default: return std::max<uint64_t>(1, sizeOf(t, at));
       }
+    }
+
+    // The alignment a class declares with alignas(N), or 1.
+    uint64_t declaredAlignment(const Ty* t, Node* at)
+    {
+      ClassDecl* c = classDef(t->decl, at);
+      if (!c->alignment)
+        return 1;
+      ParsedFile* saved = currentFile;
+      currentFile = c->file ? c->file : currentFile;
+      std::optional<int64_t> v = evalConst(c->alignment);
+      currentFile = saved;
+      return v && *v > 0 ? uint64_t(*v) : 1;
     }
 
     ClassDecl* classDef(Decl* decl, Node* at)
@@ -3064,7 +3078,52 @@ namespace
       const std::vector<Token>& toks = *currentFile->tokens;
       for (size_t i = l->token; i < toks.size() && toks[i].getKind() == TokenKind::String; ++i)
         bytes += decodeString(spelling(uint32_t(i)));
+      std::string_view first = spelling(l->token);
+      bool wide16 = first.starts_with("L") || (first.starts_with("u") && !first.starts_with("u8"));
+      bool wide32 = first.starts_with("U");
+      if (wide16 || wide32)
+        return wideStringConstant(bytes, wide16 ? 16 : 32);
       return cStringConstant(bytes);
+    }
+
+    // `L"text"` / `U"text"`: the UTF-8 bytes decoded and re-encoded as UTF-16 or UTF-32 code units.
+    std::string wideStringConstant(const std::string& utf8, int bits)
+    {
+      std::vector<uint32_t> points;
+      for (size_t i = 0; i < utf8.size();)
+      {
+        unsigned char c = utf8[i];
+        uint32_t cp;
+        size_t n;
+        if (c < 0x80) { cp = c; n = 1; }
+        else if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; n = 2; }
+        else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; n = 3; }
+        else { cp = c & 0x07; n = 4; }
+        for (size_t k = 1; k < n && i + k < utf8.size(); ++k)
+          cp = (cp << 6) | (utf8[i + k] & 0x3F);
+        points.push_back(cp);
+        i += n;
+      }
+      std::vector<uint32_t> units;
+      for (uint32_t cp : points)
+      {
+        if (bits == 16 && cp >= 0x10000)
+        {
+          cp -= 0x10000;
+          units.push_back(0xD800 + (cp >> 10));
+          units.push_back(0xDC00 + (cp & 0x3FF));
+        }
+        else
+          units.push_back(cp);
+      }
+      units.push_back(0);
+      std::string& out = emittingShared ? decls : moduleDecls[currentModule];
+      std::string name = "@.wstr" + std::to_string(stringCount++);
+      std::string unit = bits == 16 ? "i16" : "i32", elements;
+      for (size_t i = 0; i < units.size(); ++i)
+        elements += std::string(i ? ", " : "") + unit + " " + std::to_string(units[i]);
+      out += name + " = private unnamed_addr constant [" + std::to_string(units.size()) + " x " + unit + "] [" + elements + "]\n";
+      return name;
     }
 
     // A NUL-terminated string constant; returns its global name.
