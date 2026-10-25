@@ -2103,12 +2103,22 @@ struct GlobalScope::Impl
   const Ty* typeAs(FunctionDecl* candidate, FunctionDecl* f)
   {
     const Ty* t = declaredTypeOf(candidate, nullptr, 0);
-    if (candidate == f || f->templateParams.empty() || candidate->templateParams.size() != f->templateParams.size())
+    if (candidate == f)
+      return t;
+    // The definition names the class's parameters first (`template<typename T, int N> void
+    // Ring<T, N>::push(...)`), then the member's own; the declaration inside the class has only
+    // its own, the class's being in scope.
+    Span<Decl*> classParams;
+    if (f->parent && (f->parent->kind == NodeKind::ClassDecl || f->parent->kind == NodeKind::EnumDecl))
+      classParams = f->parent->templateParams;
+    if (candidate->templateParams.size() != classParams.size() + f->templateParams.size())
       return t;
     Subst s;
+    for (size_t i = 0; i < classParams.size(); ++i)
+      s.pairs.push_back({candidate->templateParams[i], types.param(classParams[i])});
     for (size_t i = 0; i < f->templateParams.size(); ++i)
-      s.pairs.push_back({candidate->templateParams[i], types.param(f->templateParams[i])});
-    return substitute(t, s);
+      s.pairs.push_back({candidate->templateParams[classParams.size() + i], types.param(f->templateParams[i])});
+    return s.pairs.empty() ? t : substitute(t, s);
   }
 
   void deduceCall(FunctionDecl* f, const Ty* fnTy, const std::vector<const Ty*>& argTypes, Subst& out)

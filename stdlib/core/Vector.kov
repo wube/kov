@@ -16,6 +16,13 @@ struct Vector
   Vector() {}
   // count default-constructed elements.
   explicit Vector(int count) { this->resize(count); }
+  // `Vector<int> primes = {2, 3, 5, 7};`
+  Vector(InitializerList<T> list)
+  {
+    this->reserve(list.size());
+    for (const T& item : list)
+      this->push_back(item);
+  }
   Vector(const Vector<T>& other)
   {
     this->reserve(other.length);

@@ -1,5 +1,4 @@
 // spec: members of a class template with a non-type parameter defined out of line
-// pending: `Ring<int, 3>::push` is referenced but never defined (link error)
 template<typename T, int N>
 struct Ring
 {

@@ -1,6 +1,5 @@
 // spec: goto
 // factorio: 8 uses in 6 files
-// pending: goto is parsed but not generated
 int main()
 {
   int found = -1;

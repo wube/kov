@@ -105,6 +105,7 @@ namespace
     std::unordered_map<Decl*, std::vector<Local>> packLocals; // one local per element of a parameter pack
     std::unordered_map<const Ty*, StructInfo> structs;
     std::unordered_map<Decl*, std::string> globals;
+    std::unordered_map<uint32_t, std::string> labelBlocks; // goto labels of the current function -> their blocks
     Span<uint32_t> pendingDesignators;                        // of the brace list constructInto is about to consume
     std::vector<std::pair<Decl*, int64_t>> constEnv;          // parameters bound while evalConst runs a constexpr call
     std::unordered_map<std::string, std::string> instanceGlobals; // static members of class template instantiations, by name
@@ -913,6 +914,30 @@ namespace
       }
     }
 
+    // The constructor of class t that takes an InitializerList (the rest defaulted), or null.
+    FunctionDecl* initializerListConstructor(ClassDecl* c, const Ty* t, Node* at)
+    {
+      TemplateArgs classArgs = global.classArgsOf(canonicalClass(t, at));
+      ArgsScope scope(*this, &classArgs);
+      for (Decl* m : c->members)
+      {
+        if (m->kind != NodeKind::FunctionDecl || !(m->flags & DF_Constructor) || (m->flags & DF_Delete))
+          continue;
+        auto* f = static_cast<FunctionDecl*>(m);
+        if (f->params.empty() || !f->templateParams.empty())
+          continue;
+        bool othersDefaulted = true;
+        for (size_t i = 1; i < f->params.size(); ++i)
+          othersDefaulted = othersDefaulted && static_cast<ParamDecl*>(f->params[i])->defaultValue != nullptr;
+        if (!othersDefaulted)
+          continue;
+        const Ty* pt = declType(f->params[0]);
+        if (pt && isInitializerListType(types.stripRef(pt)))
+          return f;
+      }
+      return nullptr;
+    }
+
     // Constructs an object of class type t at addr from constructor arguments.
     void constructInto(const std::string& addr, const Ty* t, Span<Expr*> args, Node* at)
     {
@@ -924,6 +949,13 @@ namespace
       }
       if (args.size() == 1 && args[0]->kind == NodeKind::BraceInitExpr)
       {
+        if (FunctionDecl* ctor = initializerListConstructor(c, t, at))
+        {
+          // `Vector<int> v = {1, 2, 3}`, `Poly p({1, 2, 3, 4})`: the list as one InitializerList argument.
+          TemplateArgs classArgs = global.classArgsOf(canonicalClass(t, at));
+          callFunction(ctor, classArgs, canonicalClass(t, at), addr, "", args, at);
+          return;
+        }
         pendingDesignators = static_cast<BraceInitExpr*>(args[0])->designators;
         constructInto(addr, t, static_cast<BraceInitExpr*>(args[0])->args, at);
         return;
@@ -1390,8 +1422,8 @@ namespace
         }
         if (init->kind == NodeKind::BraceInitExpr)
         {
-          pendingDesignators = static_cast<BraceInitExpr*>(init)->designators;
-          constructInto(addr, t, static_cast<BraceInitExpr*>(init)->args, at);
+          Expr* one = init; // constructInto sees the whole list: an InitializerList constructor, designators, or the fields
+          constructInto(addr, t, Span<Expr*>{&one, 1}, at);
           return;
         }
         if (init->kind == NodeKind::CallExpr && isClass(types.stripRef(init->ty)) && !init->ty->isReference())
@@ -1900,6 +1932,7 @@ namespace
       fn.clear();
       allocas.clear();
       locals.clear();
+      labelBlocks.clear();
       loops.clear();
       scopes.clear();
       statementTemps.clear();
@@ -5808,6 +5841,26 @@ namespace
             rvalue(static_cast<ExprStmt*>(s)->expr);
           destroyTemps();
           break;
+        case NodeKind::GotoStmt:
+        {
+          // A jump to a label of this function (no destructors run on the way: the labels Factorio
+          // uses jump forward out of loops, past nothing that needs destroying).
+          uint32_t symbol = static_cast<GotoStmt*>(s)->label;
+          if (!labelBlocks.count(symbol))
+            labelBlocks[symbol] = newLabel("goto");
+          fn += "  br label %" + labelBlocks[symbol] + "\n";
+          blockTerminated = true;
+          break;
+        }
+        case NodeKind::LabelStmt:
+        {
+          uint32_t symbol = static_cast<LabelStmt*>(s)->label;
+          if (!labelBlocks.count(symbol))
+            labelBlocks[symbol] = newLabel("goto");
+          emitBranch(labelBlocks[symbol]);
+          startBlock(labelBlocks[symbol]);
+          break;
+        }
         case NodeKind::DeclStmt:
           for (Decl* d : static_cast<DeclStmt*>(s)->decls)
           {
