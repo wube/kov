@@ -1,0 +1,59 @@
+// Function<R(Args...)>: callables of any kind behind one type: function pointers, lambdas with
+// captures, functors; passed by value, copied, moved, reset, checked for emptiness, called.
+extern "C" int printf(const char* format, ...);
+
+struct Counter
+{
+  int count = 0;
+  void operator()(int by) { this->count += by; }
+};
+
+int twice(int x) { return x * 2; }
+
+int apply(Function<int(int)> f, int x) { return f(x); }
+
+void each(const Vector<int>& values, Function<void(int)> f)
+{
+  for (int x : values)
+    f(x);
+}
+
+struct Button
+{
+  Function<void()> onClick;
+  void click()
+  {
+    if (this->onClick)
+      this->onClick();
+  }
+};
+
+int main()
+{
+  Function<int(int)> f = &twice;
+  int base = 10;
+  Function<int(int)> g = [base](int x) { return x + base; };
+  printf("%d %d %d\n", f(4), g(5), apply(g, 6));
+  Vector<int> values;
+  values.push_back(1);
+  values.push_back(2);
+  values.push_back(3);
+  int sum = 0;
+  each(values, [&sum](int x) { sum += x; });
+  Function<void()> none;
+  Function<int(int)> h = f;
+  f = nullptr;
+  printf("%d %d %d %d\n", sum, none ? 1 : 0, !f ? 1 : 0, h(7));
+  Counter counter;
+  Function<void(int)> count = [&counter](int by) { counter(by); };
+  count(3);
+  count(4);
+  Button button;
+  button.click();
+  int clicks = 0;
+  button.onClick = [&clicks]() { ++clicks; };
+  button.click();
+  button.click();
+  printf("%d %d\n", counter.count, clicks);
+  return 0;
+}

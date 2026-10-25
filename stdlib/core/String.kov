@@ -16,6 +16,12 @@ struct String
   implicit String(StringView text) { this->append(text.chars, text.length); }
   String(const char* text, int count) { this->append(text, count); }
   String(const String& other) { this->append(other.chars, other.length); }
+  String(String&& other) : chars(other.chars), length(other.length), capacity(other.capacity)
+  {
+    other.chars = nullptr;
+    other.length = 0;
+    other.capacity = 0;
+  }
   ~String()
   {
     if (this->chars)
@@ -30,6 +36,20 @@ struct String
     this->append(other.chars, other.length);
     if (this->chars)
       this->chars[this->length] = 0;
+    return *this;
+  }
+  String& operator=(String&& other)
+  {
+    if (this == &other)
+      return *this;
+    if (this->chars)
+      free(this->chars);
+    this->chars = other.chars;
+    this->length = other.length;
+    this->capacity = other.capacity;
+    other.chars = nullptr;
+    other.length = 0;
+    other.capacity = 0;
     return *this;
   }
 

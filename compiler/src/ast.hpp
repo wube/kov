@@ -310,6 +310,7 @@ struct LambdaCapture
   bool byRef = false;
   bool isThis = false;
   Expr* init = nullptr;         // Init-capture `[x = expr]`.
+  Decl* decl = nullptr;         // Init-capture: the variable it declares (a VariableDecl of type auto).
 };
 struct LambdaExpr : Expr
 {

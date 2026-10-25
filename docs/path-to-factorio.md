@@ -165,10 +165,34 @@ scouting command is the check step of convert.cmd pointed at the Agui output):
   typedefs; `!object` through the class's bool conversion, class-typed `?:`, `(void)x`,
   delegating constructors.
 
-What is left in Agui, by count: ranges whose `begin()` returns an iterator object rather than a
-pointer (65), `std::function` parameters (63; 1,300 uses in the game: `Function<R(Args...)>`
-needs the compiler's help, since a library class cannot take a signature apart), reverse
-iterators (`rbegin`), ranges over brace lists, and single cases.
+The second pass (2026-10-25, later) took Agui from 249 to 103 complaints:
+
+- **`Function<R(Args...)>`** (stdlib/core/Function.kov): the compiler reads the signature and
+  makes `Function<void(int)>` mean `FunctionImpl<void, int>`, a library class with the callable
+  on the heap behind `invoke`/`destroy`/`clone` function pointers to member template
+  specialisations; lambdas with captures, function pointers and functors; copied, moved,
+  reset, tested for emptiness. Test: `function.kov`.
+- **Value categories.** Overload resolution now knows an lvalue from an rvalue: an lvalue
+  argument presents itself as `T&`, binds to no `T&&`, and a forwarding reference `T&&` given
+  an lvalue deduces `T = U&` (reference collapsing), so `emplace_back(name)` copies and
+  `emplace_back(move(name))` moves, as in C++. Code generation copies lvalues through the copy
+  constructor only (it used to take the last same-class constructor, the move constructor, and
+  emptied the source), moves from `move(x)` and temporaries, and gives classes without copy or
+  move constructors memberwise moves. Deleted functions are diagnosed when chosen. Library:
+  `Vector`, `String`, `WString` have move constructors and move assignment, `push_back(T&&)`.
+  Test: `moves.kov`.
+- Range-for over iterator objects (`rbegin()`, `ReverseIterator<T>`), init-captures
+  (`[x = move(x)]`), pack expansions as the only constructor argument (`T(forward<Args>(args)...)`
+  for copies, moves and aggregates), default arguments carried by the converter from a dropped
+  header declaration to the definition, diagnostics naming the instantiation and who requested it.
+
+What is left in Agui, by count: member access on `typeid(x).name()` and on `unordered_set`
+(no `HashSet` yet) (11), class template argument deduction (`ScopedSetter guard(x, true)`, 6),
+ranges over brace lists (5), enumerators passed to forwarding references (25, one fix),
+`NamedBool` assignment from its `Enum` (3), local function-like macros in .cpp files
+(`HANDLE_CASE`, `E(i, j)`, 4), `CLOCKS_PER_SEC` (a cast in a macro body), `constexpr static`
+members as case labels, brace lists as call arguments, a generic lambda, a `using Base::f`
+member, and single cases.
 
 ## The order that gets to a running game
 

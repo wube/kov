@@ -9,6 +9,8 @@ struct Vector
 
   using iterator = T*;
   using const_iterator = const T*;
+  using reverse_iterator = ReverseIterator<T>;
+  using const_reverse_iterator = ReverseIterator<const T>;
   using value_type = T;
 
   Vector() {}
@@ -19,6 +21,12 @@ struct Vector
     this->reserve(other.length);
     for (int i = 0; i < other.length; ++i)
       this->push_back(other.items[i]);
+  }
+  Vector(Vector<T>&& other) : items(other.items), length(other.length), capacity(other.capacity)
+  {
+    other.items = nullptr;
+    other.length = 0;
+    other.capacity = 0;
   }
   ~Vector()
   {
@@ -37,6 +45,21 @@ struct Vector
       this->push_back(other.items[i]);
     return *this;
   }
+  Vector<T>& operator=(Vector<T>&& other)
+  {
+    if (this == &other)
+      return *this;
+    this->clear();
+    if (this->items)
+      free(this->items);
+    this->items = other.items;
+    this->length = other.length;
+    this->capacity = other.capacity;
+    other.items = nullptr;
+    other.length = 0;
+    other.capacity = 0;
+    return *this;
+  }
 
   int size() const { return this->length; }
   T* data() { return this->items; }
@@ -46,6 +69,12 @@ struct Vector
   T& back() { return this->items[this->length - 1]; }
   T* begin() { return this->items; }
   T* end() { return this->items + this->length; }
+  const T* begin() const { return this->items; }
+  const T* end() const { return this->items + this->length; }
+  ReverseIterator<T> rbegin() { return ReverseIterator<T>(this->items + this->length); }
+  ReverseIterator<T> rend() { return ReverseIterator<T>(this->items); }
+  ReverseIterator<const T> rbegin() const { return ReverseIterator<const T>(this->items + this->length); }
+  ReverseIterator<const T> rend() const { return ReverseIterator<const T>(this->items); }
 
   void reserve(int needed)
   {
@@ -70,7 +99,22 @@ struct Vector
     new (this->items + this->length) T(value);
     ++this->length;
   }
+  void push_back(T&& value)
+  {
+    this->reserve(this->length + 1);
+    new (this->items + this->length) T(move(value));
+    ++this->length;
+  }
   void emplace_back(const T& value) { this->push_back(value); }
+  // Builds the new element in place from the arguments.
+  template<typename... Args>
+  T& emplace_back(Args&&... args)
+  {
+    this->reserve(this->length + 1);
+    new (this->items + this->length) T(forward<Args>(args)...);
+    ++this->length;
+    return this->items[this->length - 1];
+  }
   T& front() { return this->items[0]; }
   void resize(int newLength)
   {

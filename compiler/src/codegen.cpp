@@ -113,8 +113,11 @@ namespace
       FunctionDecl* f;
       TemplateArgs args;
       const Ty* classTy;
-      unsigned module; // the module of the function that asked for it
+      unsigned module;         // the module of the function that asked for it
+      std::string requestedBy; // the name of that function, for diagnostics
     };
+    std::string currentFunctionName; // LLVM name of the function being emitted
+    std::string currentRequestedBy;  // for an instantiation: the function that first used it
 
     // A lambda's closure: one struct per lambda, fields for the captures, one function.
     struct ClosureInfo
@@ -122,6 +125,7 @@ namespace
       std::string structName;
       std::vector<Decl*> captured;       // enclosing local per field (null for `this`)
       std::vector<bool> byRef;
+      std::vector<Expr*> inits;          // init-captures: the initializer (null for other captures)
       std::vector<const Ty*> fieldTypes; // pointee type for references and `this`
       const Ty* enclosingClass = nullptr;
       std::string functionName;
@@ -200,7 +204,10 @@ namespace
     };
     [[noreturn]] void unsupported(Node* at, const std::string& what)
     {
-      error(at, "codegen does not support " + what + " yet");
+      std::string where;
+      if (!currentFunctionName.empty())
+        where = " (in " + currentFunctionName + (currentRequestedBy.empty() ? "" : ", requested by " + currentRequestedBy) + ")";
+      error(at, "codegen does not support " + what + " yet" + where);
       throw Unsupported{};
     }
 
@@ -359,7 +366,13 @@ namespace
         return structs[key];
       }
       if (!c->templateParams.empty() && args.pairs.size() != c->templateParams.size())
-        unsupported(at, "the class template " + global.qualifiedName(c) + " used without all its arguments");
+      {
+        Decl* lastParam = c->templateParams[c->templateParams.size() - 1];
+        bool emptyPack = args.pairs.size() + 1 == c->templateParams.size() && lastParam->kind == NodeKind::TemplateParamDecl &&
+                         static_cast<TemplateParamDecl*>(lastParam)->isPack;
+        if (!emptyPack)
+          unsupported(at, "the class template " + global.qualifiedName(c) + " used without all its arguments");
+      }
       StructInfo& info = structs[key];
       info.name = "%struct." + std::to_string(structs.size());
       // Bases first (resolved before deciding on the vtable pointer).
@@ -567,7 +580,7 @@ namespace
       TemplateArgs args = global.classArgsOf(canonicalClass(classTy, at));
       std::vector<FunctionDecl*> candidates;
       for (Decl* m : c->members)
-        if (m->kind == NodeKind::FunctionDecl && (m->flags & DF_Constructor) && m->templateParams.empty())
+        if (m->kind == NodeKind::FunctionDecl && (m->flags & DF_Constructor))
           candidates.push_back(static_cast<FunctionDecl*>(m));
       return global.chooseOverload(candidates, argTypes, args, nullptr);
     }
@@ -590,11 +603,11 @@ namespace
           if (pack && pack->kind == TyKind::Pack)
           {
             for (const Ty* element : pack->args)
-              out.push_back(element);
+              out.push_back(argumentType(a, element, types));
             continue;
           }
         }
-        out.push_back(a ? a->ty : nullptr);
+        out.push_back(a ? argumentType(a, a->ty, types) : nullptr);
       }
       return out;
     }
@@ -817,8 +830,47 @@ namespace
         constructInto(addr, t, static_cast<BraceInitExpr*>(args[0])->args, at);
         return;
       }
+      if (args.size() == 1 && isPackExpansion(args[0]))
+      {
+        // `T(forward<Args>(args)...)`: the elements are the arguments. With one element the
+        // constructor choice (copy, move, converting) sees that element's type; several elements
+        // of a class without constructors fill its fields in order; otherwise the constructor
+        // call below expands the pack itself.
+        Expr* pattern = static_cast<UnaryExpr*>(args[0])->operand;
+        size_t count = packElementCount(pattern, at);
+        if (count == 0)
+        {
+          defaultConstruct(addr, t, at);
+          return;
+        }
+        if (count == 1)
+        {
+          forEachPackElement(pattern, at, [&](size_t)
+          {
+            Expr* one = pattern;
+            constructInto(addr, t, Span<Expr*>{&one, 1}, at);
+          });
+          return;
+        }
+        if (!hasUserConstructors(c))
+        {
+          StructInfo info = structFor(t, at);
+          fn += "  store " + llType(t, at) + " zeroinitializer, ptr " + addr + "\n";
+          size_t i = 0;
+          forEachPackElement(pattern, at, [&](size_t)
+          {
+            if (i >= info.fieldDecls.size())
+              unsupported(at, "more constructor arguments than " + global.qualifiedName(c) + " has fields");
+            Decl* d = info.fieldDecls[i++];
+            initializeFrom(gep(info.name, addr, info.fieldIndex[d]), info.fieldTypes[info.fieldIndex[d]], pattern, at);
+          });
+          return;
+        }
+      }
       const Ty* firstTy = args.size() == 1 ? args[0]->ty : nullptr;
       FunctionDecl* ctor = findConstructor(t, argTypesOf(args), at);
+      if (ctor && (ctor->flags & DF_Delete))
+        unsupported(at, "constructing " + types.toString(t, &symbols) + " with a deleted constructor (copying a move-only object?)");
       if (ctor && firstTy && isClass(types.stripRef(firstTy)) && classKey(firstTy) == classKey(t) && ctor->params.size() == 1)
       {
         // The same class: a copy, unless the chosen constructor is a copy constructor itself.
@@ -846,6 +898,8 @@ namespace
           Value src = convert(rvalue(args[0]), types.unqualified(t), at);
           if (src.isTemporary)
             moveTemporary(addr, src, t, at);
+          else if (isXvalue(args[0]))
+            moveConstruct(addr, src.text, t, at);
           else
             copyConstruct(addr, src.text, t, at);
           return;
@@ -853,7 +907,10 @@ namespace
       }
       if (ctor)
       {
-        callFunction(ctor, global.classArgsOf(canonicalClass(t, at)), canonicalClass(t, at), addr, "", args, at);
+        TemplateArgs ctorArgs = global.classArgsOf(canonicalClass(t, at));
+        if (!ctor->templateParams.empty())
+          global.deduceArgs(ctor, argTypesOf(args), ctorArgs); // `template<typename F> Function(F)`: F from the argument
+        callFunction(ctor, ctorArgs, canonicalClass(t, at), addr, "", args, at);
         return;
       }
       if (args.size() == 1 && firstTy && isClass(types.stripRef(firstTy)) && classKey(firstTy) == classKey(t))
@@ -861,6 +918,8 @@ namespace
         Value src = rvalue(args[0]);
         if (src.isTemporary)
           moveTemporary(addr, src, t, at);
+        else if (isXvalue(args[0]))
+          moveConstruct(addr, src.text, t, at);
         else
           copyConstruct(addr, src.text, t, at);
         return;
@@ -882,12 +941,17 @@ namespace
       unsupported(at, "a constructor of " + global.qualifiedName(c) + " taking " + std::to_string(args.size()) + " arguments");
     }
 
-    // Copy-constructs the object at src into dst (user copy constructor or bitwise copy).
-    void copyConstruct(const std::string& dst, const std::string& src, const Ty* t, Node* at)
+    // Whether an expression is an xvalue: an rvalue reference to an object that may be moved from
+    // (`move(x)`); a named rvalue reference is an lvalue.
+    static bool isXvalue(Expr* e) { return e && e->ty && e->ty->kind == TyKind::RRef && !isLvalueExpression(e); }
+
+    // Move-constructs the object at src into dst: through the move constructor where the class has
+    // one, as a copy otherwise.
+    void moveConstruct(const std::string& dst, const std::string& src, const Ty* t, Node* at)
     {
       ClassDecl* c = classDef(t->decl, at);
       TemplateArgs args = global.classArgsOf(canonicalClass(t, at));
-      FunctionDecl* copy = nullptr;
+      FunctionDecl* move = nullptr;
       {
         ArgsScope scope(*this, &args);
         for (Decl* m : c->members)
@@ -898,10 +962,48 @@ namespace
           if (f->params.size() != 1)
             continue;
           const Ty* pt = declType(f->params[0]);
-          if (pt && pt->isReference() && isClass(pt->inner) && classKey(pt->inner) == classKey(t))
-            copy = f;
+          if (pt && pt->kind == TyKind::RRef && isClass(pt->inner) && classKey(pt->inner) == classKey(t))
+            move = f;
         }
       }
+      if (move && !(move->flags & DF_Delete))
+      {
+        emitCall("", "void " + useFunction(move, args, canonicalClass(t, at)) + "(ptr " + dst + ", ptr " + src + ")");
+        return;
+      }
+      copyConstruct(dst, src, t, at, true); // the user copy constructor if any, else memberwise moves
+    }
+
+    // Copy-constructs the object at src into dst (user copy constructor or bitwise copy); with
+    // `move`, a class without a user copy constructor moves its members instead.
+    void copyConstruct(const std::string& dst, const std::string& src, const Ty* t, Node* at, bool move = false)
+    {
+      ClassDecl* c = classDef(t->decl, at);
+      TemplateArgs args = global.classArgsOf(canonicalClass(t, at));
+      FunctionDecl* copy = nullptr;
+      bool hasMove = false;
+      {
+        ArgsScope scope(*this, &args);
+        for (Decl* m : c->members)
+        {
+          if (m->kind != NodeKind::FunctionDecl || !(m->flags & DF_Constructor))
+            continue;
+          auto* f = static_cast<FunctionDecl*>(m);
+          if (f->params.size() != 1)
+            continue;
+          const Ty* pt = declType(f->params[0]);
+          if (!pt || !pt->isReference() || !isClass(pt->inner) || classKey(pt->inner) != classKey(t))
+            continue;
+          if (pt->kind == TyKind::LRef)
+            copy = f; // `T(const T&)`; the move constructor `T(T&&)` would empty the source
+          else
+            hasMove = true;
+        }
+      }
+      if (copy && (copy->flags & DF_Delete))
+        unsupported(at, "copying " + global.qualifiedName(c) + ", whose copy constructor is deleted (move it instead)");
+      if (!copy && hasMove)
+        unsupported(at, "copying " + global.qualifiedName(c) + ", which has a move constructor but no copy constructor");
       if (copy)
       {
         emitCall("", "void " + useFunction(copy, args, canonicalClass(t, at)) + "(ptr " + dst + ", ptr " + src + ")");
@@ -924,13 +1026,20 @@ namespace
         fn += "  store ptr " + info.vtableName + ", ptr " + dst + "\n";
       }
       for (auto& [baseDef, index] : info.bases)
-        copyConstruct(gep(info.name, dst, index), gep(info.name, src, index), info.fieldTypes[index], at);
+      {
+        if (move)
+          moveConstruct(gep(info.name, dst, index), gep(info.name, src, index), info.fieldTypes[index], at);
+        else
+          copyConstruct(gep(info.name, dst, index), gep(info.name, src, index), info.fieldTypes[index], at);
+      }
       for (Decl* d : info.fieldDecls)
       {
         uint32_t index = info.fieldIndex[d];
         const Ty* ft = info.fieldTypes[index];
         std::string to = gep(info.name, dst, index), from = gep(info.name, src, index);
-        if (isClass(ft))
+        if (isClass(ft) && move)
+          moveConstruct(to, from, ft, at);
+        else if (isClass(ft))
           copyConstruct(to, from, ft, at);
         else
         {
@@ -942,12 +1051,15 @@ namespace
     }
 
     // Implicit copy assignment: user operator= where one exists, memberwise otherwise.
-    void assignObject(const std::string& dst, const std::string& src, const Ty* t, Node* at)
+    void assignObject(const std::string& dst, const std::string& src, const Ty* t, Node* at, bool move = false)
     {
       const Ty* foundIn = nullptr;
-      std::vector<const Ty*> argTypes{types.lref(types.qualified(t, true, false))};
+      // From an lvalue: operator=(const T&). From a temporary or `move(x)`: operator=(T&&) if there is one.
+      std::vector<const Ty*> argTypes{move ? types.rref(types.unqualified(t)) : types.lref(types.qualified(t, true, false))};
       if (FunctionDecl* op = findMemberFunction(t, "operator=", argTypes, t, at, &foundIn))
       {
+        if (op->flags & DF_Delete)
+          unsupported(at, "assignment to " + global.qualifiedName(t->decl) + " through its deleted operator=");
         std::string thisArg = dst;
         if (canonicalClass(t, at) != foundIn)
           baseAddress(t, foundIn, dst, thisArg, at);
@@ -975,14 +1087,14 @@ namespace
         unsupported(at, "assignment to " + global.qualifiedName(t->decl) + ", which has a destructor but no operator=");
       StructInfo info = structFor(t, at);
       for (auto& [baseDef, index] : info.bases)
-        assignObject(gep(info.name, dst, index), gep(info.name, src, index), info.fieldTypes[index], at);
+        assignObject(gep(info.name, dst, index), gep(info.name, src, index), info.fieldTypes[index], at, move);
       for (Decl* d : info.fieldDecls)
       {
         uint32_t index = info.fieldIndex[d];
         const Ty* ft = info.fieldTypes[index];
         std::string to = gep(info.name, dst, index), from = gep(info.name, src, index);
         if (isClass(ft))
-          assignObject(to, from, ft, at);
+          assignObject(to, from, ft, at, move);
         else
         {
           std::string v = newTemp();
@@ -1041,6 +1153,8 @@ namespace
           unsupported(at, "initialising a class from a non-class value");
         if (src.isTemporary)
           moveTemporary(addr, src, t, at);
+        else if (isXvalue(init))
+          moveConstruct(addr, src.text, t, at); // `T tmp = move(a);`
         else
           copyConstruct(addr, src.text, t, at);
         return;
@@ -1158,6 +1272,14 @@ namespace
 
     // Runs body(i) for each element of the pack that `pattern` expands over, with the pack
     // parameter bound to that element and the function body re-typed for it.
+    size_t packElementCount(Expr* pattern, Node* at)
+    {
+      Decl* param = packIn(pattern);
+      if (!param)
+        unsupported(at, "a pack expansion that does not name a parameter pack");
+      return packLocals[param].size();
+    }
+
     template<typename F>
     void forEachPackElement(Expr* pattern, Node* at, F&& body)
     {
@@ -1316,7 +1438,15 @@ namespace
       for (const LambdaCapture& cap : l->captures)
       {
         if (cap.init)
-          unsupported(l, "init-captures");
+        {
+          // `[x = expr]`: a field of the closure, initialised from expr when the closure is made.
+          if (!cap.decl || cap.byRef)
+            unsupported(l, "a by-reference init-capture");
+          info.captured.push_back(cap.decl);
+          info.byRef.push_back(false);
+          info.inits.push_back(cap.init);
+          continue;
+        }
         if (cap.isThis)
         {
           thisCaptured = true;
@@ -1327,6 +1457,7 @@ namespace
           unsupported(l, "a capture that is not a local variable (" + sym(cap.symbol) + ")");
         info.captured.push_back(d);
         info.byRef.push_back(cap.byRef);
+        info.inits.push_back(nullptr);
       }
       if (l->defaultCapture != 0)
       {
@@ -1337,12 +1468,21 @@ namespace
           {
             info.captured.push_back(d);
             info.byRef.push_back(l->defaultCapture == 2);
+            info.inits.push_back(nullptr);
           }
         if (usesThis)
           thisCaptured = true;
       }
       for (size_t i = 0; i < info.captured.size(); ++i)
       {
+        if (info.inits[i])
+        {
+          const Ty* vt = declType(info.captured[i]);
+          if (!vt || !vt->isKnown())
+            unsupported(l, "an init-capture of unknown type");
+          info.fieldTypes.push_back(types.stripRef(vt));
+          continue;
+        }
         Local& local = locals[info.captured[i]];
         const Ty* vt = types.stripRef(local.ty);
         info.fieldTypes.push_back(vt);
@@ -1353,6 +1493,7 @@ namespace
           unsupported(l, "capturing this outside a method");
         info.captured.push_back(nullptr);
         info.byRef.push_back(true);
+        info.inits.push_back(nullptr);
         info.fieldTypes.push_back(currentClassTy);
       }
       std::string line = info.structName + " = type { ";
@@ -1383,6 +1524,11 @@ namespace
         if (!d)
         {
           fn += "  store ptr " + thisPointer(l) + ", ptr " + field + "\n";
+          continue;
+        }
+        if (info.inits[i])
+        {
+          initializeFrom(field, info.fieldTypes[i], info.inits[i], l); // `[x = expr]`
           continue;
         }
         Local& local = locals[d];
@@ -1807,7 +1953,7 @@ namespace
               for (size_t i = 0; i < f->templateParams.size(); ++i)
                 if (d == f->templateParams[i])
                   d = def->templateParams[i];
-          worklist.push_back({def, defArgs, classTy, currentModule});
+          worklist.push_back({def, defArgs, classTy, currentModule, currentFunctionName});
         }
         return name;
       }
@@ -1881,6 +2027,8 @@ namespace
     Value callFunction(FunctionDecl* f, const TemplateArgs& args, const Ty* classTy, const std::string& thisArg,
                        const std::string& sret, Span<Expr*> callArgs, Node* at, const std::string& indirect = "")
     {
+      if (f->flags & DF_Delete)
+        unsupported(at, "a call to the deleted function " + global.qualifiedName(f));
       if (!conditionHolds(f))
         return {"", types.voidType(), false}; // conditional(false): no call, arguments not evaluated
       std::string name = indirect.empty() ? useFunction(f, args, classTy) : indirect;
@@ -1979,8 +2127,8 @@ namespace
         {
           const Ty* cls = types.stripRef(pt);
           const Ty* argTy = arg->ty && arg->ty->isKnown() && !types.isDependent(arg->ty) ? types.stripRef(arg->ty) : nullptr;
-          if (argTy && isClass(cls) && !isAggregate(argTy))
-            return "ptr " + convertedTemporary(cls, arg, at); // `f("text")` with `f(const String&)`
+          if (argTy && isClass(cls) && !isClass(argTy))
+            return "ptr " + convertedTemporary(cls, arg, at); // `f("text")` with `f(const String&)`, a lambda with `f(const Function<void()>&)`
           if (argTy && isClass(cls) && isClass(argTy) && classKey(argTy) != classKey(cls) && !baseInstantiation(argTy, classDef(cls->decl, at), at))
           {
             if (conversionOperator(argTy, types.unqualified(cls), at))
@@ -2002,9 +2150,9 @@ namespace
       if (pt && isAggregate(pt))
       {
         const Ty* argTy = arg->ty && arg->ty->isKnown() && !types.isDependent(arg->ty) ? types.stripRef(arg->ty) : nullptr;
-        if (argTy && isClass(pt) && (!isAggregate(argTy) || (isClass(argTy) && classKey(argTy) != classKey(pt) &&
-                                                             !baseInstantiation(argTy, classDef(pt->decl, at), at) &&
-                                                             !conversionOperator(argTy, types.unqualified(pt), at))))
+        if (argTy && isClass(pt) && (!isClass(argTy) || (classKey(argTy) != classKey(pt) &&
+                                                         !baseInstantiation(argTy, classDef(pt->decl, at), at) &&
+                                                         !conversionOperator(argTy, types.unqualified(pt), at))))
         {
           // Through a converting constructor; the callee destroys the parameter.
           std::string copy = newObjectSlot(pt, at);
@@ -2026,6 +2174,8 @@ namespace
         }
         else if (v.isTemporary)
           moveTemporary(copy, v, pt, at);
+        else if (isXvalue(arg))
+          moveConstruct(copy, v.text, pt, at); // `f(move(ptr))` with `f(UniquePtr<T> ptr)`
         else
           copyConstruct(copy, v.text, pt, at);
         return "ptr " + copy;
@@ -3413,16 +3563,30 @@ namespace
       Value fnValue = rvalue(callee);
       if (isLambda(fnValue.ty))
         return callClosure(fnValue, c->args, sret, c);
+      if (isClass(fnValue.ty))
+        return operatorCall(fnValue, "operator()", c->args, c, true); // a functor: object(args)
       const Ty* ft = fnValue.ty->kind == TyKind::Pointer ? fnValue.ty->inner : fnValue.ty;
       if (!ft || ft->kind != TyKind::Function)
-        unsupported(c, "a call that did not resolve to a function");
+        unsupported(c, "a call that did not resolve to a function (the callee has type " + types.toString(fnValue.ty, &symbols) + ")");
       std::string args;
-      for (size_t i = 0; i < c->args.size(); ++i)
+      size_t position = 0;
+      auto addArgument = [&](Expr* arg)
       {
-        Value a = rvalue(c->args[i]);
-        if (i < ft->args.size())
-          a = convert(a, ft->args[i], c);
-        args += (i ? ", " : "") + llType(a.ty, c) + " " + a.text;
+        Value a = rvalue(arg);
+        if (position < ft->args.size())
+          a = convert(a, ft->args[position], c);
+        args += (position ? ", " : "") + llType(a.ty, c) + " " + a.text;
+        ++position;
+      };
+      for (Expr* arg : c->args)
+      {
+        if (isPackExpansion(arg))
+        {
+          Expr* pattern = static_cast<UnaryExpr*>(arg)->operand;
+          forEachPackElement(pattern, c, [&](size_t) { addArgument(pattern); });
+        }
+        else
+          addArgument(arg);
       }
       std::string sig = llType(ft->inner, c) + " (";
       for (size_t i = 0; i < ft->args.size(); ++i)
@@ -3565,9 +3729,47 @@ namespace
           if (d && d->kind == NodeKind::FunctionDecl)
           {
             auto* f = static_cast<FunctionDecl*>(d);
-            if (!f->templateParams.empty() || global.isTemplateContext(f))
-              unsupported(e, "taking the address of a function template");
-            return {useFunction(f, {}, nullptr), types.pointer(declType(d))};
+            if (f->templateParams.empty() && !global.isTemplateContext(f))
+              return {useFunction(f, {}, nullptr), types.pointer(declType(d))};
+            // `&FunctionImpl<R, Args...>::call<F>`: a member of an instantiation, with explicit arguments.
+            TemplateArgs fargs;
+            const Ty* classTy = nullptr;
+            if (global.owningClass(f))
+            {
+              if (n->name.parts.size() > 1)
+              {
+                NamedType qualifier;
+                qualifier.kind = NodeKind::NamedType;
+                qualifier.token = n->token;
+                qualifier.name = n->name;
+                qualifier.name.parts.count -= 1;
+                TemplateArgs none;
+                const Ty* q = global.typeOfAstIn(&qualifier, currentFunction, currentArgs ? *currentArgs : none);
+                if (q && isClass(q))
+                  classTy = canonicalClass(q, e);
+              }
+              else if (currentClassTy)
+                classTy = canonicalClass(currentClassTy, e);
+              if (!classTy)
+                unsupported(e, "taking the address of a member of an unknown instantiation");
+              fargs = global.classArgsOf(classTy);
+            }
+            const NamePart& last = n->name.last();
+            size_t given = 0;
+            for (size_t i = 0; i < last.templateArgs.size() && i < f->templateParams.size(); ++i)
+            {
+              Node* arg = last.templateArgs[i];
+              if (uint8_t(arg->kind) > uint8_t(NodeKind::PackType))
+                unsupported(e, "a non-type argument in the address of a function template");
+              TemplateArgs none;
+              fargs.pairs.push_back({f->templateParams[i], global.typeOfAstIn(static_cast<Type*>(arg), currentFunction, currentArgs ? *currentArgs : none)});
+              ++given;
+            }
+            if (given < f->templateParams.size())
+              unsupported(e, "taking the address of a function template without all its arguments");
+            std::string name = useFunction(f, fargs, classTy);
+            ArgsScope scope(*this, &fargs);
+            return {name, types.pointer(declType(f))};
           }
           if (d && d->kind == NodeKind::VariableDecl && !locals.count(d))
           {
@@ -3767,6 +3969,8 @@ namespace
           }
           if (isClass(t))
             constructInto(r, t, n->args, e);
+          else if (isLambda(t) && n->args.size() == 1)
+            initializeFrom(r, t, n->args[0], e); // `new F(callable)` with F a lambda type: the closure, copied
           else if (!n->args.empty())
           {
             Expr* a = n->args[0];
@@ -3841,6 +4045,9 @@ namespace
         fn += "  " + r + " = ptrtoint ptr " + addr + " to i64\n";
         return {r, mp};
       }
+      if (op == P::Amp && u->operand->kind == NodeKind::NameExpr && static_cast<NameExpr*>(u->operand)->resolved &&
+          static_cast<NameExpr*>(u->operand)->resolved->kind == NodeKind::FunctionDecl)
+        return {rvalue(u->operand).text, u->ty}; // `&function`: the function itself is the pointer
       if (op == P::Amp)
         return {lvalue(u->operand), u->ty};
       if (op == P::Star)
@@ -3966,7 +4173,7 @@ namespace
           if (classKey(r.ty) != classKey(l.ty))
             if (!baseAddress(r.ty, l.ty, r.text, src, b))
               unsupported(b, "assigning an unrelated class");
-          assignObject(l.text, src, l.ty, b);
+          assignObject(l.text, src, l.ty, b, r.isTemporary || isXvalue(b->rhs));
           return l;
         }
         unsupported(b, global.qualifiedName(l.ty->decl) + " has no " + name);
@@ -4634,7 +4841,7 @@ namespace
             initializeFrom(sretAddr, currentReturn, r->value, s);
           }
           else if (currentReturn->isReference())
-            retText = isClass(types.stripRef(currentReturn)) ? rvalue(r->value).text : lvalue(r->value);
+            retText = isAggregate(types.stripRef(currentReturn)) ? rvalue(r->value).text : lvalue(r->value);
           else
           {
             if (!r->value)
@@ -4821,6 +5028,107 @@ namespace
       return findOperator(classTy, name, 0, at, foundIn);
     }
 
+    // A range whose begin()/end() return iterator objects: `it != end`, `*it` and `++it` go through
+    // the iterator class's operators. Both iterators live in the loop's scope (already open).
+    void iteratorLoop(RangeForStmt* f, Value begin, Value end)
+    {
+      auto own = [&](const Value& v)
+      {
+        for (size_t i = statementTemps.size(); i-- > 0;)
+          if (statementTemps[i].addr == v.text)
+            statementTemps.erase(statementTemps.begin() + i);
+        if (needsDestruction(v.ty, f))
+          scopes.back().push_back({v.text, v.ty});
+      };
+      own(begin);
+      own(end);
+      destroyTemps();
+      // `it != end`, or `!(it == end)`.
+      const Ty* in = nullptr;
+      std::vector<const Ty*> argTypes{types.lref(types.qualified(begin.ty, true, false))};
+      bool negate = false;
+      FunctionDecl* compare = findMemberFunction(begin.ty, "operator!=", argTypes, begin.ty, f, &in);
+      if (!compare)
+      {
+        compare = findMemberFunction(begin.ty, "operator==", argTypes, begin.ty, f, &in);
+        negate = true;
+      }
+      if (!compare)
+        unsupported(f, "an iterator without operator!= or operator==");
+      TemplateArgs compareArgs = global.classArgsOf(in);
+      std::string compareName = useFunction(compare, compareArgs, in);
+      Signature compareSig;
+      {
+        ArgsScope scope(*this, &compareArgs);
+        compareSig = signatureOf(compare);
+      }
+      std::string cL = newLabel("iter.cond"), bL = newLabel("iter.body"), sL = newLabel("iter.step"), eL = newLabel("iter.end");
+      emitBranch(cL);
+      startBlock(cL);
+      std::string thisArg = begin.text;
+      if (canonicalClass(begin.ty, f) != in)
+        baseAddress(begin.ty, in, begin.text, thisArg, f);
+      std::string cond = newTemp();
+      emitCall(cond + " = ", compareSig.returnType + " " + compareName + "(ptr " + thisArg + ", ptr " + end.text + ")");
+      if (compareSig.returnType != "i1")
+        cond = convert(Value{cond, types.intType(32)}, types.boolType(), f).text;
+      if (negate)
+      {
+        std::string flipped = newTemp();
+        fn += "  " + flipped + " = xor i1 " + cond + ", true\n";
+        cond = flipped;
+      }
+      fn += "  br i1 " + cond + ", label %" + bL + ", label %" + eL + "\n";
+      startBlock(bL);
+      pushScope();
+      // The loop variable from `*it`: a reference binds to the element, a value copies it.
+      auto* v = static_cast<VariableDecl*>(f->var);
+      const Ty* vt = declType(v);
+      if (!vt || !vt->isKnown() || types.isDependent(vt))
+        unsupported(v, "a loop variable of unknown type");
+      Value element = operatorCall(begin, "operator*", {}, f, true);
+      std::string slot = "%v" + std::to_string(temp++);
+      if (vt->isReference())
+      {
+        std::string addr = element.text;
+        if (!element.ty->isReference() && !isClass(element.ty))
+        {
+          addr = newObjectSlot(element.ty, v);
+          fn += "  store " + llType(element.ty, v) + " " + element.text + ", ptr " + addr + "\n";
+        }
+        allocas += "  " + slot + " = alloca ptr\n";
+        fn += "  store ptr " + addr + ", ptr " + slot + "\n";
+        locals[v] = {slot, vt, true};
+      }
+      else
+      {
+        allocas += "  " + slot + " = alloca " + llType(vt, v) + "\n";
+        if (isClass(vt))
+        {
+          if (element.ty->isReference() || !element.isTemporary)
+            copyConstruct(slot, element.text, vt, v);
+          else
+            moveTemporary(slot, element, vt, v);
+        }
+        else
+          store(callRvalue(element, v), slot, vt, v);
+        locals[v] = {slot, vt, false};
+        if (needsDestruction(vt, v))
+          scopes.back().push_back({slot, vt});
+      }
+      destroyTemps();
+      loops.push_back({eL, sL, scopes.size()});
+      statement(f->body);
+      loops.pop_back();
+      popScope();
+      emitBranch(sL);
+      startBlock(sL);
+      operatorCall(begin, "operator++", {}, f, true);
+      destroyTemps();
+      emitBranch(cL);
+      startBlock(eL);
+    }
+
     void rangeFor(RangeForStmt* f)
     {
       pushScope();
@@ -4855,6 +5163,12 @@ namespace
           unsupported(f, "a range without begin()/end()");
         Value b = callFunction(begin, global.classArgsOf(in), in, range.text, "", {}, f);
         Value e = callFunction(end, global.classArgsOf(in), in, range.text, "", {}, f);
+        if (b.ty && isClass(b.ty))
+        {
+          iteratorLoop(f, b, e);
+          popScope();
+          return;
+        }
         if (!b.ty || b.ty->kind != TyKind::Pointer)
           unsupported(f, "a range whose iterators are not pointers");
         beginV = b.text;
@@ -5058,6 +5372,7 @@ namespace
       currentFunction = f;
       currentReturn = ft->inner;
       sretAddr.clear();
+      currentFunctionName = functionName(f, args, classTy);
       try
       {
         Signature s = signatureOf(f);
@@ -5211,7 +5526,9 @@ CodegenResult generateLLVM(std::vector<std::unique_ptr<ParsedFile>>& files, Glob
     Emitter::Instantiation inst = e.worklist.front();
     e.worklist.pop_front();
     e.currentModule = inst.module;
+    e.currentRequestedBy = inst.requestedBy;
     e.emitFunction(inst.f, inst.args, inst.classTy);
+    e.currentRequestedBy.clear();
   }
   e.finishAssertRuntime();
   e.finishExceptionRuntime();

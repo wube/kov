@@ -3734,17 +3734,34 @@ namespace
             error("expected a capture");
             break;
           }
+          uint32_t nameToken = pos;
           cap.symbol = tok().id;
           advance();
           accept(P::Ellipsis);
+          bool braced = false;
           if (accept(P::Assign))
             cap.init = parseAssignment();
           else if (at(P::LBrace))
+          {
             cap.init = parseBraceInit();
+            braced = true;
+          }
           else if (accept(P::LParen))
           {
             cap.init = parseExpression();
             expect(P::RParen, "expected ')'");
+          }
+          if (cap.init)
+          {
+            // An init-capture declares a variable of the closure: `auto x = expr;` in effect.
+            auto* v = decl<VariableDecl>(nameToken);
+            v->type = node<AutoType>(nameToken);
+            NamePart part;
+            part.symbol = cap.symbol;
+            v->name.parts = makeSpanOf(std::vector<NamePart>{part});
+            v->init = cap.init;
+            v->bracedInit = braced;
+            cap.decl = v;
           }
           captures.push_back(cap);
         }

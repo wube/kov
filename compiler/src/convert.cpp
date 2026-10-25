@@ -22,6 +22,36 @@ namespace
     void add(const std::string& what, int n = 1) { values[what] += n; }
   };
 
+  // Default arguments of a function's parameters, by index, as source text: carried from a
+  // header declaration to the definition that replaces it in the converted file.
+  using CarriedDefaults = std::map<FunctionDecl*, std::vector<std::pair<size_t, std::string>>>;
+
+  // The index of the `,` or `)` that ends the parameter (or default argument) starting at token,
+  // skipping nested brackets; UINT32_MAX when a `;` or the end comes first.
+  uint32_t parameterEndIn(const std::vector<Token>& toks, uint32_t token)
+  {
+    int depth = 0;
+    for (uint32_t i = token; i < toks.size(); ++i)
+    {
+      const Token& t = toks[i];
+      if (t.is(P::LParen) || t.is(P::LBracket) || t.is(P::LBrace) || t.is(P::Less))
+        ++depth;
+      else if (t.is(P::RParen) || t.is(P::RBracket) || t.is(P::RBrace) || t.is(P::Greater))
+      {
+        if (depth == 0)
+          return t.is(P::RParen) ? i : UINT32_MAX;
+        --depth;
+      }
+      else if (t.is(P::Shr))
+        depth -= 2;
+      else if (t.is(P::Comma) && depth == 0)
+        return i;
+      else if (t.is(P::Semi) || t.getKind() == TokenKind::End)
+        return UINT32_MAX;
+    }
+    return UINT32_MAX;
+  }
+
   // Preprocessor symbols the converter treats as defined (Windows, MSVC, debug) and as undefined.
   const std::set<std::string> definedSymbols = {"WIN32", "_WIN32", "_WIN64", "_MSC_VER", "DEBUG", "__cplusplus", "FACTORIO_PACKAGE"};
   const std::set<std::string> undefinedSymbols = {"LINUX", "MAC_OSX", "NINTENDO_SWITCH", "NINTENDO_SWITCH1", "NINTENDO_SWITCH2", "__linux__",
@@ -156,6 +186,7 @@ namespace
     GlobalScope& global;
     const SymbolTable& symbols;
     const OverrideKeys* overrides = nullptr; // definitions a hand-written file replaces
+    const CarriedDefaults* carriedDefaults = nullptr;
     std::set<std::string> replacedFunctions;  // qualified names whose definitions were found and removed
     std::vector<Edit> edits;
     Counts counts;
@@ -784,6 +815,15 @@ namespace
                 break;
               }
             }
+            if (f->body && carriedDefaults)
+              if (auto cd = carriedDefaults->find(f); cd != carriedDefaults->end())
+                for (auto& [index, value] : cd->second)
+                  if (index < f->params.size())
+                    if (uint32_t end = parameterEndIn(toks, f->params[index]->token); end != UINT32_MAX)
+                    {
+                      insert(toks[end].offset, " = " + value);
+                      counts.add("default arguments carried from declarations");
+                    }
             if ((f->flags & DF_Constructor) && !(f->flags & (DF_Explicit | DF_Implicit)) && convertingConstructor(f))
             {
               insert(toks[f->token].offset, "implicit ");
@@ -1331,6 +1371,61 @@ std::string convertToKov(const std::vector<ConvertInput>& inputs, GlobalScope& g
         slot->keys.functions.insert(name + "/*");
     return slot.get();
   };
+  // Default arguments live on the header declaration, which the conversion drops when the
+  // definition is elsewhere: carry them to the definition's parameters.
+  CarriedDefaults carriedDefaults;
+  {
+    std::map<ParsedFile*, const ConvertInput*> inputOf;
+    for (const ConvertInput& in : inputs)
+      if (in.parsed)
+        inputOf[in.parsed] = &in;
+    std::function<void(Span<Decl*>)> scan = [&](Span<Decl*> decls)
+    {
+      for (Decl* d : decls)
+      {
+        if (d->kind == NodeKind::NamespaceDecl)
+        {
+          scan(static_cast<NamespaceDecl*>(d)->decls);
+          continue;
+        }
+        if (d->kind != NodeKind::FunctionDecl)
+          continue;
+        auto* f = static_cast<FunctionDecl*>(d);
+        if (f->body || (f->flags & (DF_Default | DF_Delete)))
+          continue;
+        bool any = false;
+        for (Decl* p : f->params)
+          any = any || static_cast<ParamDecl*>(p)->defaultValue;
+        if (!any)
+          continue;
+        Decl* defDecl = global.definitionOf(f);
+        if (!defDecl || defDecl == f || defDecl->kind != NodeKind::FunctionDecl)
+          continue;
+        auto* def = static_cast<FunctionDecl*>(defDecl);
+        if (!def->body || def->params.size() != f->params.size())
+          continue;
+        auto it = inputOf.find(f->file);
+        if (it == inputOf.end() || !it->second->tokens)
+          continue;
+        const ConvertInput& in = *it->second;
+        for (size_t i = 0; i < f->params.size(); ++i)
+        {
+          Expr* dv = static_cast<ParamDecl*>(f->params[i])->defaultValue;
+          if (!dv || static_cast<ParamDecl*>(def->params[i])->defaultValue)
+            continue;
+          uint32_t end = parameterEndIn(*in.tokens, dv->token);
+          if (end == UINT32_MAX || end <= dv->token)
+            continue;
+          uint32_t from = (*in.tokens)[dv->token].offset;
+          uint32_t to = (*in.tokens)[end - 1].offset + (*in.tokens)[end - 1].length;
+          carriedDefaults[def].push_back({i, std::string(in.text.substr(from, to - from))});
+        }
+      }
+    };
+    for (const ConvertInput& in : inputs)
+      if (in.parsed && !in.parsed->isImported)
+        scan(in.parsed->decls);
+  }
   for (const ConvertInput& in : inputs)
   {
     if (!in.parsed || in.parsed->isImported || in.path.string().rfind("<", 0) == 0)
@@ -1341,6 +1436,7 @@ std::string convertToKov(const std::vector<ConvertInput>& inputs, GlobalScope& g
     std::string rel = relativeTo(in.path, roots);
     std::string key = rel.substr(0, rel.size() - ext.size()) + ".kov";
     FileConverter fc(in, global, symbols);
+    fc.carriedDefaults = &carriedDefaults;
     if (OverrideFile* ov = overrideFor(key))
       fc.overrides = &ov->keys;
     Piece piece;

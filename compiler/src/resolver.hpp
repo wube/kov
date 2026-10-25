@@ -20,6 +20,59 @@ struct TemplateArgs
   bool empty() const { return pairs.empty(); }
 };
 
+// Whether an expression names an object that outlives the expression (an lvalue): a variable or
+// parameter (a named rvalue reference included), a field, an element of an array or pointer, a
+// dereference. Calls and operators that yield references carry the reference in their type.
+inline bool isLvalueExpression(const Expr* e)
+{
+  if (!e)
+    return false;
+  switch (e->kind)
+  {
+    case NodeKind::NameExpr:
+    {
+      Decl* d = static_cast<const NameExpr*>(e)->resolved;
+      return d && (d->kind == NodeKind::VariableDecl || d->kind == NodeKind::ParamDecl);
+    }
+    case NodeKind::MemberExpr:
+    {
+      Decl* d = static_cast<const MemberExpr*>(e)->resolved;
+      return d && d->kind == NodeKind::VariableDecl;
+    }
+    case NodeKind::IndexExpr:
+    {
+      const Ty* base = static_cast<const IndexExpr*>(e)->base->ty;
+      if (base && base->isReference())
+        base = base->inner;
+      return base && (base->kind == TyKind::Pointer || base->kind == TyKind::Array);
+    }
+    case NodeKind::UnaryExpr:
+    {
+      auto* u = static_cast<const UnaryExpr*>(e);
+      const Ty* t = u->operand ? u->operand->ty : nullptr;
+      if (t && t->isReference())
+        t = t->inner;
+      return !u->isKeyword && !u->postfix && P(u->op) == P::Star && t && t->kind == TyKind::Pointer;
+    }
+    case NodeKind::ParenExpr:
+      return isLvalueExpression(static_cast<const ParenExpr*>(e)->inner);
+    default:
+      return false;
+  }
+}
+
+// The type an argument expression presents to overload resolution: an lvalue of a non-reference
+// type is an lvalue reference to it, so that `T&&` parameters take only temporaries and `move(x)`
+// (C++ rules); `t` is the expression's type, or one element of a pack it expands.
+inline const Ty* argumentType(const Expr* e, const Ty* t, TypeTable& types)
+{
+  if (!t || !t->isKnown() || t->kind == TyKind::Pack || !isLvalueExpression(e))
+    return t;
+  if (t->kind == TyKind::RRef)
+    return types.lref(t->inner); // a named rvalue reference is an lvalue
+  return t->isReference() ? t : types.lref(t);
+}
+
 struct ResolveStats
 {
   // Type names (in declarations, casts, template arguments...).
@@ -97,6 +150,9 @@ public:
   // The free function `operator<punctuator>(lhs[, rhs])` visible from context (the namespaces of
   // the operand classes and context's own), chosen by overload ranking; null if none.
   FunctionDecl* findFreeOperator(uint32_t punctuator, const Ty* lhs, const Ty* rhs, Decl* context);
+  // Adds to args what f's own template parameters deduce to from the argument types (for a
+  // constructor template chosen by code generation; args holds the class's arguments).
+  void deduceArgs(FunctionDecl* f, const std::vector<const Ty*>& argTypes, TemplateArgs& args);
   // The value of a builtin boolean type trait (`isArray<T>`, `isSame<A, B>`...) written as a
   // name with template arguments, under the instantiation args; nullopt if it is not one or
   // its arguments are still dependent.

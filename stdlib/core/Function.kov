@@ -1,0 +1,95 @@
+// Kov standard library: Function<R(Args...)>, a callable of any kind (lambda, function pointer,
+// object with operator()) behind one type, as std::function. `Function<Signature>` is only a name:
+// the compiler reads the signature and makes `Function<void(int)>` mean FunctionImpl<void, int>,
+// which is what this file defines. The callable is copied to the heap; calls go through one
+// indirection; copying a Function copies the callable.
+template<typename Signature>
+struct Function;
+
+template<typename R, typename... Args>
+struct FunctionImpl
+{
+  void* target = nullptr;                        // the callable, on the heap
+  R (*invoke)(void*, Args...) = nullptr;         // calls it
+  void (*destroy)(void*) = nullptr;              // deletes it
+  void* (*clone)(void*) = nullptr;               // copies it
+
+  FunctionImpl() {}
+  implicit FunctionImpl(nullptr_t) {}
+  template<typename F>
+  implicit FunctionImpl(F callable)
+    : target(new F(move(callable))),
+      invoke(&FunctionImpl<R, Args...>::call<F>),
+      destroy(&FunctionImpl<R, Args...>::destroyAs<F>),
+      clone(&FunctionImpl<R, Args...>::cloneAs<F>)
+  {}
+  FunctionImpl(const FunctionImpl<R, Args...>& other)
+    : target(other.target ? other.clone(other.target) : nullptr), invoke(other.invoke), destroy(other.destroy), clone(other.clone)
+  {}
+  FunctionImpl(FunctionImpl<R, Args...>&& other)
+    : target(other.target), invoke(other.invoke), destroy(other.destroy), clone(other.clone)
+  {
+    other.target = nullptr;
+  }
+  ~FunctionImpl()
+  {
+    if (this->target)
+      this->destroy(this->target);
+  }
+
+  FunctionImpl<R, Args...>& operator=(const FunctionImpl<R, Args...>& other)
+  {
+    if (this == &other)
+      return *this;
+    if (this->target)
+      this->destroy(this->target);
+    this->target = other.target ? other.clone(other.target) : nullptr;
+    this->invoke = other.invoke;
+    this->destroy = other.destroy;
+    this->clone = other.clone;
+    return *this;
+  }
+  FunctionImpl<R, Args...>& operator=(FunctionImpl<R, Args...>&& other)
+  {
+    if (this == &other)
+      return *this;
+    if (this->target)
+      this->destroy(this->target);
+    this->target = other.target;
+    this->invoke = other.invoke;
+    this->destroy = other.destroy;
+    this->clone = other.clone;
+    other.target = nullptr;
+    return *this;
+  }
+  FunctionImpl<R, Args...>& operator=(nullptr_t)
+  {
+    this->reset();
+    return *this;
+  }
+
+  explicit operator bool() const { return this->target != nullptr; }
+  bool operator!() const { return this->target == nullptr; }
+  bool operator==(nullptr_t) const { return this->target == nullptr; }
+  bool operator!=(nullptr_t) const { return this->target != nullptr; }
+
+  R operator()(Args... args) const { return this->invoke(this->target, forward<Args>(args)...); }
+
+  void reset()
+  {
+    if (this->target)
+      this->destroy(this->target);
+    this->target = nullptr;
+    this->invoke = nullptr;
+    this->destroy = nullptr;
+    this->clone = nullptr;
+  }
+
+  // The three operations of a callable of type F, taken by address in the constructor.
+  template<typename F>
+  static R call(void* target, Args... args) { return (*(F*)target)(forward<Args>(args)...); }
+  template<typename F>
+  static void destroyAs(void* target) { delete (F*)target; }
+  template<typename F>
+  static void* cloneAs(void* target) { return new F(*(F*)target); }
+};

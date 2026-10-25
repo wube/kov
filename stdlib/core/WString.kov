@@ -19,6 +19,12 @@ struct WString
     this->append(text, n);
   }
   WString(const WString& other) { this->append(other.chars, other.length); }
+  WString(WString&& other) : chars(other.chars), length(other.length), capacity(other.capacity)
+  {
+    other.chars = nullptr;
+    other.length = 0;
+    other.capacity = 0;
+  }
   ~WString()
   {
     if (this->chars)
@@ -32,6 +38,20 @@ struct WString
     this->append(other.chars, other.length);
     if (this->chars)
       this->chars[this->length] = 0;
+    return *this;
+  }
+  WString& operator=(WString&& other)
+  {
+    if (this == &other)
+      return *this;
+    if (this->chars)
+      free(this->chars);
+    this->chars = other.chars;
+    this->length = other.length;
+    this->capacity = other.capacity;
+    other.chars = nullptr;
+    other.length = 0;
+    other.capacity = 0;
     return *this;
   }
 

@@ -1220,7 +1220,25 @@ struct GlobalScope::Impl
       return s;
     Span<Decl*> params = classTy->decl->templateParams;
     for (size_t i = 0; i < params.size() && i < classTy->args.size(); ++i)
+    {
+      if (params[i]->kind == NodeKind::TemplateParamDecl && static_cast<TemplateParamDecl*>(params[i])->isPack)
+      {
+        // `template<typename R, typename... Args>`: the pack takes the rest of the arguments.
+        std::vector<const Ty*> rest(classTy->args.begin() + i, classTy->args.end());
+        if (rest.size() == 1 && rest[0]->kind == TyKind::Pack)
+          s.pairs.push_back({params[i], rest[0]});
+        else
+          s.pairs.push_back({params[i], types.pack(Span<const Ty*>{rest.data(), uint32_t(rest.size())})});
+        break;
+      }
       s.pairs.push_back({params[i], classTy->args[i]});
+    }
+    if (!params.empty() && classTy->args.size() == params.size() - 1)
+    {
+      Decl* lastParam = params[params.size() - 1];
+      if (lastParam->kind == NodeKind::TemplateParamDecl && static_cast<TemplateParamDecl*>(lastParam)->isPack)
+        s.pairs.push_back({lastParam, types.pack({})}); // `Function<void()>`: an empty pack
+    }
     return s;
   }
 
@@ -1274,6 +1292,14 @@ struct GlobalScope::Impl
     return types.valueType(of, *v);
   }
 
+  uint32_t functionSymbol_ = UINT32_MAX;
+  uint32_t functionSymbolId()
+  {
+    if (functionSymbol_ == UINT32_MAX)
+      functionSymbol_ = symbols.intern("Function");
+    return functionSymbol_;
+  }
+
   // The canonical type a resolved name denotes when used as a type.
   const Ty* typeOfTypeDecl(Decl* d, const Lookup& l, const NamePart& lastPart, const TypeContext& ctx, int depth)
   {
@@ -1285,8 +1311,32 @@ struct GlobalScope::Impl
         Decl* def = l.scope && l.scope->owner && l.scope->kind == ScopeKind::Class ? l.scope->owner : d;
         std::vector<const Ty*> args;
         Span<Decl*> params = def->templateParams;
+        if (lastPart.templateArgs.size() == 1 && lastPart.symbol == functionSymbolId())
+        {
+          // The library's `Function<R(Args...)>`: the compiler takes the signature apart, the
+          // class behind it is FunctionImpl<R, Args...> (stdlib/core/Function.kov).
+          const Ty* signature = templateArgument(lastPart.templateArgs[0], nullptr, ctx, depth);
+          if (signature && signature->kind == TyKind::Function)
+          {
+            Lookup implLookup;
+            if (lookupInScope(&root, symbols.intern("FunctionImpl"), implLookup, 0) && implLookup.scope && implLookup.scope->owner)
+            {
+              std::vector<const Ty*> implArgs{signature->inner};
+              for (const Ty* a : signature->args)
+                implArgs.push_back(a);
+              return types.classType(implLookup.scope->owner, Span<const Ty*>{implArgs.data(), uint32_t(implArgs.size())});
+            }
+          }
+        }
         for (size_t i = 0; i < lastPart.templateArgs.size(); ++i)
-          args.push_back(templateArgument(lastPart.templateArgs[i], i < params.size() ? params[i] : nullptr, ctx, depth));
+        {
+          const Ty* a = templateArgument(lastPart.templateArgs[i], i < params.size() ? params[i] : nullptr, ctx, depth);
+          if (a && a->kind == TyKind::Pack)
+            for (const Ty* e : a->args)
+              args.push_back(e); // `FunctionImpl<R, Args...>` inside the template: the elements
+          else
+            args.push_back(a);
+        }
         if (!args.empty())
         {
           // Parameters not written take their defaults, which may use the earlier arguments.
@@ -1484,7 +1534,14 @@ struct GlobalScope::Impl
         auto* f = static_cast<FunctionType*>(t);
         std::vector<const Ty*> params;
         for (Decl* p : f->params)
-          params.push_back(convertType(static_cast<ParamDecl*>(p)->type, ctx, depth + 1));
+        {
+          const Ty* pt = convertType(static_cast<ParamDecl*>(p)->type, ctx, depth + 1);
+          if (pt && pt->kind == TyKind::Pack)
+            for (const Ty* e : pt->args)
+              params.push_back(e); // `R (*)(Args...)` under an instantiation: one parameter per element
+          else
+            params.push_back(pt);
+        }
         return types.function(convertType(f->result, ctx, depth + 1), Span<const Ty*>{params.data(), uint32_t(params.size())}, false);
       }
       case NodeKind::AutoType: return types.autoType();
@@ -1717,12 +1774,15 @@ struct GlobalScope::Impl
     }
     if (pattern->isReference())
     {
-      // `const T&` binds T to the argument without its reference and top-level const.
+      // `const T&` binds T to the argument without its reference and top-level const; the
+      // forwarding reference `T&&` given an lvalue of type U binds T to U& (which collapses
+      // the parameter to U&), so that the callee sees an lvalue and copies rather than moves.
       const Ty* a = types.stripRef(arg);
       if (pattern->inner->kind == TyKind::Param)
       {
+        bool forwarding = pattern->kind == TyKind::RRef && !pattern->inner->isConst && depth == 0;
         if (!out.find(pattern->inner->decl))
-          out.pairs.push_back({pattern->inner->decl, pattern->inner->isConst ? types.unqualified(a) : types.unqualified(a)});
+          out.pairs.push_back({pattern->inner->decl, forwarding && arg->kind == TyKind::LRef ? types.lref(a) : types.unqualified(a)});
         return;
       }
       deduce(pattern->inner, a, out, depth + 1);
@@ -1812,9 +1872,18 @@ struct GlobalScope::Impl
         {
           if (!out.find(packDecl))
           {
+            bool forwarding = pattern->kind == TyKind::RRef && pattern->inner->kind == TyKind::Param && !pattern->inner->isConst;
             std::vector<const Ty*> elems;
             for (size_t j = i; j < argTypes.size(); ++j)
-              elems.push_back(argTypes[j] ? types.decay(argTypes[j]) : types.unknown());
+            {
+              const Ty* at = argTypes[j];
+              if (!at)
+                elems.push_back(types.unknown());
+              else if (forwarding && at->kind == TyKind::LRef)
+                elems.push_back(types.lref(types.stripRef(at))); // `emplace_back(name)`: Args = String&
+              else
+                elems.push_back(types.decay(at));
+            }
             out.pairs.push_back({packDecl, types.pack(Span<const Ty*>{elems.data(), uint32_t(elems.size())})});
           }
         }
@@ -1911,18 +1980,23 @@ struct GlobalScope::Impl
     if (param->isReference())
     {
       const Ty* pt = param->inner;
+      bool lvalueToRvalueRef = param->kind == TyKind::RRef && arg->kind == TyKind::LRef; // `T&&` takes no lvalue directly
       if (types.unqualified(a) == types.unqualified(pt))
       {
-        if (!pt->isConst && a->isConst)
+        if (lvalueToRvalueRef || (!pt->isConst && a->isConst))
           return NotViable;
         return pt->isConst && !a->isConst ? 1 : 0;
       }
       if (a->kind == TyKind::Class && pt->kind == TyKind::Class && isBaseScope(classScopeOf(pt), classScopeOf(a)))
-        return !pt->isConst && a->isConst ? NotViable : 3;
+        return lvalueToRvalueRef || (!pt->isConst && a->isConst) ? NotViable : 3;
       if (param->kind == TyKind::LRef && !pt->isConst)
         return NotViable; // A non-const lvalue reference binds only to the same type.
       int r = conversionRank(a, pt, depth + 1);
-      return r >= NotViable ? NotViable : std::max(r, 2);
+      if (r >= NotViable)
+        return NotViable;
+      if (r >= 4 && param->kind == TyKind::LRef)
+        return 5; // the converted temporary binds better to `T&&` than to `const T&`
+      return std::max(r, 2);
     }
     a = types.decay(a);
     const Ty* p = types.unqualified(param);
@@ -2010,9 +2084,16 @@ struct GlobalScope::Impl
             if (m->kind != NodeKind::FunctionDecl || !(m->flags & DF_Constructor) || (m->flags & DF_Explicit))
               continue;
             auto* f = static_cast<FunctionDecl*>(m);
-            if (f->params.size() != 1 || !f->templateParams.empty())
+            if (f->params.size() != 1)
               continue;
-            const Ty* pt = declaredTypeOf(f->params[0], &s, 0);
+            Subst d = s;
+            if (!f->templateParams.empty())
+            {
+              // `template<typename F> Function(F callable)`: F from the argument.
+              const Ty* ft = declaredTypeOf(f, &s, 0);
+              deduceCall(f, ft, std::vector<const Ty*>{a}, d);
+            }
+            const Ty* pt = declaredTypeOf(f->params[0], &d, 0);
             if (pt && types.stripRef(pt)->kind == TyKind::Class && types.unqualified(types.stripRef(pt))->decl == p->decl)
               continue; // The copy constructor is not a conversion.
             if (conversionRank(a, pt, depth + 1) < 4)
@@ -2046,6 +2127,7 @@ struct GlobalScope::Impl
     FunctionDecl* f;
     std::vector<int> ranks;
     int thisRank; // 0 exact constness, 1 const method on a non-const object, NotViable if const object/non-const method
+    std::vector<bool> refs; // per rank: the parameter is a reference
   };
 
   // Picks the best candidate by C++'s rule (better in one argument, not worse in any); on a tie
@@ -2070,7 +2152,7 @@ struct GlobalScope::Impl
       }
       if (argTypes.size() < required || (!variadic && argTypes.size() > total))
         continue;
-      Candidate c{f, {}, 0};
+      Candidate c{f, {}, 0, {}};
       bool constMethod = (f->flags & DF_Const) != 0;
       if (objectTy && !(f->flags & DF_Static) && !single)
       {
@@ -2094,6 +2176,7 @@ struct GlobalScope::Impl
         if (!pt)
         {
           c.ranks.push_back(3); // variadic tail
+          c.refs.push_back(false);
           continue;
         }
         if (!f->templateParams.empty())
@@ -2108,6 +2191,7 @@ struct GlobalScope::Impl
             if (r >= NotViable)
               ok = false;
             c.ranks.push_back(r);
+            c.refs.push_back(et && et->isReference());
           }
           break;
         }
@@ -2115,6 +2199,7 @@ struct GlobalScope::Impl
         if (r >= NotViable)
           ok = false;
         c.ranks.push_back(r);
+        c.refs.push_back(pt->isReference());
       }
       if (ok)
         viable.push_back(std::move(c));
@@ -2127,6 +2212,10 @@ struct GlobalScope::Impl
       bool someBetter = false;
       for (size_t i = 0; i < a.ranks.size(); ++i)
       {
+        // Exact and const-qualified-reference bindings differ only between two references
+        // (`T&` beats `const T&`); against a by-value parameter they are the same match.
+        if (a.ranks[i] + b.ranks[i] == 1 && !(a.refs[i] && b.refs[i]))
+          continue;
         if (a.ranks[i] > b.ranks[i])
           return false;
         if (a.ranks[i] < b.ranks[i])
@@ -2730,16 +2819,17 @@ struct GlobalScope::Impl
     }
 
     // Argument types of a call; a pack expansion `args...` contributes one type per element.
-    static std::vector<const Ty*> argTypesOf(const Span<Expr*>& args)
+    // Lvalues present themselves as lvalue references (argumentType).
+    std::vector<const Ty*> argTypesOf(const Span<Expr*>& args)
     {
       std::vector<const Ty*> out;
       for (Expr* a : args)
       {
         if (a && a->ty && a->ty->kind == TyKind::Pack)
           for (const Ty* e : a->ty->args)
-            out.push_back(e);
+            out.push_back(argumentType(a, e, types));
         else
-          out.push_back(a ? a->ty : nullptr);
+          out.push_back(a ? argumentType(a, a->ty, types) : nullptr);
       }
       return out;
     }
@@ -3088,7 +3178,7 @@ struct GlobalScope::Impl
           return types.unknown();
         if (types.isDependent(ls) || types.isDependent(rs))
           return types.param(ls->kind == TyKind::Param ? ls->decl : rs->decl);
-        return overloadedOperator(op, l, r, b->token, 2);
+        return overloadedOperator(op, l, argumentType(b->rhs, r, types), b->token, 2);
       }
       if (!ls->isKnown() || !rs->isKnown())
       {
@@ -3869,6 +3959,9 @@ struct GlobalScope::Impl
         {
           auto* l = static_cast<LambdaExpr*>(e);
           size_t mark = locals.mark();
+          for (const LambdaCapture& cap : l->captures)
+            if (cap.decl)
+              walkLocalDecl(cap.decl); // init-capture: a variable of the closure, typed from its initializer
           pushTemplateParams(l->templateParams);
           std::vector<const Ty*> params;
           for (Decl* p : l->params)
@@ -4003,6 +4096,7 @@ void GlobalScope::resolveFile(ParsedFile& file, const std::vector<Token>& tokens
 }
 
 TypeTable& GlobalScope::types() { return impl->types; }
+
 
 FunctionDecl* GlobalScope::findFreeOperator(uint32_t punctuator, const Ty* lhs, const Ty* rhs, Decl* context)
 {
@@ -4235,6 +4329,22 @@ std::optional<bool> GlobalScope::typeTraitValue(NameExpr* e, Decl* context, cons
   if (a.size() != e->name.parts[0].templateArgs.size())
     return std::nullopt;
   return impl->traitValue(impl->symbols.name(e->name.parts[0].symbol), a);
+}
+
+void GlobalScope::deduceArgs(FunctionDecl* f, const std::vector<const Ty*>& argTypes, TemplateArgs& args)
+{
+  Subst s = toSubst(args);
+  const Ty* ft = impl->declaredTypeOf(f, s.empty() ? nullptr : &s, 0);
+  impl->deduceCall(f, ft, argTypes, s);
+  for (Decl* p : f->templateParams)
+    if (const Ty* t = s.find(p))
+    {
+      bool known = false;
+      for (auto& [d, ty] : args.pairs)
+        known = known || d == p;
+      if (!known)
+        args.pairs.push_back({p, t});
+    }
 }
 
 FunctionDecl* GlobalScope::chooseOverload(const std::vector<FunctionDecl*>& candidates, const std::vector<const Ty*>& argTypes,

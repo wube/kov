@@ -261,3 +261,34 @@ void replace(T* first, T* last, const V& oldValue, const V& newValue)
 // Moves a pointer iterator n elements forward (backward for a negative n).
 template<typename T>
 void advance(T*& it, int n) { it += n; }
+
+// Walks a pointer range backwards: rbegin() of a vector is its end, and *it is the element before.
+template<typename T>
+struct ReverseIterator
+{
+  T* position = nullptr; // one past the element *this yields
+
+  ReverseIterator() {}
+  explicit ReverseIterator(T* position) : position(position) {}
+  template<typename U>
+  implicit ReverseIterator(ReverseIterator<U> other) : position(other.position) {} // const_reverse_iterator from reverse_iterator
+
+  T& operator*() const { return *(this->position - 1); }
+  T* operator->() const { return this->position - 1; }
+  T* base() const { return this->position; }
+  ReverseIterator<T>& operator++()
+  {
+    --this->position;
+    return *this;
+  }
+  ReverseIterator<T>& operator--()
+  {
+    ++this->position;
+    return *this;
+  }
+  ReverseIterator<T> operator+(int n) const { return ReverseIterator<T>(this->position - n); }
+  ReverseIterator<T> operator-(int n) const { return ReverseIterator<T>(this->position + n); }
+  int operator-(ReverseIterator<T> other) const { return int(other.position - this->position); }
+  bool operator==(ReverseIterator<T> other) const { return this->position == other.position; }
+  bool operator!=(ReverseIterator<T> other) const { return this->position != other.position; }
+};

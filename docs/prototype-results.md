@@ -477,6 +477,13 @@ The road there is in docs/path-to-factorio.md; two findings belong here:
   was converted with `ptrtoint` and the call picked an unrelated overload (`erase(begin, it)`
   became `erase(int, int)` with addresses). Code generation now refuses pointer-to-integer and
   integer-to-pointer argument conversions, as C++ does.
+- **Overload resolution without value categories moves from lvalues.** The resolver ranked by
+  type alone, so `Function<int(int)> h = f` and `apply(f, 6)` chose `T(T&&)` over
+  `T(const T&)` and emptied `f`; code generation's own copy helper did the same by taking the
+  last same-class constructor. Found by the `function` test crashing, not by any statistic.
+  Lvalue arguments now present themselves as `T&` (so `T&&` is not viable and a forwarding
+  `T&&` deduces `U&`), xvalues (`move(x)`) and temporaries move, and the copy helper only ever
+  calls a copy constructor. `moves.kov` counts copies and moves against the C++ answer.
 
 ## Lessons
 

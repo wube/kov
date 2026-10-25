@@ -1,0 +1,64 @@
+// Range-for over containers whose begin()/end() return iterator objects (operator!=, operator++,
+// operator*), including a filtering view, a temporary range, and references to the elements.
+extern "C" int printf(const char* format, ...);
+
+struct Evens
+{
+  Vector<int>& values;
+
+  struct Iterator
+  {
+    int* current;
+    int* last;
+    Iterator(int* current, int* last) : current(current), last(last) { this->skip(); }
+    void skip()
+    {
+      while (this->current != this->last && *this->current % 2 != 0)
+        ++this->current;
+    }
+    int& operator*() { return *this->current; }
+    void operator++()
+    {
+      ++this->current;
+      this->skip();
+    }
+    bool operator!=(const Iterator& other) const { return this->current != other.current; }
+  };
+
+  explicit Evens(Vector<int>& values) : values(values) {}
+  Iterator begin() { return Iterator(this->values.begin(), this->values.end()); }
+  Iterator end() { return Iterator(this->values.end(), this->values.end()); }
+};
+
+struct Countdown
+{
+  int from;
+  struct Iterator
+  {
+    int value;
+    int operator*() const { return this->value; }
+    void operator++() { --this->value; }
+    bool operator==(const Iterator& other) const { return this->value == other.value; }
+  };
+  Iterator begin() const { return Iterator{this->from}; }
+  Iterator end() const { return Iterator{0}; }
+};
+
+int main()
+{
+  Vector<int> numbers;
+  for (int i = 1; i <= 8; ++i)
+    numbers.push_back(i);
+  Evens evens(numbers);
+  int sum = 0;
+  for (int v : evens)
+    sum += v;
+  for (int& v : Evens(numbers))
+    v *= 10;
+  printf("%d %d %d %d\n", sum, numbers[1], numbers[2], numbers[7]);
+  String digits;
+  for (int v : Countdown{5})
+    digits += (char)('0' + v);
+  printf("%s\n", digits.c_str());
+  return 0;
+}
