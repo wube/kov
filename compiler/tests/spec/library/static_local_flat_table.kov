@@ -1,0 +1,18 @@
+// spec: a static local of a class template type keyed by a nested enum, initialised from a brace list of pairs, looked up with find
+// found in src/Util (MathExpressions/Tokenizer: `static const FlatMap<char, Token::Type> first = {{'+', Type::Plus}, ...}`)
+struct Token
+{
+  enum class Type : uint8_t { None, Plus, Minus };
+  static Type classify(char c)
+  {
+    static const Map<char, Type> table = {{'+', Type::Plus}, {'-', Type::Minus}};
+    if (auto it = table.find(c); it != table.end())
+      return it->second;
+    return Type::None;
+  }
+};
+int main()
+{
+  println("{} {} {}", (int)Token::classify('+'), (int)Token::classify('-'), (int)Token::classify('x'));
+  return 0;
+}

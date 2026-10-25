@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**145 pass, 2 pending, 0 failing, 0 fixed** (147 snippets, 2.6 s).
+**148 pass, 2 pending, 0 failing, 0 fixed** (150 snippets, 2.6 s).
 
 ## Language: statements, expressions, declarations
 
@@ -20,6 +20,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `language/auto_variables.kov` | auto variables | pass | 6641 uses in 1428 files |  |
 | `language/binary_literals.kov` | binary integer literals (0b1010) | pass |  |  |
 | `language/bitfields.kov` | bit fields | pass | 14 uses in 6 files |  |
+| `language/brace_list_as_value.kov` | a brace list where a value is expected: a call argument `f({1, 2})`, `Alias{}` for an alias of a class and of a scalar, `return {a, b};` | pass |  |  |
 | `language/const_lambda_variable.kov` | a lambda held by a const variable (`const auto f = [this](int) {...}`), called and passed on | pass | 52 uses in 31 files |  |
 | `language/constexpr_function_bound.kov` | a constexpr function call as an array bound | pass |  |  |
 | `language/constexpr_values.kov` | constexpr constants and constexpr functions | pass | 2643 uses in 808 files (variables), 361 (functions) |  |
@@ -45,6 +46,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `language/static_assert.kov` | static_assert | pass | 470 uses in 237 files |  |
 | `language/static_locals.kov` | function-local statics | pass | static declarations inside functions: part of 7783 static uses in 1983 files |  |
 | `language/structured_bindings.kov` | structured bindings | pass | 459 uses in 204 files |  |
+| `language/structured_bindings_range_for.kov` | structured bindings as the loop variable of a range for: `for (auto& [key, value] : pairs)`, over a Vector and over an InitializerList of a class template's own alias | pass |  |  |
 | `language/switch.kov` | switch with fallthrough and default | pass | 1682 uses in 697 files |  |
 | `language/switch_through_local_alias.kov` | case labels named through a local alias of a nested enum: `using Kind = Token::Special; case Kind::Unary:` | pass |  |  |
 | `language/ternary_comma_sizeof.kov` | conditional operator with objects, comma operator, sizeof of expressions | pass |  |  |
@@ -140,6 +142,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `library/pair_tuple.kov` | Pair (std::pair) and makePair; Tuple | pass | 354 pair uses in 199 files, 51 tuple |  |
 | `library/shared_ptr.kov` | SharedPtr and WeakPtr (std::shared_ptr/weak_ptr) | pass | 99 shared_ptr uses in 50 files, 8 weak_ptr |  |
 | `library/sort_default_order.kov` | ::sort by operator< (no comparator) | pass |  |  |
+| `library/static_local_flat_table.kov` | a static local of a class template type keyed by a nested enum, initialised from a brace list of pairs, looked up with find | pass |  |  |
 | `library/string.kov` | String (std::string): building, comparison, search, substrings, c_str, iteration | pass | 11491 uses in 2434 files |  |
 | `library/string_view.kov` | StringView (std::string_view): from literals and Strings, substr, find, prefix/suffix, comparison | pass | 1744 uses in 527 files |  |
 | `library/threads_atomics.kov` | Thread, Mutex, LockGuard, Atomic (std::thread, std::mutex, std::atomic) | pass | 78 std::thread, 479 mutex/lock_guard, 47 std::atomic |  |

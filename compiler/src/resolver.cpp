@@ -3223,7 +3223,14 @@ struct GlobalScope::Impl
         return nullptr;
       const Ty* t = impl.declaredTypeOf(v, activeSubst, 0);
       if (t && impl.containsAuto(t))
-        t = v->init && v->init->ty ? impl.deduceAuto(t, v->init->ty) : nullptr;
+      {
+        if (v->init && v->init->ty)
+          t = impl.deduceAuto(t, v->init->ty);
+        else if (const Ty* cached = v->cachedType.load(std::memory_order_acquire); cached && !impl.containsAuto(cached))
+          t = cached; // a range-for variable: the element type the loop deduced (inside an instantiation it is not recomputed)
+        else
+          t = nullptr;
+      }
       if (!t || !t->isKnown())
         return unknown(Why::Auto);
       bool isConst = types.stripRef(t)->isConst;
@@ -5565,6 +5572,8 @@ const Ty* GlobalScope::typeOfDeclIn(Decl* d, const TemplateArgs& args)
     auto* v = static_cast<VariableDecl*>(d);
     if (v->init && v->init->ty)
       return impl->deduceAuto(t, v->init->ty);
+    if (const Ty* cached = v->cachedType.load(std::memory_order_acquire); cached && !impl->containsAuto(cached))
+      return cached; // a range-for variable: the element type the loop deduced
   }
   return t;
 }

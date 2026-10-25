@@ -1,0 +1,21 @@
+// spec: a brace list where a value is expected: a call argument `f({1, 2})`, `Alias{}` for an alias of a class and of a scalar, `return {a, b};`
+// found in src/Util (Container/FlatMap: `emplace(it, move(key), mapped_type{})` with `using mapped_type = ValueType`)
+struct Point { int x = 0; int y = 0; };
+using Coord = Point;
+int sum(Point p) { return p.x + p.y; }
+Point make(int a, int b) { return {a, b}; }
+template<typename V>
+struct Holder
+{
+  using mapped_type = V;
+  V value;
+  Holder() : value(mapped_type{}) {}
+  V fresh() const { return mapped_type{}; }
+};
+int main()
+{
+  Point origin = Coord{};
+  Holder<double> h;
+  println("{} {} {} {} {} {}", sum({1, 2}), sum(Coord{3, 4}), make(5, 6).y, origin.x, h.value, h.fresh() + 1.5);
+  return 0;
+}

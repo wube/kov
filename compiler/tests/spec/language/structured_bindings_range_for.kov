@@ -1,0 +1,29 @@
+// spec: structured bindings as the loop variable of a range for: `for (auto& [key, value] : pairs)`, over a Vector and over an InitializerList of a class template's own alias
+// found in src/Util (Container/FlatMap's initializer-list constructor: `using value_type = Pair<K, V>`)
+template<typename K, typename V>
+struct PairList
+{
+  using value_type = Pair<K, V>;
+  int sum = 0;
+  implicit PairList(InitializerList<value_type> data)
+  {
+    for (auto& [key, value] : data)
+      this->sum += key * value;
+  }
+};
+int main()
+{
+  Vector<Pair<String, int>> items;
+  items.push_back(Pair<String, int>(String("a"), 1));
+  items.push_back(Pair<String, int>(String("b"), 2));
+  String names;
+  int sum = 0;
+  for (const auto& [name, count] : items)
+  {
+    names += name;
+    sum += count;
+  }
+  PairList<int, int> list = {{2, 3}, {4, 5}};
+  println("{} {} {}", names, sum, list.sum);
+  return 0;
+}

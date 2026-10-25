@@ -80,6 +80,14 @@ struct Map
 {
   Vector<Pair<K, V>> entries;
 
+  Map() {}
+  // `Map<char, Kind> table = {{'+', Kind::Plus}, {'-', Kind::Minus}};`
+  implicit Map(InitializerList<Pair<K, V>> items)
+  {
+    for (const Pair<K, V>& item : items)
+      this->insert(item.first, item.second);
+  }
+
   using iterator = Pair<K, V>*;
   using const_iterator = const Pair<K, V>*;
 
@@ -165,6 +173,13 @@ template<typename T>
 struct Set
 {
   Vector<T> values;
+
+  Set() {}
+  implicit Set(InitializerList<T> items)
+  {
+    for (const T& value : items)
+      this->insert(value);
+  }
 
   int size() const { return this->values.size(); }
   bool empty() const { return this->values.empty(); }

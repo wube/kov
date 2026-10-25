@@ -5245,6 +5245,8 @@ namespace
           if (c->args.size() == 1)
           {
             Expr* a = c->args[0];
+            if (a->kind == NodeKind::BraceInitExpr && static_cast<BraceInitExpr*>(a)->args.empty())
+              return {t->kind == TyKind::Float ? "0.0" : t->kind == TyKind::Pointer ? "null" : "0", t}; // `mapped_type{}`: zero
             if (a->kind == NodeKind::BraceInitExpr && static_cast<BraceInitExpr*>(a)->args.size() == 1)
               a = static_cast<BraceInitExpr*>(a)->args[0];
             return convert(rvalue(a), t, e);

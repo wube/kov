@@ -66,7 +66,9 @@ namespace
     {"NTAPI", ""}, {"WINAPI", ""}, {"APIENTRY", ""}, {"CALLBACK", ""}, {"EXTERNC", "extern \"C\""},
     {"DEV_TOOL_VARIABLE", ""}, {"BEGIN_SUPPRESS_CONVERSIONS", ""}, {"END_SUPPRESS_CONVERSIONS", ""}, {"BEGIN_FORCE_OPTIMIZE", ""},
     {"END_FORCE_OPTIMIZE", ""}, {"SUPPRESS_UBSAN", ""}, {"PADDING_WARNING", ""}, {"errno", "(*_errno())"}};
-  const std::map<std::string, std::string> knownFunctionMacros = {{"FORMAT_STRING", "$1"}, {"WHEN_ASSERT", "$1"}, {"FOR_DEVELOPER", "$1"}};
+  // `MACRO(arg)` becomes the text with $1 standing for the argument (`toCStr(x)` is `toStr(x).c_str()`).
+  const std::map<std::string, std::string> knownFunctionMacros = {{"FORMAT_STRING", "$1"}, {"WHEN_ASSERT", "$1"}, {"FOR_DEVELOPER", "$1"},
+                                                                  {"toCStr", "toStr($1).c_str()"}};
 
   // std:: names and their Kov library spelling. Names not here keep their name and are counted.
   // C library functions become `::name`: inside a namespace with its own `sqrt`, `std::sqrt` meant the C one.
@@ -930,8 +932,18 @@ namespace
             }
             if (j < toks.size())
             {
-              remove(t.offset, toks[i + 2].offset - t.offset);
-              remove(toks[j].offset, toks[j].length);
+              // The text before $1 replaces `MACRO(`, the text after it the closing `)`; the
+              // argument's own tokens stay in the stream for the other rewrites.
+              size_t dollar = kf->second.find("$1");
+              std::string before = dollar == std::string::npos ? kf->second : kf->second.substr(0, dollar);
+              std::string after = dollar == std::string::npos ? std::string() : kf->second.substr(dollar + 2);
+              if (dollar == std::string::npos)
+                replace(t.offset, endOffset(j) - t.offset, before);
+              else
+              {
+                replace(t.offset, toks[i + 2].offset - t.offset, before);
+                replace(toks[j].offset, toks[j].length, after);
+              }
               counts.add("macro use rewritten");
             }
           }
