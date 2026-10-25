@@ -1,6 +1,6 @@
 // spec: non-type template parameters: ints, bools, defaults, used in the body
 template<typename T, int N, bool Checked = false>
-struct Array
+struct Buffer
 {
   T items[N];
   int size() const { return N; }
@@ -9,8 +9,8 @@ struct Array
 const int Count = 4;
 int main()
 {
-  Array<int, Count> plain;
-  Array<int, 2, true> checked;
+  Buffer<int, Count> plain;
+  Buffer<int, 2, true> checked;
   plain.items[3] = 7;
   checked.items[0] = 5;
   println("{} {} {} {}", plain.size(), plain.get(3), checked.get(5), checked.get(0));

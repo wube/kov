@@ -3,7 +3,7 @@
 extern "C" int printf(const char* format, ...);
 
 template<typename T, int N>
-struct Array
+struct Buffer
 {
   T items[N];
 
@@ -35,14 +35,14 @@ constexpr int bufferSize = 8;
 
 int main()
 {
-  Array<int, 4> a;
+  Buffer<int, 4> a;
   for (int i = 0; i < a.size(); ++i)
     a[i] = i * i;
   int total = 0;
   for (int v : a)
     total += v;
-  Array<char, bufferSize> buffer;
-  Array<int, 4>::iterator it = a.begin();
+  Buffer<char, bufferSize> buffer;
+  Buffer<int, 4>::iterator it = a.begin();
   printf("%d %d %d %d %d\n", a.size(), total, a.bytes(), buffer.size(), (int)(a.end() - it));
   Scaler<int> checked;
   Scaler<int, false> unchecked;

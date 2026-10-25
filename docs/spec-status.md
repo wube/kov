@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**112 pass, 18 pending, 0 failing, 0 fixed** (130 snippets, 2.0 s).
+**113 pass, 17 pending, 0 failing, 0 fixed** (130 snippets, 2.0 s).
 
 ## Language: statements, expressions, declarations
 
@@ -51,7 +51,6 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `classes/dynamic_cast.kov` | dynamic_cast | pending | 443 uses in 244 files | dynamic_cast is not implemented (design.md section 9: single inheritance, type descriptor behind the vtable); line 1: got `true false`, expected `true true` |
 | `classes/member_function_pointers.kov` | pointers to member functions | pending | 3 uses in 3 files | pointers to member functions are not implemented; C:\kov\compiler\tests\spec\classes\member_function_pointers.kov:12: codegen does not support the statement kind ErrorStmt yet (in @kov.main) |
 | `classes/aggregate_default_members.kov` | aggregate initialisation leaves omitted members with their default member initializers | pass |  |  |
 | `classes/aggregates_and_brace_init.kov` | aggregate initialisation, default member initializers, arrays of structs, nested braces | pass |  |  |
@@ -61,6 +60,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `classes/conversion_operators.kov` | two conversion operators on one class (operator bool and operator String) | pass | 376 conversion operators in 292 files |  |
 | `classes/copy_semantics.kov` | copying and moving objects with owned resources, assignment, self-contained counts | pass |  |  |
 | `classes/destructors_raii.kov` | destructor order: scope exit, temporaries, members, early return | pass |  |  |
+| `classes/dynamic_cast.kov` | dynamic_cast | pass | 443 uses in 244 files |  |
 | `classes/friends.kov` | friend functions and friend classes | pass | 459 uses in 269 files |  |
 | `classes/inherited_constructors.kov` | inherited constructors (using Base::Base;) in a class with members of its own | pass | Agui's Filler, Frame and others |  |
 | `classes/interfaces.kov` | abstract interfaces implemented by several classes, held through base pointers in containers | pass |  |  |
@@ -110,7 +110,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `library/array_span.kov` | Array<T, N> and Span<T> (std::array, std::span) | pending | 372 std::array uses in 193 files, 147 std::span | Array and Span are not in the library yet; C:\kov\compiler\tests\spec\library\array_span.kov:7: codegen does not support a local of unknown type (a) yet (in @kov.main) |
+| `library/array_span.kov` | Array<T, N> and Span<T> (std::array, std::span) | pending | 372 std::array uses in 193 files, 147 std::span | Array and Span are not in the library yet; C:\kov\compiler\tests\spec\library\array_span.kov:14: codegen does not support a parameter of unknown type (4: <unknown>) yet (in @kov.main) |
 | `library/pair_tuple.kov` | Pair (std::pair) and makePair; Tuple | pending | 354 pair uses in 199 files, 51 tuple | Tuple with get<N> is not in the library yet; C:\kov\compiler\tests\spec\library\pair_tuple.kov:8: codegen does not support a local of unknown type (t) yet (in @kov.main) |
 | `library/shared_ptr.kov` | SharedPtr and WeakPtr (std::shared_ptr/weak_ptr) | pending | 99 shared_ptr uses in 50 files, 8 weak_ptr | SharedPtr and WeakPtr are not in the library yet; C:\kov\compiler\tests\spec\library\shared_ptr.kov:7: codegen does not support a local of unknown type (a) yet (in @kov.main) |
 | `library/threads_atomics.kov` | Thread, Mutex, LockGuard, Atomic (std::thread, std::mutex, std::atomic) | pending | 78 std::thread, 479 mutex/lock_guard, 47 std::atomic | no threading primitives in the library yet; C:\kov\compiler\tests\spec\library\threads_atomics.kov:6: codegen does not support a local of unknown type (counter) yet (in @kov.main) |

@@ -39,6 +39,8 @@ namespace
     std::vector<const Ty*> vtableOwners;      // class type each implementation belongs to
     std::string vtableName;                   // @"vtable.Class"
     std::string vtableText;                   // its definition, emitted into every module that stores it
+    std::string typeInfoName;                 // @"typeinfo.Class": { ptr name, ptr base descriptor }, what slot 0 points to
+    const Ty* primaryBase = nullptr;          // the polymorphic first base, whose descriptor the chain continues with
     bool isUnion = false;                     // all members at offset 0, storage sized for the largest
     std::vector<std::pair<Decl*, uint32_t>> anonymous; // anonymous struct/union members -> field index
   };
@@ -105,6 +107,7 @@ namespace
     std::unordered_map<Decl*, std::vector<Local>> packLocals; // one local per element of a parameter pack
     std::unordered_map<const Ty*, StructInfo> structs;
     std::unordered_map<Decl*, std::string> globals;
+    bool dyncastEmitted = false; // the @kov.dyncast helper is in `decls`
     std::unordered_map<uint32_t, std::string> labelBlocks; // goto labels of the current function -> their blocks
     Span<uint32_t> pendingDesignators;                        // of the brace list constructInto is about to consume
     std::vector<std::pair<Decl*, int64_t>> constEnv;          // parameters bound while evalConst runs a constexpr call
@@ -497,11 +500,19 @@ namespace
         structs[key].vtableName = vt;
         std::vector<FunctionDecl*> impls2 = structs[key].vtable;
         std::vector<const Ty*> owners2 = structs[key].vtableOwners;
-        // Slot 0 is the class's name (typeid); the methods follow (loadSlot skips the name).
+        // Slot 0 is the class's descriptor: its name (typeid) and the primary base's descriptor
+        // (dynamic_cast walks that chain); the methods follow (loadSlot skips the descriptor).
+        std::string ti = "@\"typeinfo." + types.toString(key, &symbols) + "\"";
+        structs[key].typeInfoName = ti;
+        structs[key].primaryBase = primaryPolymorphic ? baseKeys[0] : nullptr;
         bool savedShared = emittingShared;
         emittingShared = true; // the vtable text goes into every module that uses it
-        std::string entries = "ptr " + cStringConstant(types.toString(key, &symbols));
+        std::string nameConstant = cStringConstant(types.toString(key, &symbols));
         emittingShared = savedShared;
+        std::string baseDescriptor = primaryPolymorphic ? structs[baseKeys[0]].typeInfoName : std::string("null");
+        std::string descriptor = "$" + ti.substr(1) + " = comdat any\n" + ti + " = linkonce_odr constant { ptr, ptr } { ptr " + nameConstant +
+                                 ", ptr " + baseDescriptor + " }, comdat\n";
+        std::string entries = "ptr " + ti;
         for (size_t i = 0; i < impls2.size(); ++i)
         {
           FunctionDecl* f = impls2[i];
@@ -510,8 +521,8 @@ namespace
             entry = "ptr " + useFunction(f, global.classArgsOf(owners2[i]), owners2[i]);
           entries += ", " + entry;
         }
-        structs[key].vtableText = "$" + vt.substr(1) + " = comdat any\n" + vt + " = linkonce_odr constant [" + std::to_string(impls2.size() + 1) +
-                                  " x ptr] [" + entries + "], comdat\n";
+        structs[key].vtableText = descriptor + "$" + vt.substr(1) + " = comdat any\n" + vt + " = linkonce_odr constant [" +
+                                  std::to_string(impls2.size() + 1) + " x ptr] [" + entries + "], comdat\n";
       }
       return structs[key];
     }
@@ -1090,6 +1101,24 @@ namespace
         {
           useVtable(info);
           fn += "  store ptr " + info.vtableName + ", ptr " + addr + "\n";
+        }
+        if (info.fieldDecls.size() == 1 && info.bases.empty() && designators.empty() && args.size() > 1)
+        {
+          // Brace elision: `Array<int, 3> a = {1, 2, 3}` fills the one array field element by element.
+          const Ty* ft = info.fieldTypes[info.fieldIndex[info.fieldDecls[0]]];
+          if (ft->kind == TyKind::Array)
+          {
+            std::string fieldAddr = gep(info.name, addr, info.fieldIndex[info.fieldDecls[0]]);
+            if (args.size() > ft->count)
+              unsupported(at, "more values than the array of " + global.qualifiedName(c) + " holds");
+            for (size_t i = 0; i < args.size(); ++i)
+            {
+              std::string element = newTemp();
+              fn += "  " + element + " = getelementptr inbounds " + llType(ft, at) + ", ptr " + fieldAddr + ", i64 0, i64 " + std::to_string(i) + "\n";
+              initializeFrom(element, ft->inner, args[i], at);
+            }
+            return;
+          }
         }
         // Which value goes to which field: in order, or by name for `.x = 1` designators.
         std::vector<Expr*> valueOf(info.fieldDecls.size(), nullptr);
@@ -3154,6 +3183,55 @@ namespace
       if (info.vtableText.empty() || !vtablesIn[currentModule].insert(info.vtableName).second)
         return;
       moduleDecls[currentModule] += info.vtableText;
+      if (info.primaryBase)
+        useVtable(structFor(info.primaryBase, nullptr)); // the descriptor chain refers to the base's descriptor
+    }
+
+    // The name a class descriptor (slot 0 of a vtable) starts with.
+    std::string descriptorName(const std::string& descriptor)
+    {
+      std::string n = newTemp();
+      fn += "  " + n + " = load ptr, ptr " + descriptor + "\n";
+      return n;
+    }
+
+    // dynamic_cast<T*>(p) / dynamic_cast<T&>(x) between polymorphic classes: the object's
+    // descriptor chain is searched for T's; null (for a pointer) when T is not among them.
+    // Upcasts and non-polymorphic operands fall back to the static conversion (nullopt).
+    std::optional<Value> dynamicCast(NamedCastExpr* c, Expr* e)
+    {
+      const Ty* target = types.stripRef(e->ty);
+      if (!target || !target->isKnown())
+        return std::nullopt;
+      bool pointer = target->kind == TyKind::Pointer;
+      const Ty* tcls = pointer ? target->inner : target;
+      if (!isClass(tcls))
+        return std::nullopt;
+      Value o = rvalue(c->operand);
+      const Ty* scls = o.ty && o.ty->kind == TyKind::Pointer ? o.ty->inner : types.stripRef(o.ty);
+      if (!isClass(scls) || !structFor(scls, e).polymorphic || !structFor(tcls, e).polymorphic)
+        return std::nullopt;
+      std::vector<std::pair<std::string, uint32_t>> path;
+      if (classKey(scls) == classKey(tcls) || basePath(scls, tcls, path, e))
+        return std::nullopt; // the same class or a base of it: the static conversion
+      StructInfo& ti = structFor(tcls, e);
+      useVtable(ti);
+      if (!dyncastEmitted)
+      {
+        dyncastEmitted = true;
+        decls += "$kov.dyncast = comdat any\n"
+                 "define linkonce_odr ptr @kov.dyncast(ptr %obj, ptr %target) comdat {\n"
+                 "entry:\n  %isnull = icmp eq ptr %obj, null\n  br i1 %isnull, label %fail, label %start\n"
+                 "start:\n  %vt = load ptr, ptr %obj\n  %d0 = load ptr, ptr %vt\n  br label %loop\n"
+                 "loop:\n  %d = phi ptr [ %d0, %start ], [ %next, %step ]\n  %hit = icmp eq ptr %d, %target\n  br i1 %hit, label %ok, label %step\n"
+                 "step:\n  %bp = getelementptr inbounds { ptr, ptr }, ptr %d, i32 0, i32 1\n  %next = load ptr, ptr %bp\n"
+                 "  %end = icmp eq ptr %next, null\n  br i1 %end, label %fail, label %loop\n"
+                 "ok:\n  ret ptr %obj\n"
+                 "fail:\n  ret ptr null\n}\n";
+      }
+      std::string r = newTemp();
+      fn += "  " + r + " = call ptr @kov.dyncast(ptr " + o.text + ", ptr " + ti.typeInfoName + ")\n";
+      return Value{r, e->ty, false};
     }
 
     // A floating-point constant in IR: the exact bits, rounded through float for 32-bit values.
@@ -4774,7 +4852,7 @@ namespace
             // typeid(q): the parser read the variable as a type name; the resolver found it.
             const Ty* xt = t->operandType ? types.stripRef(t->operandType) : nullptr;
             if (isClass(xt) && structFor(xt, e).polymorphic)
-              namePtr = loadSlot(addressOfDecl(t->operandDecl, e), -1);
+              namePtr = descriptorName(loadSlot(addressOfDecl(t->operandDecl, e), -1));
             else
               staticTy = xt;
           }
@@ -4790,7 +4868,7 @@ namespace
             else if (named && named->kind == NodeKind::EnumDecl)
               staticTy = types.enumType(named);
             else if (isClass(xt) && structFor(xt, e).polymorphic)
-              namePtr = loadSlot(lvalue(x), -1); // the dynamic type: slot 0 of the object's vtable
+              namePtr = descriptorName(loadSlot(lvalue(x), -1)); // the dynamic type: slot 0 of the object's vtable
             else
               staticTy = xt;
           }
@@ -4828,7 +4906,13 @@ namespace
           }
           return explicitConvert(rvalue(static_cast<CastExpr*>(e)->operand), e->ty, e);
         case NodeKind::NamedCastExpr:
-          return explicitConvert(rvalue(static_cast<NamedCastExpr*>(e)->operand), e->ty, e);
+        {
+          auto* c = static_cast<NamedCastExpr*>(e);
+          if (c->castKind == Kw::dynamic_cast_)
+            if (std::optional<Value> v = dynamicCast(c, e))
+              return *v;
+          return explicitConvert(rvalue(c->operand), e->ty, e);
+        }
         case NodeKind::FunctionalCastExpr:
         {
           auto* c = static_cast<FunctionalCastExpr*>(e);

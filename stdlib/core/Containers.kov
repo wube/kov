@@ -3,6 +3,81 @@
 // three are the simplest thing that has the interface; they get real implementations when a
 // program needs them to be fast.
 
+// A fixed-size array that knows its size (what std::array converts to).
+template<typename T, int N>
+struct Array
+{
+  T items[N];
+
+  using iterator = T*;
+  using const_iterator = const T*;
+  using value_type = T;
+
+  int size() const { return N; }
+  bool empty() const { return N == 0; }
+  T& operator[](int index) { return this->items[index]; }
+  const T& operator[](int index) const { return this->items[index]; }
+  T& at(int index) { return this->items[index]; }
+  const T& at(int index) const { return this->items[index]; }
+  T* data() { return this->items; }
+  const T* data() const { return this->items; }
+  T* begin() { return this->items; }
+  T* end() { return this->items + N; }
+  const T* begin() const { return this->items; }
+  const T* end() const { return this->items + N; }
+  T& front() { return this->items[0]; }
+  T& back() { return this->items[N - 1]; }
+  void fill(const T& value)
+  {
+    for (int i = 0; i < N; ++i)
+      this->items[i] = value;
+  }
+  bool operator==(const Array<T, N>& other) const
+  {
+    for (int i = 0; i < N; ++i)
+      if (!(this->items[i] == other.items[i]))
+        return false;
+    return true;
+  }
+};
+
+// A view of contiguous elements (what std::span converts to): a pointer and a count, over an
+// array, a Vector, an Array or a String's characters.
+template<typename T>
+struct Span
+{
+  T* items = nullptr;
+  int length = 0;
+
+  using iterator = T*;
+  using value_type = T;
+
+  Span() {}
+  Span(T* items, int length) : items(items), length(length) {}
+  Span(T* first, T* last) : items(first), length(int(last - first)) {}
+  implicit Span(Vector<RemoveConst<T>>& v) : items(v.data()), length(v.size()) {}
+  implicit Span(const Vector<RemoveConst<T>>& v) : items(v.data()), length(v.size()) {}
+  template<int N>
+  implicit Span(Array<RemoveConst<T>, N>& a) : items(a.data()), length(N) {}
+  template<int N>
+  implicit Span(const Array<RemoveConst<T>, N>& a) : items(a.data()), length(N) {}
+  template<int N>
+  implicit Span(T (&a)[N]) : items(a), length(N) {}
+
+  int size() const { return this->length; }
+  bool empty() const { return this->length == 0; }
+  T& operator[](int index) const { return this->items[index]; }
+  T* data() const { return this->items; }
+  T* begin() const { return this->items; }
+  T* end() const { return this->items + this->length; }
+  T& front() const { return this->items[0]; }
+  T& back() const { return this->items[this->length - 1]; }
+  Span<T> subspan(int offset, int count) const { return Span<T>(this->items + offset, count); }
+  Span<T> subspan(int offset) const { return Span<T>(this->items + offset, this->length - offset); }
+  Span<T> first(int count) const { return Span<T>(this->items, count); }
+  Span<T> last(int count) const { return Span<T>(this->items + this->length - count, count); }
+};
+
 // An ordered map (what std::map converts to): entries are Pair<K, V> in key order.
 template<typename K, typename V>
 struct Map
