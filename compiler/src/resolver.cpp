@@ -3861,6 +3861,12 @@ struct GlobalScope::Impl
                   (d->kind == NodeKind::VariableDecl && (d->flags & DF_Typedef))))
         {
           ++stats.callsResolved; // a functional cast, `int64_t(x)` included when int64_t is an imported typedef
+          if (impl.isUndeducedClassTemplate(t))
+            if (const Ty* deduced = impl.deduceClassArgs(t, argTypesOf(c->args)))
+            {
+              record(n, deduced);
+              return deduced; // `Pair(a, b)`, `Span(p, n)`: the class's arguments from a constructor (CTAD)
+            }
           return t;
         }
         return callResultOfValue(t, c);
@@ -5063,6 +5069,9 @@ struct GlobalScope::Impl
           const Ty* t = typeOf(c->type);
           if (t->kind == TyKind::Auto && c->args.size() == 1 && c->args[0]->ty)
             t = types.decay(c->args[0]->ty); // auto(x)
+          if (impl.isUndeducedClassTemplate(t))
+            if (const Ty* deduced = impl.deduceClassArgs(t, argTypesOf(c->args)))
+              t = deduced; // `Pair(a, b)`, `Span(p, n)` in an expression: the class's arguments from a constructor (CTAD)
           return record(e, t);
         }
         case NodeKind::TypeidExpr:

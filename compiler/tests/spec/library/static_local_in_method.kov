@@ -1,0 +1,31 @@
+// spec: a static local table in a non-static method, keyed by another class's nested enum, with the method reading members too
+// found in src/Util (MathExpressions/Tokenizer::parseSimpleToken: `static const FlatMap<char, Token::Type> first = {...}`)
+struct Token
+{
+  enum class Type : uint8_t { None, Plus, Minus };
+  Type type = Type::None;
+};
+struct Tokenizer
+{
+  Token current;
+  int position = 0;
+  bool step(char c)
+  {
+    static const Map<char, Token::Type> first = {{'+', Token::Type::Plus}, {'-', Token::Type::Minus}};
+    if (auto it = first.find(c); it != first.end())
+    {
+      this->current.type = it->second;
+      this->position += 1;
+      return true;
+    }
+    return false;
+  }
+};
+int main()
+{
+  Tokenizer t;
+  bool a = t.step('+');
+  bool b = t.step('x');
+  println("{} {} {} {}", a, b, (int)t.current.type, t.position);
+  return 0;
+}

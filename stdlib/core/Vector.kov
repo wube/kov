@@ -152,6 +152,9 @@ struct Vector
     this->insert(index, move(value));
     return this->items + index;
   }
+  // `v.emplace(position, args...)`: the element built from args, before position (std::vector::emplace).
+  template<typename... Args>
+  T* emplace(T* position, Args&&... args) { return this->insert(position, T(forward<Args>(args)...)); }
   T* insert(T* position, const T* first, const T* last)
   {
     int index = int(position - this->items);

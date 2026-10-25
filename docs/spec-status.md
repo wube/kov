@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**148 pass, 2 pending, 0 failing, 0 fixed** (150 snippets, 2.6 s).
+**150 pass, 2 pending, 0 failing, 0 fixed** (152 snippets, 2.8 s).
 
 ## Language: statements, expressions, declarations
 
@@ -98,6 +98,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/class_template_static_members.kov` | a static data member of a class template is one object per instantiation | pass |  |  |
 | `templates/class_templates.kov` | class templates: members, nested typedefs, static constexpr functions, several instantiations | pass |  |  |
 | `templates/ctad.kov` | class template argument deduction from constructor arguments | pass |  |  |
+| `templates/ctad_in_expression.kov` | class template argument deduction in an expression, not only a declaration: `Pair(a, b)` as a call argument, `Span(p, n)` in a return | pass |  |  |
 | `templates/dependent_member_typedef.kov` | a member typedef of a dependent instantiation as a return type (typename Vector<T>::iterator) | pass |  |  |
 | `templates/dependent_names.kov` | dependent names: T::Type, T::constant, this-> in templates, a dependent return type | pass |  |  |
 | `templates/dependent_return_in_variadic_call.kov` | a call whose return type is dependent (typename T::Unit) used directly as a variadic argument | pass |  |  |
@@ -143,6 +144,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `library/shared_ptr.kov` | SharedPtr and WeakPtr (std::shared_ptr/weak_ptr) | pass | 99 shared_ptr uses in 50 files, 8 weak_ptr |  |
 | `library/sort_default_order.kov` | ::sort by operator< (no comparator) | pass |  |  |
 | `library/static_local_flat_table.kov` | a static local of a class template type keyed by a nested enum, initialised from a brace list of pairs, looked up with find | pass |  |  |
+| `library/static_local_in_method.kov` | a static local table in a non-static method, keyed by another class's nested enum, with the method reading members too | pass |  |  |
 | `library/string.kov` | String (std::string): building, comparison, search, substrings, c_str, iteration | pass | 11491 uses in 2434 files |  |
 | `library/string_view.kov` | StringView (std::string_view): from literals and Strings, substr, find, prefix/suffix, comparison | pass | 1744 uses in 527 files |  |
 | `library/threads_atomics.kov` | Thread, Mutex, LockGuard, Atomic (std::thread, std::mutex, std::atomic) | pass | 78 std::thread, 479 mutex/lock_guard, 47 std::atomic |  |
