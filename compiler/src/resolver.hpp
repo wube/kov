@@ -148,6 +148,7 @@ public:
   const Ty* typeOfAst(Type* t, Decl* context);   // A written type, resolved in the context of a declaration.
   Decl* definitionOf(Decl* d);                   // Class/enum definition, or the out-of-line definition of a member function.
   Decl* initializerListDecl();                   // The library's InitializerList class, or null.
+  Decl* typeInfoDecl();                          // The library's TypeInfo class (what typeid yields), or null.
   Decl* owningClass(Decl* d);                    // The class a member (possibly defined out of line) belongs to.
   std::string qualifiedName(Decl* d);            // `ns::Class::name`
   bool isExternC(FunctionDecl* f);

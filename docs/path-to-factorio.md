@@ -219,9 +219,14 @@ matter beyond Agui:
   for pointers. Tests: `conversions.kov`, `library2.kov`, `callables.kov`, `refparams.kov`,
   `fnpointer.kov`, `outofline.kov`.
 
-What is left in Agui: `typeid(x).name()` (3 sites; needs a name slot in the vtable), one
-generic lambda (`auto` parameter), and `TextButton::ClickState::CLICKED` inside `ScrollBar`
-(2 sites, under investigation). Then the library links and runs something.
+Two more fixes closed the pass: a template body re-typed for an instantiation now looks its
+qualifier up from the definition's namespace (`ScrollBar<Policy>::ScrollBar` in `agui` could
+not see `TextButton`), and `typeid(x)` yields the library's `TypeInfo`: every vtable starts
+with the class's name, so the dynamic type of a polymorphic object is one load away;
+`typeid(T)` and non-polymorphic objects get their static name. Test: `typeid.kov`.
+
+What is left in Agui: one generic lambda (`auto` parameter). Next: link the converted Agui
+with its Void backend and run a smoke program, as CommonUtil has.
 
 ## The order that gets to a running game
 

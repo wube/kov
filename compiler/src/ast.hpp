@@ -325,7 +325,9 @@ struct LambdaExpr : Expr
 struct BraceInitExpr : Expr { Span<Expr*> args; };
 struct ThrowExpr : Expr { Expr* operand; };
 struct FunctionalCastExpr : Expr { Type* type; Span<Expr*> args; bool braced; };
-struct TypeidExpr : Expr { Node* operand; };
+// operandType and operandDecl are filled by the type checker: the type named, or the variable the
+// parser read as a type name (`typeid(q)`).
+struct TypeidExpr : Expr { Node* operand; const Ty* operandType = nullptr; Decl* operandDecl = nullptr; };
 struct FoldExpr : Expr { Expr* lhs; Expr* rhs; uint32_t op; };
 struct RequiresExpr : Expr {};
 struct ParenExpr : Expr { Expr* inner; };

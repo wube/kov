@@ -477,16 +477,20 @@ namespace
         structs[key].vtableName = vt;
         std::vector<FunctionDecl*> impls2 = structs[key].vtable;
         std::vector<const Ty*> owners2 = structs[key].vtableOwners;
-        std::string entries;
+        // Slot 0 is the class's name (typeid); the methods follow (loadSlot skips the name).
+        bool savedShared = emittingShared;
+        emittingShared = true; // the vtable text goes into every module that uses it
+        std::string entries = "ptr " + cStringConstant(types.toString(key, &symbols));
+        emittingShared = savedShared;
         for (size_t i = 0; i < impls2.size(); ++i)
         {
           FunctionDecl* f = impls2[i];
           std::string entry = "ptr null";
           if (f && !(f->flags & DF_Pure))
             entry = "ptr " + useFunction(f, global.classArgsOf(owners2[i]), owners2[i]);
-          entries += (i ? ", " : "") + entry;
+          entries += ", " + entry;
         }
-        structs[key].vtableText = "$" + vt.substr(1) + " = comdat any\n" + vt + " = linkonce_odr constant [" + std::to_string(impls2.size()) +
+        structs[key].vtableText = "$" + vt.substr(1) + " = comdat any\n" + vt + " = linkonce_odr constant [" + std::to_string(impls2.size() + 1) +
                                   " x ptr] [" + entries + "], comdat\n";
       }
       return structs[key];
@@ -531,7 +535,7 @@ namespace
       std::string vptr = newTemp();
       fn += "  " + vptr + " = load ptr, ptr " + addr + "\n";
       std::string entry = newTemp();
-      fn += "  " + entry + " = getelementptr inbounds ptr, ptr " + vptr + ", i64 " + std::to_string(slot) + "\n";
+      fn += "  " + entry + " = getelementptr inbounds ptr, ptr " + vptr + ", i64 " + std::to_string(slot + 1) + "\n"; // after the name
       std::string fp = newTemp();
       fn += "  " + fp + " = load ptr, ptr " + entry + "\n";
       return fp;
@@ -997,6 +1001,37 @@ namespace
         return;
       }
       unsupported(at, "a constructor of " + global.qualifiedName(c) + " taking " + std::to_string(args.size()) + " arguments");
+    }
+
+    // The address of the object a variable or parameter declaration names (what lvalue gives a
+    // name expression): a local, a field of this, or a global.
+    std::string addressOfDecl(Decl* d, Node* e)
+    {
+      auto it = locals.find(d);
+      if (it != locals.end())
+      {
+        if (it->second.isRef)
+        {
+          std::string r = newTemp();
+          fn += "  " + r + " = load ptr, ptr " + it->second.addr + "\n";
+          return r;
+        }
+        return it->second.addr;
+      }
+      if (d->kind == NodeKind::VariableDecl)
+      {
+        if (Decl* cls = global.owningClass(d); cls && !(d->flags & DF_Static))
+        {
+          if (!currentClassTy)
+            unsupported(e, "a member used outside a method");
+          std::string addr;
+          if (!fieldAddress(currentClassTy, d, thisPointer(e), addr, e))
+            unsupported(e, "a member that is not a field");
+          return addr;
+        }
+        return globalFor(static_cast<VariableDecl*>(d), e);
+      }
+      unsupported(e, "taking the address of " + global.qualifiedName(d));
     }
 
     // Whether an expression is an xvalue: an rvalue reference to an object that may be moved from
@@ -3969,6 +4004,53 @@ namespace
           return load(r, base.ty->inner, e);
         }
         case NodeKind::CallExpr: return callRvalue(callValue(static_cast<CallExpr*>(e), ""), e);
+        case NodeKind::TypeidExpr:
+        {
+          auto* t = static_cast<TypeidExpr*>(e);
+          const Ty* infoTy = e->ty ? types.stripRef(e->ty) : nullptr;
+          if (!isClass(infoTy))
+            unsupported(e, "typeid without the library's TypeInfo class");
+          std::string namePtr;
+          const Ty* staticTy = nullptr;
+          if (t->operandDecl)
+          {
+            // typeid(q): the parser read the variable as a type name; the resolver found it.
+            const Ty* xt = t->operandType ? types.stripRef(t->operandType) : nullptr;
+            if (isClass(xt) && structFor(xt, e).polymorphic)
+              namePtr = loadSlot(addressOfDecl(t->operandDecl, e), -1);
+            else
+              staticTy = xt;
+          }
+          else if (t->operand && uint8_t(t->operand->kind) <= uint8_t(NodeKind::PackType))
+            staticTy = t->operandType ? types.stripRef(t->operandType) : nullptr; // typeid(Widget): typed by the resolver
+          else if (t->operand)
+          {
+            auto* x = static_cast<Expr*>(t->operand);
+            Decl* named = x->kind == NodeKind::NameExpr ? static_cast<NameExpr*>(x)->resolved : nullptr;
+            const Ty* xt = x->ty ? types.stripRef(x->ty) : nullptr;
+            if (named && named->kind == NodeKind::ClassDecl)
+              staticTy = canonicalClass(types.classType(named, {}), e); // typeid(Base): the parser read the type as a name
+            else if (named && named->kind == NodeKind::EnumDecl)
+              staticTy = types.enumType(named);
+            else if (isClass(xt) && structFor(xt, e).polymorphic)
+              namePtr = loadSlot(lvalue(x), -1); // the dynamic type: slot 0 of the object's vtable
+            else
+              staticTy = xt;
+          }
+          if (namePtr.empty())
+          {
+            if (!staticTy || !staticTy->isKnown() || types.isDependent(staticTy))
+              unsupported(e, "typeid of an unknown type (operand: " + std::string(t->operand ? nodeKindName(t->operand->kind) : "none") + ", " +
+                                 (staticTy ? types.toString(staticTy, &symbols) : std::string("no type")) + ")");
+            namePtr = cStringConstant(types.toString(types.unqualified(staticTy), &symbols));
+          }
+          std::string slot = newObjectSlot(infoTy, e);
+          StructInfo info = structFor(infoTy, e);
+          if (info.fieldDecls.empty())
+            unsupported(e, "a TypeInfo class without its name field");
+          fn += "  store ptr " + namePtr + ", ptr " + gep(info.name, slot, info.fieldIndex[info.fieldDecls[0]]) + "\n";
+          return {slot, infoTy, true};
+        }
         case NodeKind::NameofExpr:
         {
           Expr* o = static_cast<NameofExpr*>(e)->operand;

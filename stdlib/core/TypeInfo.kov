@@ -1,0 +1,19 @@
+// Kov standard library: TypeInfo, what `typeid(x)` yields. The compiler fills in the type's name:
+// for an object of a polymorphic class its dynamic type (the name lives in the vtable), otherwise
+// the static type; `typeid(T)` names the type itself. Compared by name.
+struct TypeInfo
+{
+  const char* typeName = "";
+
+  TypeInfo() {}
+  explicit TypeInfo(const char* typeName) : typeName(typeName) {}
+
+  const char* name() const { return this->typeName; }
+  bool operator==(const TypeInfo& other) const
+  {
+    size_t n = strlen(this->typeName);
+    return n == strlen(other.typeName) && memcmp(this->typeName, other.typeName, n) == 0;
+  }
+  bool operator!=(const TypeInfo& other) const { return !(*this == other); }
+  size_t hashCode() const { return hashOf(StringView(this->typeName)); }
+};

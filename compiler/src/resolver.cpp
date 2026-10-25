@@ -1322,6 +1322,16 @@ struct GlobalScope::Impl
   {
     return t && t->kind == TyKind::Class && t->decl && t->decl == initializerListDecl();
   }
+  uint32_t typeInfoSymbol_ = UINT32_MAX;
+  Decl* typeInfoDecl()
+  {
+    if (typeInfoSymbol_ == UINT32_MAX)
+      typeInfoSymbol_ = symbols.intern("TypeInfo");
+    Lookup l;
+    if (lookupInScope(&root, typeInfoSymbol_, l, 0) && l.scope && l.scope->owner)
+      return l.scope->owner;
+    return nullptr;
+  }
   bool isFunctionImpl(const Ty* t)
   {
     if (!t || t->kind != TyKind::Class || !t->decl || t->decl->kind != NodeKind::ClassDecl)
@@ -4196,8 +4206,26 @@ struct GlobalScope::Impl
           return record(e, t);
         }
         case NodeKind::TypeidExpr:
-          walkNode(static_cast<TypeidExpr*>(e)->operand);
+        {
+          auto* t = static_cast<TypeidExpr*>(e);
+          walkNode(t->operand);
+          if (t->operand && uint8_t(t->operand->kind) <= uint8_t(NodeKind::PackType))
+          {
+            // typeid(Widget), or typeid(q) with q a variable the parser read as a type name.
+            auto* n = t->operand->kind == NodeKind::NamedType ? static_cast<NamedType*>(t->operand) : nullptr;
+            Lookup l = n ? impl.lookupQualified(n->name, scope, &locals, 0, activeSubst) : Lookup{};
+            if (l.decl && (l.decl->kind == NodeKind::VariableDecl || l.decl->kind == NodeKind::ParamDecl) && !(l.decl->flags & DF_Typedef))
+            {
+              t->operandDecl = l.decl;
+              t->operandType = impl.declaredTypeOf(l.decl, activeSubst, 0);
+            }
+            else
+              t->operandType = typeOf(static_cast<Type*>(t->operand));
+          }
+          if (Decl* info = impl.typeInfoDecl())
+            return record(e, types.classType(info, {})); // the library's TypeInfo; the code generator fills in the name
           return record(e, unknown(Why::Unsupported));
+        }
         case NodeKind::FoldExpr:
         {
           auto* f = static_cast<FoldExpr*>(e);
@@ -4367,6 +4395,7 @@ Decl* GlobalScope::owningClass(Decl* d)
 }
 
 Decl* GlobalScope::initializerListDecl() { return impl->initializerListDecl(); }
+Decl* GlobalScope::typeInfoDecl() { return impl->typeInfoDecl(); }
 
 Decl* GlobalScope::definitionOf(Decl* d)
 {
@@ -4576,7 +4605,11 @@ void GlobalScope::retypeFor(FunctionDecl* f, const TemplateArgs& args, const Ty*
   for (Decl* p = f; p; p = p->parent)
     for (Decl* tp : p->templateParams)
       w.locals.push(static_cast<TemplateParamDecl*>(tp)->name, tp);
-  w.scope = f->name.parts.size() > 1 ? w.semanticScopeFor(f->name) : impl->lexicalScopeOf(f);
+  // The qualifier of an out-of-line definition (`ScrollBar<Policy>::ScrollBar`) is looked up
+  // from the definition's own namespace, where the class is visible.
+  w.scope = impl->lexicalScopeOf(f);
+  if (f->name.parts.size() > 1)
+    w.scope = w.semanticScopeFor(f->name);
   w.activeSubst = &subst;
   static bool debugCalls = getenv("KOV_DEBUG_CALLS") != nullptr;
   if (debugCalls)

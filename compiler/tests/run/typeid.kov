@@ -1,0 +1,28 @@
+// typeid: the dynamic type of a polymorphic object (through its vtable), the static type of
+// anything else, a type by name; TypeInfo compares by name.
+extern "C" int printf(const char* format, ...);
+
+struct Base
+{
+  virtual ~Base() {}
+  virtual int f() { return 1; }
+};
+struct Derived : Base
+{
+  int f() override { return 2; }
+};
+struct Plain
+{
+  int x = 0;
+};
+
+int main()
+{
+  Derived d;
+  Base& b = d;
+  Base* p = &d;
+  Plain q;
+  printf("%s %s %s %s %d %d\n", typeid(b).name(), typeid(*p).name(), typeid(q).name(), typeid(Base).name(),
+         typeid(b) == typeid(Derived) ? 1 : 0, typeid(q) != typeid(Plain) ? 1 : 0);
+  return 0;
+}
