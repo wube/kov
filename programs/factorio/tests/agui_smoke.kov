@@ -73,7 +73,7 @@ int main()
   agui::VoidAguiBackendGraphics graphics;
   gui.setGraphics(&graphics);
   gui.setSize(640, 480);
-  agui::Label& label = agui::label();
+  agui::Label& label = agui::label(String());
   gui.getTop()->add(&label);
   label.setText(String("Hello Agui")); // a text change inside a Gui schedules the label's resize for the next logic step
   gui.logic(true);

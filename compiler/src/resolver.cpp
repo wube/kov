@@ -1898,9 +1898,10 @@ struct GlobalScope::Impl
             pt = types.decay(pt); // `f(double m[3][3])` takes a pointer, as in C
           if (pt && !pt->isReference() && pt->kind != TyKind::Pack)
             pt = types.unqualified(pt); // `f(const int x)` is f(int): the const is the definition's business
-          if (pd->isPack && pt->kind == TyKind::Pack)
-            for (const Ty* e : pt->args)
-              params.push_back(e); // deduced pack: one parameter per element
+          if (pd->isPack && spliceIfPack(pt, params))
+          {
+            // deduced pack (`Args...`, `Args&&...`): one parameter per element
+          }
           else
           {
             params.push_back(pt);
@@ -2141,6 +2142,28 @@ struct GlobalScope::Impl
   }
 
   // Applies a substitution to a canonical type.
+  // A parameter whose type became a pack (`Args...` -> int, String), also under a reference or a
+  // pointer (`Args&&...` -> int&&, String&&): appends one type per element and returns true.
+  bool spliceIfPack(const Ty* sub, std::vector<const Ty*>& out)
+  {
+    if (!sub)
+      return false;
+    if (sub->kind == TyKind::Pack)
+    {
+      for (const Ty* e : sub->args)
+        out.push_back(e);
+      return true;
+    }
+    if ((sub->kind == TyKind::LRef || sub->kind == TyKind::RRef || sub->kind == TyKind::Pointer) && sub->inner && sub->inner->kind == TyKind::Pack)
+    {
+      for (const Ty* e : sub->inner->args)
+        out.push_back(sub->kind == TyKind::LRef ? types.lref(e) : sub->kind == TyKind::RRef ? types.rref(e)
+                                                : types.qualified(types.pointer(e), sub->isConst, sub->isVolatile));
+      return true;
+    }
+    return false;
+  }
+
   const Ty* substitute(const Ty* t, const Subst& s, int depth = 0)
   {
     if (!t || s.empty() || depth > 16)
@@ -2166,11 +2189,9 @@ struct GlobalScope::Impl
         for (const Ty* a : t->args)
         {
           const Ty* sub = substitute(a, s, depth + 1);
-          if (sub->kind == TyKind::Pack && t->kind != TyKind::Pack)
-            for (const Ty* e : sub->args)
-              args.push_back(e);
-          else
-            args.push_back(sub);
+          if (t->kind != TyKind::Pack && spliceIfPack(sub, args))
+            continue;
+          args.push_back(sub);
         }
         Span<const Ty*> span{args.data(), uint32_t(args.size())};
         if (t->kind == TyKind::Pack)
@@ -2844,7 +2865,10 @@ struct GlobalScope::Impl
           return impl.typeOfTypeDecl(d, l, lastPart, c, 0);
         }
         case NodeKind::TemplateParamDecl:
-          return impl.declaredTypeOf(d, activeSubst, 0);
+        {
+          const Ty* t = impl.declaredTypeOf(d, activeSubst, 0);
+          return t && t->kind == TyKind::Value && t->inner ? t->inner : t; // `M == Mode::Fast`: the value's type
+        }
         case NodeKind::NamespaceDecl:
           return unknown(Why::Unsupported);
         default:
@@ -3141,6 +3165,18 @@ struct GlobalScope::Impl
       return out;
     }
 
+    // An explicit template argument of a call (`forward<Args>(args)`): under an instantiation that
+    // binds the pack Args to one element, a non-pack parameter of the callee gets that element,
+    // not a pack of one.
+    const Ty* explicitArgument(Node* written, Decl* param)
+    {
+      const Ty* t = impl.templateArgument(written, param, ctx(), 0);
+      bool packParam = param && param->kind == NodeKind::TemplateParamDecl && static_cast<TemplateParamDecl*>(param)->isPack;
+      if (t && t->kind == TyKind::Pack && t->args.size() == 1 && !packParam)
+        return t->args[0];
+      return t;
+    }
+
     // Return type of calling `f` with the given arguments, deducing its template parameters.
     const Ty* returnTypeOfCall(FunctionDecl* f, const Subst* classSubst, const Span<Expr*>& args, const NamePart* namePart,
                                CallExpr* call = nullptr)
@@ -3158,7 +3194,7 @@ struct GlobalScope::Impl
           const Ty* fnTy = impl.declaredTypeOf(f, classSubst, 0);
           if (namePart)
             for (size_t i = 0; i < namePart->templateArgs.size() && i < f->templateParams.size(); ++i)
-              s.pairs.push_back({f->templateParams[i], impl.templateArgument(namePart->templateArgs[i], f->templateParams[i], ctx(), 0)});
+              s.pairs.push_back({f->templateParams[i], explicitArgument(namePart->templateArgs[i], f->templateParams[i])});
           impl.deduceCall(f, fnTy, argTypesOf(args), s);
           if (const Ty* r = instantiateFunction(f, s, true, classSubst))
             return r;
@@ -3170,13 +3206,30 @@ struct GlobalScope::Impl
         return unknown(Why::AutoReturn);
       }
       Subst subst = classSubst ? *classSubst : Subst{};
-      const Ty* fnTy = impl.declaredTypeOf(f, classSubst ? classSubst : activeSubst, 0);
+      // The callee's type for deduction: the enclosing instantiation's arguments apply, but never
+      // to the callee's own parameters (a template calling itself, `sum(rest...)` inside
+      // `sum<int, int, int>`, deduces them afresh from the arguments).
+      Subst outer;
+      const Subst* forType = classSubst ? classSubst : activeSubst;
+      if (!classSubst && activeSubst && !f->templateParams.empty())
+      {
+        for (const Subst::Pair& p : activeSubst->pairs)
+        {
+          bool own = false;
+          for (Decl* tp : f->templateParams)
+            own = own || tp == p.param;
+          if (!own)
+            outer.pairs.push_back(p);
+        }
+        forType = outer.pairs.empty() ? nullptr : &outer;
+      }
+      const Ty* fnTy = impl.declaredTypeOf(f, forType, 0);
       if (!f->templateParams.empty())
       {
         // Explicit template arguments first, then deduction from the arguments.
         if (namePart)
           for (size_t i = 0; i < namePart->templateArgs.size() && i < f->templateParams.size(); ++i)
-            subst.pairs.push_back({f->templateParams[i], impl.templateArgument(namePart->templateArgs[i], f->templateParams[i], ctx(), 0)});
+            subst.pairs.push_back({f->templateParams[i], explicitArgument(namePart->templateArgs[i], f->templateParams[i])});
         impl.deduceCall(f, fnTy, argTypesOf(args), subst);
         if (call)
         {
@@ -3196,6 +3249,9 @@ struct GlobalScope::Impl
             std::string line = std::string(call ? "call " : "call(no expr) ") + std::string(impl.symbols.name(f->name.last().symbol)) + ":";
             for (size_t i = 0; call && i < call->templateArgCount; ++i)
               line += " " + types.toString(call->templateArgs[i], &impl.symbols);
+            line += " | args:";
+            for (const Ty* a : argTypesOf(args))
+              line += " " + types.toString(a, &impl.symbols);
             line += " | explicit:";
             if (namePart)
               for (size_t i = 0; i < namePart->templateArgs.size() && i < f->templateParams.size(); ++i)

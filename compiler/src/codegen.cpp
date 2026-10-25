@@ -247,7 +247,8 @@ namespace
         case TyKind::Class: return structFor(t, at).name;
         case TyKind::Enum: return llType(enumUnderlying(t->decl), at);
         default:
-          unsupported(at, "the type " + types.toString(t, &symbols) + (at ? std::string(" of ") + nodeKindName(at->kind) : std::string()));
+          unsupported(at, "the type " + types.toString(t, &symbols) + (t->kind == TyKind::Pack ? " (a parameter pack)" : t->kind == TyKind::Param ? " (a template parameter)" : "") +
+                            (at ? std::string(" of ") + nodeKindName(at->kind) : std::string()));
       }
     }
 
@@ -1179,7 +1180,7 @@ namespace
         }
         return globalAddress(static_cast<VariableDecl*>(d), e, qualifierClass(e, e));
       }
-      unsupported(e, "taking the address of " + global.qualifiedName(d));
+      unsupported(e, "taking the address of " + global.qualifiedName(d) + " (" + nodeKindName(d->kind) + (packLocals.count(d) ? ", a parameter pack outside its expansion" : "") + ")");
     }
 
     // Whether an expression is an xvalue: an rvalue reference to an object that may be moved from
@@ -2204,6 +2205,16 @@ namespace
                                ? sym(static_cast<ParamDecl*>(f->params[i])->name) : std::to_string(i + 1);
           unsupported(f, "a parameter of unknown type (" + name + ": " + types.toString(pt, &symbols) + ")");
         }
+        if (pt->kind == TyKind::Pack)
+        {
+          // A deduced pack still in one piece (`Args&&...` of a member template): one parameter per element.
+          for (const Ty* e : pt->args)
+          {
+            s.paramTypes.push_back(isAggregate(e) || e->isReference() ? "ptr" : llType(e, f));
+            s.paramTys.push_back(e);
+          }
+          continue;
+        }
         s.paramTypes.push_back(isAggregate(pt) || pt->isReference() ? "ptr" : llType(pt, f));
         s.paramTys.push_back(pt);
       }
@@ -2410,7 +2421,8 @@ namespace
         argText += std::string(argText.empty() ? "" : ", ") + argumentText(pt, arg, at);
         ++position;
       }
-      if (callArgs.size() < f->params.size())
+      size_t provided = position - slot; // argument values emitted (pack expansions counted element by element)
+      if (provided < f->params.size())
       {
         // Parameters the call left out take their default arguments, evaluated at the call site
         // (the expression's literals belong to the callee's file; a `caller` location to this one).
@@ -2418,11 +2430,14 @@ namespace
         // (`ScrollBar(const Style* s = &Policy::defaultStyle)` with Policy = VerticalPolicy).
         ParsedFile* callerFile = currentFile;
         bool retyped = false;
-        for (size_t i = callArgs.size(); i < f->params.size(); ++i)
+        for (size_t i = provided; i < f->params.size(); ++i)
         {
           auto* pd = static_cast<ParamDecl*>(f->params[i]);
-          if (!pd->defaultValue || pd->isPack)
+          if (pd->isPack)
             break;
+          if (!pd->defaultValue)
+            unsupported(at, "a call to " + global.qualifiedName(f) + " without an argument for its parameter " +
+                              (pd->name != UINT32_MAX ? sym(pd->name) : std::to_string(i + 1)) + " (and the overload resolution let it through)");
           if (!retyped && !args.empty() && f != currentFunction)
           {
             global.retypeFor(f, args, classTy);
@@ -4262,6 +4277,19 @@ namespace
               statementTemps.push_back({addr, t});
             return {addr, t, sret.empty()};
           }
+          if (c->args.size() == 1 && isPackExpansion(c->args[0]))
+          {
+            // `T(forward<Args>(args)...)` with a scalar T: the pack's one element, re-typed for it.
+            Expr* pattern = static_cast<UnaryExpr*>(c->args[0])->operand;
+            size_t count = packElementCount(pattern, c);
+            if (count == 0)
+              return {t->kind == TyKind::Float ? "0.0" : t->kind == TyKind::Pointer ? "null" : "0", t};
+            if (count != 1)
+              unsupported(c, "a scalar built from a pack of several elements");
+            Value v;
+            forEachPackElement(pattern, c, [&](size_t) { v = convert(rvalue(pattern), t, c); });
+            return v;
+          }
           if (c->args.size() == 1)
             return convert(rvalue(c->args[0]), t, c);
           if (c->args.empty())
@@ -4545,6 +4573,8 @@ namespace
             // A non-type template parameter is a constant of the instantiation.
             std::optional<int64_t> v = evalConst(e);
             const Ty* t = e->ty ? types.stripRef(e->ty) : nullptr;
+            if (t && t->kind == TyKind::Value && t->inner)
+              t = t->inner;
             if (!v || !t || !t->isKnown())
               unsupported(e, "a template parameter whose value is not known here");
             return {t->kind == TyKind::Bool ? std::string(*v ? "true" : "false") : std::to_string(*v), t};
@@ -4718,6 +4748,20 @@ namespace
             statementTemps.push_back({addr, t});
             return {addr, t, true};
           }
+          if (c->args.size() == 1 && isPackExpansion(c->args[0]))
+          {
+            // `T(forward<Args>(args)...)` with a scalar T: the pack's one element, re-typed for it
+            // (so that `forward<Args>` means forward<that element>).
+            Expr* pattern = static_cast<UnaryExpr*>(c->args[0])->operand;
+            size_t count = packElementCount(pattern, e);
+            if (count == 0)
+              return {t->kind == TyKind::Float ? "0.0" : t->kind == TyKind::Pointer ? "null" : "0", t};
+            if (count != 1)
+              unsupported(e, "a scalar built from a pack of several elements");
+            Value v;
+            forEachPackElement(pattern, e, [&](size_t) { v = convert(rvalue(pattern), t, e); });
+            return v;
+          }
           if (c->args.size() == 1)
           {
             Expr* a = c->args[0];
@@ -4859,6 +4903,18 @@ namespace
             constructInto(r, t, n->args, e);
           else if (isLambda(t) && n->args.size() == 1)
             initializeFrom(r, t, n->args[0], e); // `new F(callable)` with F a lambda type: the closure, copied
+          else if (n->args.size() == 1 && isPackExpansion(n->args[0]))
+          {
+            // `new (p) T(forward<Args>(args)...)` with a scalar T: the pack's one element.
+            Expr* pattern = static_cast<UnaryExpr*>(n->args[0])->operand;
+            size_t count = packElementCount(pattern, e);
+            if (count == 0)
+              fn += "  store " + llType(t, e) + " zeroinitializer, ptr " + r + "\n";
+            else if (count != 1)
+              unsupported(e, "a scalar built from a pack of several elements");
+            else
+              forEachPackElement(pattern, e, [&](size_t) { store(rvalue(pattern), r, t, e); });
+          }
           else if (!n->args.empty())
           {
             Expr* a = n->args[0];

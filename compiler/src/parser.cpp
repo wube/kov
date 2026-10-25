@@ -3119,6 +3119,12 @@ namespace
         Expr* e = at(P::LBrace) ? parseBraceInit() : parseAssignment();
         if (accept(P::Ellipsis))
         {
+          UnaryExpr* u = node<UnaryExpr>(pos - 1);
+          u->operand = e;
+          u->op = uint32_t(P::Ellipsis);
+          u->isKeyword = false;
+          u->postfix = true;
+          e = u;
         }
         scratch.push_back(e);
         designators.push_back(designator);

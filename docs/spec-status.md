@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**92 pass, 38 pending, 0 failing, 0 fixed** (130 snippets, 1.7 s).
+**96 pass, 34 pending, 0 failing, 0 fixed** (130 snippets, 1.8 s).
 
 ## Language: statements, expressions, declarations
 
@@ -84,18 +84,17 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/alias_template_reference.kov` | an alias template producing a reference type | pending |  | `template<typename T> using Ref = RemoveReference<T>&;` gives a variable of unknown type; C:\kov\compiler\tests\spec\templates\alias_template_reference.kov:8: codegen does not support an assignment to an expression of unknown type yet (in @kov.main) |
 | `templates/class_template_outofline_members.kov` | members of a class template with a non-type parameter defined out of line | pending |  | `Ring<int, 3>::push` is referenced but never defined (link error); templates.class_template_outofline_members.exe.21.o : error LNK2019: unresolved external symbol Ring<int32, 3>::push(const int32&) referenced in function kov.main |
 | `templates/dependent_return_in_variadic_call.kov` | a call whose return type is dependent (typename T::Unit) used directly as a variadic argument | pending |  | println("{}", scaled(m)) is "passing a non-class to a class parameter"; storing the result in an int first works; C:\kov\compiler\tests\spec\templates\dependent_return_in_variadic_call.kov:8: codegen does not support passing a non-class to a class parameter yet (in @kov.main) |
-| `templates/enum_template_parameters.kov` | enum values as non-type template arguments | pending |  | comparing the parameter in the body fails (`M == Mode::Fast` has no type under the instantiation); C:\kov\compiler\tests\spec\templates\enum_template_parameters.kov:4: codegen does not support the type 0 of BinaryExpr yet (in @"modeName<0>()", requested by @kov.main) |
-| `templates/nested_template_instantiation.kov` | a class template instantiated with another instantiation of itself (Stack<Stack<int>>) through a variadic push | pending |  | pushing into the inner stack is rejected ("passing a non-class to a class parameter" / int&& parameter); C:\kov\stdlib\core\Vector.kov:10: codegen does not support the type int32& of FunctionDecl yet (in @"Vector<int32>::emplace_back<int32&>(int32&)", requested by @"Stack<int32>::push<int32&>(int32&)") |
+| `templates/nested_template_instantiation.kov` | a class template instantiated with another instantiation of itself (Stack<Stack<int>>) through a variadic push | pending |  | `nested.push()` with an empty pack picks emplace_back(const T&) and emits a call without its argument (malformed IR); C:\kov\compiler\tests\spec\templates\nested_template_instantiation.kov:7: codegen does not support a call to Vector::emplace_back without an argument for its parameter value (and the overload resolution let it through) yet (in @"Stack<Stack<int32>>::push<>()", requested by @kov.main) |
 | `templates/requires_clauses.kov` | constrained templates (requires clauses) | pending | 1274 requires/concept uses in 609 files | requires clauses are parsed but not enforced (the first overload is taken for both calls); concepts are not implemented; line 1: got `42 3`, expected `42 not integral` |
 | `templates/sfinae_enable_if.kov` | enable_if-style overload selection | pending | 1 use (Factorio uses requires clauses instead) | EnableIf substitution failure does not remove the overload; C:\kov\compiler\tests\spec\templates\sfinae_enable_if.kov:8: codegen does not support a call to kind whose template arguments could not be deduced yet (in @kov.main) |
 | `templates/template_template_parameters.kov` | template template parameters | pending |  | template template parameters are not implemented; C:\kov\compiler\tests\spec\templates\template_template_parameters.kov:10: codegen does not support a call to countAll whose template arguments could not be deduced yet (in @kov.main) |
-| `templates/variadic_recursion.kov` | the recursive variadic pattern: f(T first, Rest... rest) calling f(rest...) down to a non-template base case | pending |  | the recursive call's template arguments are not deduced inside the instantiation; C:\kov\compiler\tests\spec\templates\variadic_recursion.kov:4: codegen does not support a call to sum whose template arguments could not be deduced yet (in @"sum<int32, int32, int32, int32>(int32, int32, int32, int32)", requested by @kov.main) |
 | `templates/alias_templates_traits.kov` | type traits in if constexpr (isPointer, isSame) inside a deduced function template | pass | 169 type trait uses in 77 files |  |
 | `templates/class_template_static_members.kov` | a static data member of a class template is one object per instantiation | pass |  |  |
 | `templates/class_templates.kov` | class templates: members, nested typedefs, static constexpr functions, several instantiations | pass |  |  |
 | `templates/ctad.kov` | class template argument deduction from constructor arguments | pass |  |  |
 | `templates/dependent_member_typedef.kov` | a member typedef of a dependent instantiation as a return type (typename Vector<T>::iterator) | pass |  |  |
 | `templates/dependent_names.kov` | dependent names: T::Type, T::constant, this-> in templates, a dependent return type | pass |  |  |
+| `templates/enum_template_parameters.kov` | enum values as non-type template arguments | pass |  |  |
 | `templates/forwarding_conversions.kov` | forwarding a string literal through a variadic member template into a String constructor (emplace_back("x")) | pass |  |  |
 | `templates/function_templates.kov` | function templates: deduction, explicit arguments, overloading with non-templates, full specialisation | pass | 592 full specialisations in 61 files |  |
 | `templates/member_template_in_class_template.kov` | a member function template of a class template converting its argument to T (names.add("a") into Stack<String>) | pass |  |  |
@@ -104,6 +103,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/partial_specialisation.kov` | partial specialisation of class templates | pass | 8 uses in 5 files |  |
 | `templates/several_instantiations_in_one_call.kov` | three instantiations of one function template as arguments of a single variadic call | pass |  |  |
 | `templates/traits_as_values.kov` | type traits used as values (bool isSame<A, B> in an expression, not only in if constexpr) | pass |  |  |
+| `templates/variadic_recursion.kov` | the recursive variadic pattern: f(T first, Rest... rest) calling f(rest...) down to a non-template base case | pass |  |  |
 | `templates/variadic_templates.kov` | variadic templates: packs, sizeof..., forwarding, fold expressions | pass | 175 variadic templates in 59 files, 110 fold expressions, 218 std::forward |  |
 
 ## Standard library (what std:: converts to)
@@ -111,17 +111,16 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
 | `library/array_span.kov` | Array<T, N> and Span<T> (std::array, std::span) | pending | 372 std::array uses in 193 files, 147 std::span | Array and Span are not in the library yet; C:\kov\compiler\tests\spec\library\array_span.kov:7: codegen does not support a local of unknown type (a) yet (in @kov.main) |
-| `library/emplace_scalar_rvalue.kov` | emplace_back of a scalar rvalue (v.emplace_back(7)) through a forwarding pack | pending | emplace_back with literal arguments is everywhere | the instantiation emplace_back<int>(int&&) is rejected ("the type int32&& of FunctionDecl"); C:\kov\stdlib\core\Vector.kov:10: codegen does not support the type int32&& of FunctionDecl yet (in @"Vector<int32>::emplace_back<int32>(int32&&)", requested by @kov.main) |
 | `library/initializer_list_constructor.kov` | a constructor taking InitializerList, called with a brace list | pending |  | `Poly p({1, 2, 3, 4})` looks for a four-argument constructor; C:\kov\compiler\tests\spec\library\initializer_list_constructor.kov:6: codegen does not support a constructor of Poly taking 4 arguments yet (in @kov.main) |
 | `library/ordered_map_set.kov` | ordered Map and Set (std::map/std::set): iteration in key order, lower bound | pending | 827 std::map uses in 422 files, 641 std::set in 293 files | Set exists (Containers.kov) but there is no ordered Map in the library yet; C:\kov\compiler\tests\spec\library\ordered_map_set.kov:6: codegen does not support a local of unknown type (m) yet (in @kov.main) |
 | `library/pair_tuple.kov` | Pair (std::pair) and makePair; Tuple | pending | 354 pair uses in 199 files, 51 tuple | Tuple with get<N> is not in the library yet; C:\kov\compiler\tests\spec\library\pair_tuple.kov:8: codegen does not support a local of unknown type (t) yet (in @kov.main) |
 | `library/shared_ptr.kov` | SharedPtr and WeakPtr (std::shared_ptr/weak_ptr) | pending | 99 shared_ptr uses in 50 files, 8 weak_ptr | SharedPtr and WeakPtr are not in the library yet; C:\kov\compiler\tests\spec\library\shared_ptr.kov:7: codegen does not support a local of unknown type (a) yet (in @kov.main) |
-| `library/sort_default_order.kov` | ::sort by operator< (no comparator) | pending |  | the recursive call inside sort<T> fails deduction ("a call to sort whose template arguments could not be deduced"); C:\kov\stdlib\core\Algorithm.kov:240: codegen does not support a call to sort whose template arguments could not be deduced yet (in @"sort<int32>(int32*, int32*)", requested by @kov.main) |
 | `library/threads_atomics.kov` | Thread, Mutex, LockGuard, Atomic (std::thread, std::mutex, std::atomic) | pending | 78 std::thread, 479 mutex/lock_guard, 47 std::atomic | no threading primitives in the library yet; C:\kov\compiler\tests\spec\library\threads_atomics.kov:6: codegen does not support a local of unknown type (counter) yet (in @kov.main) |
 | `library/variant.kov` | Variant (std::variant) | pending | 24 uses in 15 files (Kov's answer is the typed union, design.md 8.5) | Variant is not in the library; typed unions (`union enum`) are the planned replacement; C:\kov\compiler\tests\spec\library\variant.kov:6: codegen does not support a local of unknown type (v) yet (in @kov.main) |
 | `library/vector_brace_init.kov` | Vector from a brace list | pending | common for constant tables (std::vector<T> v = {...}) | Vector has no InitializerList constructor yet; C:\kov\compiler\tests\spec\library\vector_brace_init.kov:6: codegen does not support a constructor of Vector taking 4 arguments yet (in @kov.main) |
 | `library/algorithms.kov` | algorithms (std::sort, find_if, count_if, all_of/any_of, reverse, lower_bound, remove_if, min/max/clamp) | pass | 466 algorithm calls in 247 files |  |
 | `library/containers_deque_queue.kov` | Deque and Queue (std::deque, std::queue): push at both ends, pop, front/back | pass | 116 deque uses in 68 files |  |
+| `library/emplace_scalar_rvalue.kov` | emplace_back of a scalar rvalue (v.emplace_back(7)) through a forwarding pack | pass | emplace_back with literal arguments is everywhere |  |
 | `library/exceptions_std.kov` | the standard exception classes (Exception, RuntimeError, LogicError, OutOfRange, InvalidArgument) | pass | 410 std::exception / runtime_error uses in 216 files |  |
 | `library/format_print.kov` | format, print, println, toString for the common types | pass |  |  |
 | `library/function.kov` | Function (std::function): lambdas with captures, function pointers, copies, emptiness, callbacks in containers | pass | 1470 uses in 589 files |  |
@@ -130,6 +129,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `library/limits_math.kov` | Limits (numeric_limits) and math functions (abs, sqrt, floor, ceil, round, pow, isnan) | pass | 631 numeric_limits uses in 279 files |  |
 | `library/memory_c.kov` | memcpy, memset, memcmp, strlen, malloc/free through the library's C declarations | pass | 164 mem* calls in 84 files, 48 str* calls |  |
 | `library/optional.kov` | Optional (std::optional): value, hasValue, nullopt, assignment, comparison, valueOr | pass | 1587 uses in 658 files |  |
+| `library/sort_default_order.kov` | ::sort by operator< (no comparator) | pass |  |  |
 | `library/string.kov` | String (std::string): building, comparison, search, substrings, c_str, iteration | pass | 11491 uses in 2434 files |  |
 | `library/string_view.kov` | StringView (std::string_view): from literals and Strings, substr, find, prefix/suffix, comparison | pass | 1744 uses in 527 files |  |
 | `library/time_chrono.kov` | Duration, TimePoint, Clock (std::chrono) | pass | 394 chrono uses in 97 files |  |

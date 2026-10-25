@@ -1,5 +1,5 @@
 // spec: a class template instantiated with another instantiation of itself (Stack<Stack<int>>) through a variadic push
-// pending: pushing into the inner stack is rejected ("passing a non-class to a class parameter" / int&& parameter)
+// pending: `nested.push()` with an empty pack picks emplace_back(const T&) and emits a call without its argument (malformed IR)
 template<typename T>
 struct Stack
 {

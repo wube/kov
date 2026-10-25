@@ -1,5 +1,4 @@
 // spec: ::sort by operator< (no comparator)
-// pending: the recursive call inside sort<T> fails deduction ("a call to sort whose template arguments could not be deduced")
 int main()
 {
   Vector<int> v;
