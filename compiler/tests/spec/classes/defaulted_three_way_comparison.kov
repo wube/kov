@@ -1,6 +1,5 @@
 // spec: `operator<=>(const T&) const = default` compares the members in order and gives the class <, >, <=, >= and ==
 // factorio: 58 three-way comparisons, 45 of them defaulted (FixedPointNumber, TilePosition, ChunkPosition and the other positions)
-// pending: no three-way comparison yet
 struct Fixed
 {
   int value;

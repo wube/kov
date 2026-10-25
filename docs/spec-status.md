@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**158 pass, 2 pending, 0 failing, 0 fixed** (160 snippets, 2.7 s).
+**167 pass, 4 pending, 0 failing, 0 fixed** (171 snippets, 2.8 s).
 
 ## Language: statements, expressions, declarations
 
@@ -51,6 +51,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `language/structured_bindings.kov` | structured bindings | pass | 459 uses in 204 files |  |
 | `language/structured_bindings_range_for.kov` | structured bindings as the loop variable of a range for: `for (auto& [key, value] : pairs)`, over a Vector and over an InitializerList of a class template's own alias | pass |  |  |
 | `language/switch.kov` | switch with fallthrough and default | pass | 1682 uses in 697 files |  |
+| `language/switch_on_class_with_conversion.kov` | `switch` on an object of a class with a conversion to an enum or integer switches on the converted value | pass |  |  |
 | `language/switch_through_local_alias.kov` | case labels named through a local alias of a nested enum: `using Kind = Token::Special; case Kind::Unary:` | pass |  |  |
 | `language/temporaries_in_branches.kov` | a temporary made inside one branch of `?:`, or inside the right operand of `&&` / `||`, is destroyed only when that branch ran, and before the expression's value is used | pass |  |  |
 | `language/ternary_comma_sizeof.kov` | conditional operator with objects, comma operator, sizeof of expressions | pass |  |  |
@@ -70,12 +71,15 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `classes/constructors.kov` | constructors: default, converting, explicit, copy, move, delegating, = default, = delete | pass | 2065 `= default`, 904 `= delete`, 1100 delegating, 2035 explicit |  |
 | `classes/conversion_operators.kov` | two conversion operators on one class (operator bool and operator String) | pass | 376 conversion operators in 292 files |  |
 | `classes/copy_semantics.kov` | copying and moving objects with owned resources, assignment, self-contained counts | pass |  |  |
+| `classes/crtp_base_members.kov` | members of a base instantiated with the derived class itself (`struct Vec : Vector2<double, Vec>`) have the instantiation's types wherever the derived object is used | pass |  |  |
+| `classes/defaulted_three_way_comparison.kov` | `operator<=>(const T&) const = default` compares the members in order and gives the class <, >, <=, >= and == | pass | 58 three-way comparisons, 45 of them defaulted (FixedPointNumber, TilePosition, ChunkPosition and the other positions) |  |
 | `classes/destructors_raii.kov` | destructor order: scope exit, temporaries, members, early return | pass |  |  |
 | `classes/dynamic_cast.kov` | dynamic_cast | pass | 443 uses in 244 files |  |
 | `classes/explicit_destructor_call.kov` | an explicit destructor call names the type directly, through an alias, or with the class template's arguments (`list.~Vector<int>()`) | pass |  |  |
 | `classes/friend_declarations.kov` | `friend Name;` names a friend class without the keyword; friend declarations of classes and functions declare no member and no nested class | pass |  |  |
 | `classes/friends.kov` | friend functions and friend classes | pass | 459 uses in 269 files |  |
 | `classes/inherited_constructors.kov` | inherited constructors (using Base::Base;) in a class with members of its own | pass | Agui's Filler, Frame and others |  |
+| `classes/inherited_constructors_with_own.kov` | `using Base::Base;` inherits the base's constructors next to the class's own ones, the default constructor included; the class's own constructors are preferred for the arguments they take | pass |  |  |
 | `classes/interfaces.kov` | abstract interfaces implemented by several classes, held through base pointers in containers | pass |  |  |
 | `classes/member_function_pointers.kov` | pointers to member functions | pass | 3 uses in 3 files |  |
 | `classes/member_pointers.kov` | pointers to data members | pass |  |  |
@@ -84,6 +88,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `classes/nested_types.kov` | nested classes and enums, access through the outer class | pass | 4603 nested classes in 2847 files |  |
 | `classes/operator_overloading.kov` | operator overloading: arithmetic, comparison, subscript, call, unary, increment, conversions | pass | 2940 uses in 982 files, 376 conversion operators |  |
 | `classes/static_members.kov` | static data members (in-class and out-of-line definitions), static functions, static const | pass | 1174 static const members in 719 files |  |
+| `classes/three_way_comparison_user_defined.kov` | a user-written operator<=> returning strong_ordering orders the class (`a < b` is `(a <=> b) < 0`), `x <=> y` of scalars is a strong_ordering, and a defaulted operator<=> uses the members' own | pass |  |  |
 | `classes/virtual_bases.kov` | virtual inheritance (diamond): one shared base subobject | pass |  |  |
 | `classes/virtual_dispatch.kov` | virtual functions, override, pure virtual, virtual destructor, base calls | pass | 16323 override, 1158 pure virtual |  |
 
@@ -92,6 +97,8 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
 | `templates/deduction_guides.kov` | deduction guides and the overload-set idiom: `template<typename... Ts> Overload(Ts...) -> Overload<Ts...>;` with `using Ts::operator()...;` | pending |  | deduction guides and pack using-declarations are not parsed; C:\kov\compiler\tests\spec\templates\deduction_guides.kov:8: codegen does not support a local of unknown type (o) yet (in @kov.main) |
+| `templates/is_constructible_trait.kov` | `isConstructible<T, Args...>` is true when T can be built from Args (what std::is_constructible_v converts to), in `if constexpr` and in variable templates | pending |  | no isConstructible yet; C:\kov\compiler\tests\spec\templates\is_constructible_trait.kov:25: codegen does not support a parameter of unknown type (args: <unknown>) yet (in @kov.main) |
+| `templates/requires_in_if_constexpr.kov` | a requires-expression is a constant: true when its body is valid for the types at hand, so `if constexpr (requires { t.save(); })` picks the branch | pending |  | no requires-expressions in bodies yet; C:\kov\compiler\tests\spec\templates\requires_in_if_constexpr.kov:9: codegen does not support the expression kind RequiresExpr yet (in @"save<Saver>(const Saver&)", requested by @kov.main) |
 | `templates/alias_template_conditional.kov` | an alias template over Conditional with a bool parameter (Conditional<Small, int16_t, int64_t>) | pass |  |  |
 | `templates/alias_template_member_access.kov` | an alias template of a class template (template<typename T> using Ptr = UniquePtr<T>;) used as a variable type | pass | 7 alias templates in 6 files |  |
 | `templates/alias_template_nested_args.kov` | an alias template whose target nests the parameter in another template argument (Vector<Pair<T, T>>) | pass |  |  |
@@ -113,6 +120,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/enum_through_parameter.kov` | a Kov enum reached through a template parameter: E::values, E::count, value.str() | pass |  |  |
 | `templates/forwarding_conversions.kov` | forwarding a string literal through a variadic member template into a String constructor (emplace_back("x")) | pass |  |  |
 | `templates/function_templates.kov` | function templates: deduction, explicit arguments, overloading with non-templates, full specialisation | pass | 592 full specialisations in 61 files |  |
+| `templates/member_alias_of_instantiation_cast.kov` | a member alias of a class template instantiation, reached through an alias of the instantiation, names the substituted type (`Table::value_type(65)`) | pass |  |  |
 | `templates/member_template_in_class_template.kov` | a member function template of a class template converting its argument to T (names.add("a") into Stack<String>) | pass |  |  |
 | `templates/member_templates_explicit.kov` | member function templates called with explicit arguments, static member templates | pass |  |  |
 | `templates/nested_template_instantiation.kov` | a class template instantiated with another instantiation of itself (Stack<Stack<int>>) through a variadic push | pass |  |  |
@@ -122,6 +130,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/requires_clauses.kov` | constrained templates (requires clauses) | pass | 1274 requires/concept uses in 609 files |  |
 | `templates/several_instantiations_in_one_call.kov` | three instantiations of one function template as arguments of a single variadic call | pass |  |  |
 | `templates/sfinae_enable_if.kov` | enable_if-style overload selection | pass | 1 use (Factorio uses requires clauses instead) |  |
+| `templates/static_constexpr_member_in_instantiation.kov` | a static constexpr member of a class template is computed with the instantiation's arguments (`T(1) << Bits`) wherever it is used | pass |  |  |
 | `templates/static_table_lookup_helper.kov` | a class's static const table keyed by StringView with a nested value struct, defined out of line from a brace list, read through a helper template with an `auto*` return | pass |  |  |
 | `templates/template_template_parameters.kov` | template template parameters | pass |  |  |
 | `templates/traits_as_values.kov` | type traits used as values (bool isSame<A, B> in an expression, not only in if constexpr) | pass |  |  |
@@ -154,10 +163,12 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `library/static_local_flat_table.kov` | a static local of a class template type keyed by a nested enum, initialised from a brace list of pairs, looked up with find | pass |  |  |
 | `library/static_local_in_method.kov` | a static local table in a non-static method, keyed by another class's nested enum, with the method reading members too | pass |  |  |
 | `library/string.kov` | String (std::string): building, comparison, search, substrings, c_str, iteration | pass | 11491 uses in 2434 files |  |
+| `library/string_fill_and_count_forms.kov` | String(count, char), append(count, char), insert(index, count, char) and append(other, index, count): the std::string forms that build from repeated characters or a part of another string | pass |  |  |
 | `library/string_view.kov` | StringView (std::string_view): from literals and Strings, substr, find, prefix/suffix, comparison | pass | 1744 uses in 527 files |  |
 | `library/threads_atomics.kov` | Thread, Mutex, LockGuard, Atomic (std::thread, std::mutex, std::atomic) | pass | 78 std::thread, 479 mutex/lock_guard, 47 std::atomic |  |
 | `library/time_chrono.kov` | Duration, TimePoint, Clock (std::chrono) | pass | 394 chrono uses in 97 files |  |
 | `library/to_string_parse.kov` | toString and parsing numbers (std::to_string, strtol family) | pass | 302 to_string uses in 123 files |  |
+| `library/tuple_get.kov` | `get<I>(tuple)` reads element I of a Tuple (what std::get converts to), including as an index or an argument | pass |  |  |
 | `library/unique_ptr.kov` | UniquePtr (std::unique_ptr): makeUnique, move, release/reset, polymorphic delete, UniqueArray | pass | 3820 uses in 1049 files |  |
 | `library/vector.kov` | Vector (std::vector): push/emplace, index, erase, insert, iteration, nesting, moves, sort | pass | 5225 uses in 1662 files |  |
 | `library/vector_brace_init.kov` | Vector from a brace list | pass | common for constant tables (std::vector<T> v = {...}) |  |

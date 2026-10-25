@@ -901,9 +901,9 @@ namespace
       if (hasUserConstructors(c))
       {
         FunctionDecl* ctor = findConstructor(t, {}, at);
-        if (!ctor)
+        if (!ctor && !inheritedConstructorBase(c))
           unsupported(at, "default construction of " + global.qualifiedName(c) + ", which has no default constructor");
-        if (!(ctor->flags & DF_Default))
+        if (ctor && !(ctor->flags & DF_Default))
         {
           // Through callFunction: `Style(const Style* parent = nullptr)` wants its default argument.
           TemplateArgs args = global.classArgsOf(canonicalClass(t, at));
@@ -1056,7 +1056,10 @@ namespace
       }
       Span<uint32_t> designators = pendingDesignators;
       pendingDesignators = {};
-      if (!hasUserConstructors(c))
+      // `using Base::Base;`: the base's constructors, when none of the class's own takes the
+      // arguments (a copy stays a copy).
+      bool copyLike = args.size() == 1 && args[0]->ty && isClass(types.stripRef(args[0]->ty)) && classKey(types.stripRef(args[0]->ty)) == classKey(t);
+      if (!copyLike && (!hasUserConstructors(c) || !findConstructor(t, argTypesOf(args), at)))
         if (std::optional<QualifiedName> base = inheritedConstructorBase(c))
         {
           // Inherited constructors: the arguments build that base, everything else is default.
@@ -2911,6 +2914,19 @@ namespace
           fn += "  " + r + " = xor i1 " + eq.text + ", true\n";
           return {r, types.boolType(), false};
         }
+        if (op == P::Spaceship)
+        {
+          // `operator<=>(const T&) const = default`: the order of the bases and members, into the
+          // strong_ordering result slot (or returned as an int without the library).
+          Value order = memberwiseOrder(thisArg, src, t, at);
+          if (sretAddr.empty())
+            return convert(order, types.intType(), at);
+          const Ty* ot = orderingType();
+          if (!ot)
+            unsupported(at, "a defaulted operator<=> without the library's strong_ordering");
+          fn += "  store i8 " + order.text + ", ptr " + gep(structFor(ot, at).name, sretAddr, 0) + "\n";
+          return {"", types.voidType(), false};
+        }
       }
       unsupported(at, "the defaulted function " + global.qualifiedName(f));
     }
@@ -3794,6 +3810,27 @@ namespace
       return fallback;
     }
 
+    // A class's (non-explicit) conversion operator to an enum or an integer, or null: what a
+    // switch on the object switches on.
+    FunctionDecl* integralConversionOperator(const Ty* from, Node* at)
+    {
+      ClassDecl* c = classDef(from->decl, at);
+      TemplateArgs args = global.classArgsOf(canonicalClass(from, at));
+      ArgsScope scope(*this, &args);
+      for (Decl* m : c->members)
+      {
+        if (m->kind != NodeKind::FunctionDecl || !(m->flags & DF_Conversion) || (m->flags & DF_Explicit))
+          continue;
+        const Ty* ft = declType(m);
+        if (!ft || ft->kind != TyKind::Function || !ft->inner || !ft->inner->isKnown())
+          continue;
+        const Ty* ret = types.unqualified(types.stripRef(ft->inner));
+        if (ret->kind == TyKind::Enum || ret->kind == TyKind::Int || ret->kind == TyKind::Char || ret->kind == TyKind::Bool)
+          return static_cast<FunctionDecl*>(m);
+      }
+      return nullptr;
+    }
+
     Value convert(Value v, const Ty* to, Node* at)
     {
       const Ty* from = v.ty;
@@ -4447,6 +4484,8 @@ namespace
       bool constructed = false;
       const Ty* st = types.stripRef(t);
       VariableDecl* def = variableDefinition(v); // `static double scale;` in the class, `double Gui::scale = 1.0;` outside
+      if (classTy && def->init)
+        global.retypeInitializerFor(def, classArgs); // `static constexpr T ValuesPerOne = T(1) << Bits`: typed for this instantiation
       ParsedFile* saved = currentFile;
       currentFile = def->file;
       if (t->isReference())
@@ -5685,6 +5724,8 @@ namespace
             Expr* args[2] = {b->lhs, b->rhs};
             return callRvalue(callFunction(f, {}, nullptr, "", "", Span<Expr*>{args, 2}, b), b);
           }
+        if (std::optional<Value> rewritten = rewrittenComparison(b, op, lt))
+          return *rewritten;
         if (!isClass(lt))
           unsupported(b, "an operator with a class on the right that no function defines");
         Value l = rvalue(b->lhs);
@@ -5747,8 +5788,174 @@ namespace
       {
         case P::EqEq: case P::NotEq: case P::Less: case P::LessEq: case P::Greater: case P::GreaterEq:
           return compare(op, l, r, b);
+        case P::Spaceship:
+          return orderingObject(orderOfScalars(l, r, b), b);
         default:
           return arithmetic(op, l, r, b);
+      }
+    }
+
+    // --- three-way comparison ---
+
+    // The library's strong_ordering (what `a <=> b` yields), or null without the library.
+    const Ty* orderingType()
+    {
+      Decl* d = global.strongOrderingDecl();
+      return d ? types.classType(d, {}) : nullptr;
+    }
+
+    // The order of two scalars as an i8: -1, 0 or 1.
+    Value orderOfScalars(Value l, Value r, Node* at)
+    {
+      Value less = compare(P::Less, l, r, at);
+      Value greater = compare(P::Greater, l, r, at);
+      std::string g = newTemp(), res = newTemp();
+      fn += "  " + g + " = select i1 " + greater.text + ", i8 1, i8 0\n";
+      fn += "  " + res + " = select i1 " + less.text + ", i8 -1, i8 " + g + "\n";
+      return {res, types.intType(8)};
+    }
+
+    // An order (i8) as the value of `a <=> b`: a strong_ordering object, or an int without the library.
+    Value orderingObject(Value order, Node* at)
+    {
+      const Ty* ot = orderingType();
+      if (!ot)
+        return convert(order, types.intType(), at);
+      std::string slot = newObjectSlot(ot, at);
+      fn += "  store i8 " + order.text + ", ptr " + gep(structFor(ot, at).name, slot, 0) + "\n";
+      return {slot, ot, true};
+    }
+
+    // The i8 inside the value of `a <=> b`.
+    Value orderOf(Value ordering, Node* at)
+    {
+      const Ty* t = types.stripRef(ordering.ty);
+      if (isClass(t))
+        return load(gep(structFor(t, at).name, ordering.text, 0), types.intType(8), at);
+      return convert(ordering, types.intType(8), at);
+    }
+
+    // `a <=> b` of two objects at those addresses: the class's operator<=> (memberwise when
+    // defaulted); the order as an i8.
+    Value orderOfObjects(const std::string& a, const std::string& b, const Ty* t, Node* at)
+    {
+      const Ty* foundIn = nullptr;
+      std::vector<const Ty*> argTypes{types.lref(types.qualified(t, true, false))};
+      FunctionDecl* op = findMemberFunction(t, "operator<=>", argTypes, t, at, &foundIn);
+      if (!op)
+        unsupported(at, global.qualifiedName(t->decl) + " has no operator<=> (a defaulted one orders by the members)");
+      if (op->flags & DF_Default)
+        return memberwiseOrder(a, b, t, at);
+      TemplateArgs args = global.classArgsOf(foundIn);
+      Signature s;
+      {
+        ArgsScope scope(*this, &args);
+        s = signatureOf(op);
+      }
+      std::string name = useFunction(op, args, foundIn);
+      std::string thisArg = a;
+      if (canonicalClass(t, at) != foundIn)
+        baseAddress(t, foundIn, a, thisArg, at);
+      if (s.returnType == "void")
+      {
+        const Ty* ot = orderingType();
+        if (!ot)
+          unsupported(at, "operator<=> returning an object without the library's strong_ordering");
+        std::string tmp = newObjectSlot(ot, at); // the result object: this, sret, other
+        emitCall("", "void " + name + "(ptr " + thisArg + ", ptr " + tmp + ", ptr " + b + ")");
+        return orderOf(Value{tmp, ot, true}, at);
+      }
+      std::string r = newTemp();
+      emitCall(r + " = ", s.returnType + " " + name + "(ptr " + thisArg + ", ptr " + b + ")");
+      return convert(Value{r, types.intType(32), false}, types.intType(8), at);
+    }
+
+    // The order of two objects base by base and member by member: the first that differs decides.
+    Value memberwiseOrder(const std::string& a, const std::string& b, const Ty* t, Node* at)
+    {
+      StructInfo info = structFor(t, at);
+      std::string slot = "%order" + std::to_string(temp++);
+      allocas += "  " + slot + " = alloca i8\n";
+      fn += "  store i8 0, ptr " + slot + "\n";
+      std::string done = newLabel("order.done");
+      auto part = [&](Value order)
+      {
+        fn += "  store i8 " + order.text + ", ptr " + slot + "\n";
+        std::string ne = newTemp(), next = newLabel("order.next");
+        fn += "  " + ne + " = icmp ne i8 " + order.text + ", 0\n";
+        fn += "  br i1 " + ne + ", label %" + done + ", label %" + next + "\n";
+        blockTerminated = true;
+        startBlock(next);
+      };
+      for (auto& [baseDef, index] : info.bases)
+        part(orderOfObjects(gep(info.name, a, index), gep(info.name, b, index), info.fieldTypes[index], at));
+      for (Decl* d : info.fieldDecls)
+      {
+        uint32_t index = info.fieldIndex[d];
+        const Ty* ft = info.fieldTypes[index];
+        std::string fa = gep(info.name, a, index), fb = gep(info.name, b, index);
+        if (isClass(ft))
+          part(orderOfObjects(fa, fb, ft, at));
+        else if (ft->kind == TyKind::Array)
+          unsupported(at, "a defaulted comparison of an array member");
+        else
+          part(orderOfScalars(load(fa, ft, at), load(fb, ft, at), at));
+      }
+      emitBranch(done);
+      startBlock(done);
+      return load(slot, types.intType(8), at);
+    }
+
+    // The comparisons C++ rewrites when the class defines no operator for them: `a != b` as
+    // `!(a == b)`, `a < b` and the other orderings as `(a <=> b) < 0`, and `==` of a class whose
+    // operator<=> is defaulted as `(a <=> b) == 0`. Null when the class has none of those either.
+    std::optional<Value> rewrittenComparison(BinaryExpr* b, P op, const Ty* lt)
+    {
+      Expr* rhsExpr = b->rhs;
+      Span<Expr*> one{&rhsExpr, 1};
+      auto call = [&](P which) -> std::optional<Value>
+      {
+        std::string name = operatorName(which);
+        const Ty* foundIn = nullptr;
+        if (isClass(lt) && findMemberFunction(types.unqualified(lt), name, argTypesOf(one), types.unqualified(lt), b, &foundIn, true))
+          return callRvalue(operatorCall(rvalue(b->lhs), name, one, b, true), b);
+        if (b->lhs->ty && b->rhs && b->rhs->ty && b->lhs->ty->isKnown() && b->rhs->ty->isKnown())
+          if (FunctionDecl* f = global.findFreeOperator(uint32_t(which), b->lhs->ty, b->rhs->ty, currentFunction); f && f->templateParams.empty())
+          {
+            Expr* args[2] = {b->lhs, b->rhs};
+            return callRvalue(callFunction(f, {}, nullptr, "", "", Span<Expr*>{args, 2}, b), b);
+          }
+        return std::nullopt;
+      };
+      auto threeWayDefaulted = [&]()
+      {
+        const Ty* foundIn = nullptr;
+        FunctionDecl* f = isClass(lt) ? findMemberFunction(types.unqualified(lt), "operator<=>", argTypesOf(one), types.unqualified(lt), b, &foundIn, true) : nullptr;
+        return f && (f->flags & DF_Default);
+      };
+      auto orderCompare = [&](P cmp) -> std::optional<Value>
+      {
+        std::optional<Value> ordering = call(P::Spaceship);
+        if (!ordering)
+          return std::nullopt;
+        return compare(cmp, orderOf(*ordering, b), Value{"0", types.intType(8)}, b);
+      };
+      switch (op)
+      {
+        case P::NotEq:
+          if (std::optional<Value> eq = call(P::EqEq))
+          {
+            std::string r = newTemp();
+            fn += "  " + r + " = xor i1 " + convert(*eq, types.boolType(), b).text + ", true\n";
+            return Value{r, types.boolType()};
+          }
+          return threeWayDefaulted() ? orderCompare(P::NotEq) : std::nullopt;
+        case P::EqEq:
+          return threeWayDefaulted() ? orderCompare(P::EqEq) : std::nullopt;
+        case P::Less: case P::Greater: case P::LessEq: case P::GreaterEq:
+          return orderCompare(op);
+        default:
+          return std::nullopt;
       }
     }
 
@@ -7233,6 +7440,16 @@ namespace
         cond = Value{loadTag(c, cond.ty, cond.text, sw), tagType(c), false};
         switchedTy = cond.ty;
       }
+      else if (isClass(cond.ty))
+      {
+        // `switch (direction)` on an object: its conversion to an enum or integer (Direction's `operator Enum()`).
+        FunctionDecl* op = integralConversionOperator(cond.ty, sw);
+        if (!op)
+          unsupported(sw, "a switch on a class without a conversion to an enum or an integer");
+        TemplateArgs args = global.classArgsOf(canonicalClass(cond.ty, sw));
+        cond = callRvalue(callFunction(op, args, canonicalClass(cond.ty, sw), cond.text, "", {}, sw), sw);
+        switchedTy = cond.ty;
+      }
       const Ty* ct = cond.ty->kind == TyKind::Enum ? enumUnderlying(cond.ty->decl) : cond.ty;
       if (ct->kind != TyKind::Int && ct->kind != TyKind::Char && ct->kind != TyKind::Bool)
         unsupported(sw, "a switch on a non-integer");
@@ -7450,8 +7667,8 @@ namespace
           Value r = defaultedOperation(f, types.unqualified(types.stripRef(currentClassTy)), thisPointer(f), source, f);
           destroyTemps();
           popScope();
-          if (currentReturn->kind == TyKind::Void)
-            fn += "  ret void\n";
+          if (currentReturn->kind == TyKind::Void || isClass(currentReturn))
+            fn += "  ret void\n"; // a class result (strong_ordering) is in the sret slot
           else if (currentReturn->isReference())
             fn += "  ret ptr " + r.text + "\n";
           else

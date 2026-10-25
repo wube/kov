@@ -1577,6 +1577,22 @@ struct GlobalScope::Impl
       return l.decl;
     return nullptr;
   }
+  uint32_t strongOrderingSymbol_ = UINT32_MAX;
+  Decl* strongOrderingDecl()
+  {
+    if (strongOrderingSymbol_ == UINT32_MAX)
+      strongOrderingSymbol_ = symbols.intern("strong_ordering");
+    Lookup l;
+    if (lookupInScope(&root, strongOrderingSymbol_, l, 0) && l.scope && l.scope->owner)
+      return l.scope->owner;
+    return nullptr;
+  }
+  // What `a <=> b` yields: the library's strong_ordering, or int without the library.
+  const Ty* orderingType()
+  {
+    Decl* d = strongOrderingDecl();
+    return d ? types.classType(d, {}) : types.intType();
+  }
   uint32_t typeInfoSymbol_ = UINT32_MAX;
   Decl* typeInfoDecl()
   {
@@ -3404,6 +3420,38 @@ struct GlobalScope::Impl
     }
 
     // Looks a member up in the class of `objectTy` (after stripping references and const).
+    // The instantiation a member found in scope `in` belongs to, seen through an object of type t
+    // whose class scope is cls: t itself, or the base (as written in cls, under t's substitution)
+    // on the way to `in`. `v.x` with x declared in Vector2<T, V> and v a Vec: Vector2<double, Vec>.
+    const Ty* instantiationOfBase(const Ty* t, Scope* cls, Scope* in, int depth)
+    {
+      if (cls == in)
+        return t;
+      if (!cls || depth > 16 || cls->baseTypes.empty() || !cls->owner)
+        return nullptr;
+      Subst own = impl.substFor(t);
+      LocalStack params;
+      for (Decl* p : cls->templateParams)
+        params.push(static_cast<TemplateParamDecl*>(p)->name, p);
+      ParsedFile* file = cls->owner->file;
+      TypeContext ctx{cls->parent, &params, own.pairs.empty() ? nullptr : &own, file ? file->tokens : nullptr, file ? file->text : std::string_view()};
+      for (Type* b : cls->baseTypes)
+      {
+        const Ty* bt = impl.convertType(b, ctx, depth + 1);
+        if (!bt || bt->kind != TyKind::Class || !bt->decl)
+          continue;
+        Scope* bs = bt->decl->ownScope;
+        if (!bs)
+        {
+          Entry e{bt->decl, nullptr};
+          bs = impl.scopeOfEntry(e, 0);
+        }
+        if (const Ty* found = instantiationOfBase(bt, bs, in, depth + 1))
+          return found;
+      }
+      return nullptr;
+    }
+
     MemberResult memberOf(const Ty* objectTy, uint32_t symbol, const QualifiedName* name, uint32_t token, bool countMissing = true)
     {
       MemberResult r;
@@ -3488,9 +3536,13 @@ struct GlobalScope::Impl
       }
       r.decl = l.decl;
       r.overloads = l.overloads;
-      r.subst = impl.substFor(t);
+      const Ty* owner = t;
+      if (l.foundIn && l.foundIn != cls && l.foundIn->kind == ScopeKind::Class)
+        if (const Ty* base = instantiationOfBase(t, cls, l.foundIn, 0))
+          owner = base; // `v.x` with x declared in the base Vector2<T, V>: that base's instantiation binds T
+      r.subst = impl.substFor(owner);
       if (!r.subst.empty())
-        instantiateClass(types.unqualified(t));
+        instantiateClass(types.unqualified(owner));
       if (l.found == Found::Dependent)
       {
         r.type = types.param(l.decl);
@@ -3869,6 +3921,17 @@ struct GlobalScope::Impl
                   (d->kind == NodeKind::VariableDecl && (d->flags & DF_Typedef))))
         {
           ++stats.callsResolved; // a functional cast, `int64_t(x)` included when int64_t is an imported typedef
+          if (n->name.parts.size() > 1 && (d->kind == NodeKind::UsingAliasDecl || d->kind == NodeKind::VariableDecl))
+          {
+            // `Table::value_type(65)`: the alias as the type path reads it, with the qualifier's
+            // instantiation substituted (Array<unsigned char, 4>::value_type is unsigned char).
+            NamedType written{};
+            written.kind = NodeKind::NamedType;
+            written.token = n->token;
+            written.name = n->name;
+            if (const Ty* asType = typeOf(&written); asType && asType->isKnown())
+              t = asType;
+          }
           if (impl.isUndeducedClassTemplate(t))
             if (const Ty* deduced = impl.deduceClassArgs(t, argTypesOf(c->args)))
             {
@@ -4068,22 +4131,29 @@ struct GlobalScope::Impl
 
     // Overloaded operator lookup: member of the left operand's class, then free functions in
     // the class's namespace and the current scope chain.
-    const Ty* overloadedOperator(P op, const Ty* lhs, const Ty* rhs, uint32_t token, size_t arity)
+    // The function `lhs op rhs` (or `op lhs`) calls: the class's member operator, else a free one
+    // from the namespaces of both operand classes or the current scope. For a member, subst is
+    // the substitution of its class and isMember is set.
+    FunctionDecl* operatorFunction(P op, const Ty* lhs, const Ty* rhs, uint32_t token, size_t arity, Subst& subst, bool& isMember)
     {
       uint32_t symbol = impl.opSymbols[uint32_t(op)];
       const Ty* l = types.stripRef(lhs);
+      isMember = false;
       if (l && l->kind == TyKind::Class)
       {
         MemberResult r = memberOf(l, symbol, nullptr, token, false);
         if (r.decl && r.decl->kind == NodeKind::FunctionDecl)
         {
           bool ambiguous;
-          Span<Expr*> none;
           std::vector<const Ty*> argTypes;
           if (arity == 2)
             argTypes.push_back(rhs);
           if (FunctionDecl* f = pickOverload(r.decl, r.overloads, argTypes, &r.subst, lhs, ambiguous))
-            return returnTypeOfCall(f, &r.subst, none, nullptr);
+          {
+            subst = r.subst;
+            isMember = true;
+            return f;
+          }
         }
       }
       // Free function: look in the namespaces of both operand classes and the current scope.
@@ -4102,14 +4172,56 @@ struct GlobalScope::Impl
           if (look.decl && look.decl->kind == NodeKind::FunctionDecl)
           {
             bool ambiguous;
-            Span<Expr*> none;
             std::vector<const Ty*> argTypes{lhs};
             if (arity == 2)
               argTypes.push_back(rhs);
             if (FunctionDecl* f = pickOverload(look.decl, look.overloads, argTypes, nullptr, nullptr, ambiguous))
-              return returnTypeOfCall(f, nullptr, none, nullptr);
+              return f;
           }
           break;
+        }
+      }
+      return nullptr;
+    }
+
+    // Whether `lhs <=> rhs` is a defaulted operator<=>, which gives the class `==` as well.
+    bool threeWayDefaulted(const Ty* lhs, const Ty* rhs, uint32_t token)
+    {
+      Subst subst;
+      bool isMember;
+      FunctionDecl* f = operatorFunction(P::Spaceship, lhs, rhs, token, 2, subst, isMember);
+      return f && (f->flags & DF_Default);
+    }
+
+    const Ty* overloadedOperator(P op, const Ty* lhs, const Ty* rhs, uint32_t token, size_t arity)
+    {
+      const Ty* l = types.stripRef(lhs);
+      Subst subst;
+      bool isMember;
+      Span<Expr*> none;
+      if (FunctionDecl* f = operatorFunction(op, lhs, rhs, token, arity, subst, isMember))
+        return returnTypeOfCall(f, isMember ? &subst : nullptr, none, nullptr);
+      if (arity == 2)
+      {
+        // The comparisons C++ rewrites when the class defines no operator for them: `a != b` is
+        // `!(a == b)`, `a < b` and the other orderings are `(a <=> b) < 0`, and a defaulted
+        // operator<=> gives `==` too.
+        switch (op)
+        {
+          case P::NotEq:
+            if (operatorFunction(P::EqEq, lhs, rhs, token, 2, subst, isMember) || threeWayDefaulted(lhs, rhs, token))
+              return types.boolType();
+            break;
+          case P::EqEq:
+            if (threeWayDefaulted(lhs, rhs, token))
+              return types.boolType();
+            break;
+          case P::Less: case P::Greater: case P::LessEq: case P::GreaterEq:
+            if (operatorFunction(P::Spaceship, lhs, rhs, token, 2, subst, isMember))
+              return types.boolType();
+            break;
+          default:
+            break;
         }
       }
       // Operators every class has or that always yield bool.
@@ -4183,7 +4295,7 @@ struct GlobalScope::Impl
         case P::AndAnd: case P::OrOr:
           return types.boolType();
         case P::Spaceship:
-          return types.intType();
+          return impl.orderingType();
         case P::Shl: case P::Shr:
           return promote(l);
         case P::Plus: case P::Minus:
@@ -5426,6 +5538,7 @@ Decl* GlobalScope::owningClass(Decl* d)
 Decl* GlobalScope::initializerListDecl() { return impl->initializerListDecl(); }
 Decl* GlobalScope::typeInfoDecl() { return impl->typeInfoDecl(); }
 Decl* GlobalScope::enumFromStrDecl() { return impl->enumFromStrDecl(); }
+Decl* GlobalScope::strongOrderingDecl() { return impl->strongOrderingDecl(); }
 
 Decl* GlobalScope::definitionOf(Decl* d)
 {
@@ -5691,6 +5804,25 @@ void GlobalScope::retypeFor(FunctionDecl* f, const TemplateArgs& args, const Ty*
   else if (Decl* cls = Impl::enclosingClassDecl(w.scope))
     w.thisType = impl->types.pointer(impl->substitute(impl->selfType(cls), subst));
   w.walkDecl(f);
+}
+
+void GlobalScope::retypeInitializerFor(VariableDecl* v, const TemplateArgs& args)
+{
+  if (!v->file || !v->file->tokens || !v->init)
+    return;
+  Subst subst = toSubst(args);
+  ResolveStats scratch;
+  Impl::Walker w(*impl, scratch, *v->file->tokens, v->file->text);
+  for (Decl* p = v; p; p = p->parent)
+    for (Decl* tp : p->templateParams)
+      w.locals.push(static_cast<TemplateParamDecl*>(tp)->name, tp);
+  w.scope = impl->lexicalScopeOf(v);
+  if (v->name.parts.size() > 1)
+    w.scope = w.semanticScopeFor(v->name);
+  w.activeSubst = subst.pairs.empty() ? nullptr : &subst;
+  if (Decl* cls = Impl::enclosingClassDecl(w.scope))
+    w.thisType = impl->types.pointer(impl->substitute(impl->selfType(cls), subst));
+  w.walkExpr(v->init);
 }
 
 const Ty* GlobalScope::retypeLambdaFor(const Ty* lambdaTy, const TemplateArgs& own, TemplateArgs* fullArgs)

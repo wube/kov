@@ -57,6 +57,13 @@ builds win less unless machine code is cached per function.
   sorting, file/OS wrappers. No iostreams.
 - Factorio's in-house containers (FlatMap, SmallVector, TinyVector, IntrusiveList...) are
   the starting point.
+- `strong_ordering` is what `a <=> b` yields (std::strong_ordering, weak_ordering and
+  partial_ordering all convert to it), compared with 0 as in C++. The comparison rewrites of
+  C++20 hold: a class with `operator<=>` has `<`, `>`, `<=` and `>=`; a defaulted one orders by
+  its bases and members in turn and gives `==`; `a != b` is `!(a == b)` for every class.
+  (Done 2026-10-25.)
+- The game's 2D `Vector` class is `Vector2D` in the conversion, since `Vector` is the library's
+  std::vector (decided 2026-10-25; the converter renames the identifier).
 
 ### 5. Interop: C only
 - Import C headers / C ABI (OS APIs, SDL, Lua, zlib, openssl, curl...).

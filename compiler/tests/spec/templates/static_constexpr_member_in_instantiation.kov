@@ -1,6 +1,5 @@
 // spec: a static constexpr member of a class template is computed with the instantiation's arguments (`T(1) << Bits`) wherever it is used
 // found in src/Util (FixedPointNumber: `static constexpr T ValuesPerOne = T(1) << PrecisionBits` used from BoundingBox)
-// pending: the initializer keeps the template parameter T
 template<typename T, int Bits>
 struct Fixed
 {

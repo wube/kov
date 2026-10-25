@@ -16,6 +16,7 @@ struct String
   implicit String(StringView text) { this->append(text.chars, text.length); }
   String(const char* text, int count) { this->append(text, count); }
   String(const char* first, const char* last) { this->append(first, int(last - first)); }
+  String(int count, char c) { this->append(count, c); }
   String(const String& other) { this->append(other.chars, other.length); }
   String(String&& other) : chars(other.chars), length(other.length), capacity(other.capacity)
   {
@@ -122,6 +123,18 @@ struct String
     return this->chars + index;
   }
   void insert(int index, const String& text) { this->insert(index, text.chars, text.length); }
+  // Inserts count copies of c at index.
+  void insert(int index, int count, char c)
+  {
+    if (count <= 0)
+      return;
+    if (index > this->length)
+      index = this->length;
+    this->reserve(this->length + count);
+    memmove(this->chars + index + count, this->chars + index, this->length - index + 1);
+    memset(this->chars + index, c, count);
+    this->length += count;
+  }
   // Replaces count bytes at index with text.
   void replace(int index, int count, const char* text)
   {
@@ -255,6 +268,25 @@ struct String
   }
   void append(const char* text) { this->append(text, (int)strlen(text)); }
   void append(const String& other) { this->append(other.chars, other.length); }
+  // Appends count copies of c.
+  void append(int count, char c)
+  {
+    if (count <= 0)
+      return;
+    this->reserve(this->length + count);
+    memset(this->chars + this->length, c, count);
+    this->length += count;
+    this->chars[this->length] = 0;
+  }
+  // Appends count characters of other from index (fewer when other ends before).
+  void append(const String& other, int index, int count)
+  {
+    if (index >= other.length)
+      return;
+    if (count > other.length - index)
+      count = other.length - index;
+    this->append(other.chars + index, count);
+  }
   void append(char c)
   {
     this->reserve(this->length + 1);

@@ -1,0 +1,22 @@
+// spec: `using Base::Base;` inherits the base's constructors next to the class's own ones, the default constructor included; the class's own constructors are preferred for the arguments they take
+// found in src/Util (Vector2D: `using Vector2::Vector2;` with seven constructors of its own)
+struct Base
+{
+  int a, b;
+  Base() : a(0), b(0) {}
+  Base(int a, int b) : a(a), b(b) {}
+};
+struct Derived : Base
+{
+  using Base::Base;
+  explicit Derived(int both) : Base(both, both) {}
+  int extra = 7;
+};
+int main()
+{
+  Derived d;
+  Derived e(1, 2);
+  Derived f(5);
+  println("{} {} {} | {} {} {} | {} {} {}", d.a, d.b, d.extra, e.a, e.b, e.extra, f.a, f.b, f.extra);
+  return 0;
+}

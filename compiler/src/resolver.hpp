@@ -150,6 +150,10 @@ public:
   Decl* initializerListDecl();                   // The library's InitializerList class, or null.
   Decl* typeInfoDecl();                          // The library's TypeInfo class (what typeid yields), or null.
   Decl* enumFromStrDecl();                       // The library's enumFromStr<E>(const char*) template (E::fromStr lowers to it), or null.
+  Decl* strongOrderingDecl();                    // The library's strong_ordering class (what `a <=> b` yields), or null.
+  // Retypes the initializer of a static data member of a class template for one instantiation
+  // (`static constexpr T ValuesPerOne = T(1) << Bits` with T and Bits bound), in place like retypeFor.
+  void retypeInitializerFor(VariableDecl* v, const TemplateArgs& args);
   Decl* owningClass(Decl* d);                    // The class a member (possibly defined out of line) belongs to.
   // The in-class declaration of an out-of-line member definition (`static` and `virtual` are
   // written there and copied onto the definition); null when there is none.

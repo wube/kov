@@ -1,0 +1,34 @@
+// spec: a user-written operator<=> returning strong_ordering orders the class (`a < b` is `(a <=> b) < 0`), `x <=> y` of scalars is a strong_ordering, and a defaulted operator<=> uses the members' own
+// found in src/Util (13 user-written three-way comparisons next to the 45 defaulted ones)
+struct Version
+{
+  int major, minor;
+  strong_ordering operator<=>(const Version& other) const
+  {
+    if (this->major != other.major)
+      return this->major < other.major ? strong_ordering::less : strong_ordering::greater;
+    return this->minor <=> other.minor;
+  }
+  bool operator==(const Version& other) const { return (*this <=> other) == 0; }
+};
+struct Release
+{
+  Version version;
+  int build;
+  strong_ordering operator<=>(const Release&) const = default;
+};
+int main()
+{
+  Version a{1, 2}, b{1, 3}, c{2, 0};
+  println("{} {} {} {}", a < b, b < c, c <= a, a == Version{1, 2});
+  Release r1{{1, 2}, 5}, r2{{1, 2}, 6}, r3{{1, 3}, 0};
+  println("{} {} {} {}", r1 < r2, r2 < r3, r3 > r1, r1 == r1);
+  int x = 3, y = 7;
+  auto order = x <=> y;
+  println("{} {} {}", order < 0, order == strong_ordering::less, (y <=> x) > 0);
+  Vector<Release> releases = {r3, r2, r1};
+  sort(releases.begin(), releases.end());
+  for (const Release& r : releases)
+    println("{}.{} build {}", r.version.major, r.version.minor, r.build);
+  return 0;
+}

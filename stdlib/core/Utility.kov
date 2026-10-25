@@ -107,6 +107,28 @@ typename TupleElement<I, A, B, C, D>::Type& get(Tuple<A, B, C, D>& t) { return T
 template<int I, typename A, typename B, typename C, typename D>
 const typename TupleElement<I, A, B, C, D>::Type& get(const Tuple<A, B, C, D>& t) { return TupleGet<I>::of(const_cast<Tuple<A, B, C, D>&>(t)); }
 
+// The result of a three-way comparison `a <=> b` (what std::strong_ordering, weak_ordering and
+// partial_ordering convert to): less, equal or greater, compared with the literal 0 as in C++
+// (`(a <=> b) < 0`). A defaulted `operator<=>` orders by the bases and members in turn, and gives
+// the class `==` as well; `a != b` is `!(a == b)` and `a < b` is `(a <=> b) < 0` for every class.
+struct strong_ordering
+{
+  int8_t value;
+  constexpr strong_ordering(int8_t value) : value(value) {}
+  static inline const strong_ordering less = strong_ordering(-1);
+  static inline const strong_ordering equal = strong_ordering(0);
+  static inline const strong_ordering equivalent = strong_ordering(0);
+  static inline const strong_ordering greater = strong_ordering(1);
+  constexpr bool operator==(const strong_ordering& other) const { return this->value == other.value; }
+  constexpr bool operator==(int zero) const { return this->value == zero; }
+  constexpr bool operator<(int zero) const { return this->value < zero; }
+  constexpr bool operator>(int zero) const { return this->value > zero; }
+  constexpr bool operator<=(int zero) const { return this->value <= zero; }
+  constexpr bool operator>=(int zero) const { return this->value >= zero; }
+};
+using weak_ordering = strong_ordering;
+using partial_ordering = strong_ordering;
+
 // The range and special values of the arithmetic types.
 template<typename T>
 struct Limits
