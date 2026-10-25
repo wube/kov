@@ -2439,11 +2439,56 @@ namespace
     }
 
     // Emits a call. thisArg/sret may be empty. For class returns the result is the sret address.
+    // `kov_atomic_add32(p, v)` and friends (stdlib/core/Thread.kov): atomic instructions, not calls.
+    std::optional<Value> atomicBuiltin(FunctionDecl* f, Span<Expr*> callArgs, Node* at)
+    {
+      std::string name = sym(f->name.last().symbol);
+      if (name.rfind("kov_atomic_", 0) != 0)
+        return std::nullopt;
+      std::string op = name.substr(11);
+      std::string width = op.size() >= 2 ? op.substr(op.size() - 2) : "";
+      op = op.substr(0, op.size() - 2);
+      std::string ty = width == "64" ? "i64" : "i32";
+      std::string align = width == "64" ? "8" : "4";
+      if (callArgs.empty())
+        unsupported(at, "an atomic builtin without its pointer");
+      std::string p = convert(rvalue(callArgs[0]), types.pointer(types.voidType()), at).text;
+      const Ty* valueTy = width == "64" ? types.intType(64, false) : types.intType(32, false);
+      auto arg = [&](size_t i) { return convert(rvalue(callArgs[i]), valueTy, at).text; };
+      std::string r = newTemp();
+      if (op == "load")
+      {
+        fn += "  " + r + " = load atomic " + ty + ", ptr " + p + " seq_cst, align " + align + "\n";
+        return Value{r, valueTy};
+      }
+      if (op == "store")
+      {
+        fn += "  store atomic " + ty + " " + arg(1) + ", ptr " + p + " seq_cst, align " + align + "\n";
+        return Value{"", types.voidType()};
+      }
+      if (op == "add" || op == "exchange")
+      {
+        fn += "  " + r + " = atomicrmw " + (op == "add" ? "add" : "xchg") + " ptr " + p + ", " + ty + " " + arg(1) + " seq_cst, align " + align + "\n";
+        return Value{r, valueTy};
+      }
+      if (op == "cas")
+      {
+        std::string exchange = arg(1), comparand = arg(2), pair = newTemp();
+        fn += "  " + pair + " = cmpxchg ptr " + p + ", " + ty + " " + comparand + ", " + ty + " " + exchange + " seq_cst seq_cst, align " + align + "\n";
+        fn += "  " + r + " = extractvalue { " + ty + ", i1 } " + pair + ", 0\n";
+        return Value{r, valueTy};
+      }
+      unsupported(at, "the atomic builtin " + name);
+    }
+
     Value callFunction(FunctionDecl* f, const TemplateArgs& args, const Ty* classTy, const std::string& thisArg,
                        const std::string& sret, Span<Expr*> callArgs, Node* at, const std::string& indirect = "")
     {
       if (f->flags & DF_Delete)
         unsupported(at, "a call to the deleted function " + global.qualifiedName(f));
+      if (global.isExternC(f))
+        if (std::optional<Value> v = atomicBuiltin(f, callArgs, at))
+          return *v;
       if (f->flags & DF_Default)
         return defaultedCall(f, classTy, thisArg, callArgs, at);
       if (!conditionHolds(f))

@@ -1,6 +1,5 @@
 // spec: Thread, Mutex, LockGuard, Atomic (std::thread, std::mutex, std::atomic)
 // factorio: 78 std::thread, 479 mutex/lock_guard, 47 std::atomic
-// pending: no threading primitives in the library yet
 int main()
 {
   Atomic<int> counter(0);

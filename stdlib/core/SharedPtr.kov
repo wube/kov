@@ -1,0 +1,185 @@
+// Kov standard library: SharedPtr<T> and WeakPtr<T>, shared ownership of a heap object through a
+// control block of two counts (the shape of std::shared_ptr/weak_ptr, single-threaded counts for
+// now). makeShared<T>(args...) builds the object; the last SharedPtr deletes it, the last WeakPtr
+// frees the block.
+struct SharedControl
+{
+  int strong = 1;
+  int weak = 0;
+  void (*destroy)(void*) = nullptr;
+  void* object = nullptr;
+};
+
+template<typename T>
+void sharedDestroy(void* p) { delete (T*)p; }
+
+template<typename T>
+struct SharedPtr
+{
+  T* pointer = nullptr;
+  SharedControl* control = nullptr;
+
+  SharedPtr() {}
+  implicit SharedPtr(nullptr_t) {}
+  explicit SharedPtr(T* pointer) : pointer(pointer)
+  {
+    if (pointer)
+    {
+      this->control = new SharedControl();
+      this->control->destroy = &sharedDestroy<T>;
+      this->control->object = pointer;
+    }
+  }
+  SharedPtr(T* pointer, SharedControl* control) : pointer(pointer), control(control)
+  {
+    if (control)
+      ++control->strong;
+  }
+  SharedPtr(const SharedPtr<T>& other) : pointer(other.pointer), control(other.control)
+  {
+    if (this->control)
+      ++this->control->strong;
+  }
+  SharedPtr(SharedPtr<T>&& other) : pointer(other.pointer), control(other.control)
+  {
+    other.pointer = nullptr;
+    other.control = nullptr;
+  }
+  ~SharedPtr() { this->release(); }
+
+  SharedPtr<T>& operator=(const SharedPtr<T>& other)
+  {
+    if (this != &other)
+    {
+      if (other.control)
+        ++other.control->strong;
+      this->release();
+      this->pointer = other.pointer;
+      this->control = other.control;
+    }
+    return *this;
+  }
+  SharedPtr<T>& operator=(SharedPtr<T>&& other)
+  {
+    if (this != &other)
+    {
+      this->release();
+      this->pointer = other.pointer;
+      this->control = other.control;
+      other.pointer = nullptr;
+      other.control = nullptr;
+    }
+    return *this;
+  }
+  SharedPtr<T>& operator=(nullptr_t)
+  {
+    this->release();
+    return *this;
+  }
+
+  void release()
+  {
+    if (!this->control)
+      return;
+    if (--this->control->strong == 0)
+    {
+      this->control->destroy(this->control->object);
+      this->control->object = nullptr;
+      if (this->control->weak == 0)
+        delete this->control;
+    }
+    this->pointer = nullptr;
+    this->control = nullptr;
+  }
+  void reset() { this->release(); }
+  void reset(T* newPointer)
+  {
+    this->release();
+    if (newPointer)
+    {
+      this->pointer = newPointer;
+      this->control = new SharedControl();
+      this->control->destroy = &sharedDestroy<T>;
+      this->control->object = newPointer;
+    }
+  }
+
+  T* get() const { return this->pointer; }
+  T& operator*() const { return *this->pointer; }
+  T* operator->() const { return this->pointer; }
+  explicit operator bool() const { return this->pointer != nullptr; }
+  bool operator!() const { return this->pointer == nullptr; }
+  bool operator==(const SharedPtr<T>& other) const { return this->pointer == other.pointer; }
+  bool operator!=(const SharedPtr<T>& other) const { return this->pointer != other.pointer; }
+  bool operator==(nullptr_t) const { return this->pointer == nullptr; }
+  bool operator!=(nullptr_t) const { return this->pointer != nullptr; }
+  int use_count() const { return this->control ? this->control->strong : 0; }
+  int useCount() const { return this->use_count(); }
+  bool unique() const { return this->use_count() == 1; }
+};
+
+template<typename T, typename... Args>
+SharedPtr<T> makeShared(Args&&... args) { return SharedPtr<T>(new T(forward<Args>(args)...)); }
+
+template<typename T>
+struct WeakPtr
+{
+  T* pointer = nullptr;
+  SharedControl* control = nullptr;
+
+  WeakPtr() {}
+  implicit WeakPtr(const SharedPtr<T>& shared) : pointer(shared.pointer), control(shared.control)
+  {
+    if (this->control)
+      ++this->control->weak;
+  }
+  WeakPtr(const WeakPtr<T>& other) : pointer(other.pointer), control(other.control)
+  {
+    if (this->control)
+      ++this->control->weak;
+  }
+  ~WeakPtr() { this->release(); }
+
+  WeakPtr<T>& operator=(const WeakPtr<T>& other)
+  {
+    if (this != &other)
+    {
+      if (other.control)
+        ++other.control->weak;
+      this->release();
+      this->pointer = other.pointer;
+      this->control = other.control;
+    }
+    return *this;
+  }
+  WeakPtr<T>& operator=(const SharedPtr<T>& shared)
+  {
+    if (shared.control)
+      ++shared.control->weak;
+    this->release();
+    this->pointer = shared.pointer;
+    this->control = shared.control;
+    return *this;
+  }
+
+  void release()
+  {
+    if (!this->control)
+      return;
+    if (--this->control->weak == 0 && this->control->strong == 0)
+      delete this->control;
+    this->pointer = nullptr;
+    this->control = nullptr;
+  }
+  void reset() { this->release(); }
+
+  bool expired() const { return !this->control || this->control->strong == 0; }
+  int use_count() const { return this->control ? this->control->strong : 0; }
+  // A SharedPtr to the object while it is alive, empty otherwise.
+  SharedPtr<T> lock() const
+  {
+    if (this->expired())
+      return SharedPtr<T>();
+    return SharedPtr<T>(this->pointer, this->control);
+  }
+};

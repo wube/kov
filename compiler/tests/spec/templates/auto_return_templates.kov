@@ -1,0 +1,12 @@
+// spec: function templates with a deduced (`auto`, `auto&`) return type
+// pending: the return type stays `auto` at the call (`firstOf(p)` has "the type auto")
+struct P { int first = 1; String second = "two"; };
+template<typename T> auto& firstOf(T& t) { return t.first; }
+template<typename T> auto twice(T v) { return v + v; }
+int main()
+{
+  P p;
+  firstOf(p) += 1;
+  println("{} {} {}", p.first, twice(20), twice(String("ab")));
+  return 0;
+}

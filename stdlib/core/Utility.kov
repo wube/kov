@@ -59,6 +59,54 @@ struct Pair
 template<typename A, typename B>
 Pair<A, B> makePair(const A& first, const B& second) { return Pair<A, B>(first, second); }
 
+// Up to four values together (what std::tuple converts to); `get<I>(tuple)` reads one.
+struct Nothing {};
+template<typename A, typename B = Nothing, typename C = Nothing, typename D = Nothing>
+struct Tuple
+{
+  A first;
+  B second;
+  C third;
+  D fourth;
+
+  Tuple() {}
+  Tuple(const A& first, const B& second) : first(first), second(second) {}
+  Tuple(const A& first, const B& second, const C& third) : first(first), second(second), third(third) {}
+  Tuple(const A& first, const B& second, const C& third, const D& fourth) : first(first), second(second), third(third), fourth(fourth) {}
+};
+template<typename A, typename B>
+Tuple<A, B> makeTuple(const A& a, const B& b) { return Tuple<A, B>(a, b); }
+template<typename A, typename B, typename C>
+Tuple<A, B, C> makeTuple(const A& a, const B& b, const C& c) { return Tuple<A, B, C>(a, b, c); }
+template<typename A, typename B, typename C, typename D>
+Tuple<A, B, C, D> makeTuple(const A& a, const B& b, const C& c, const D& d) { return Tuple<A, B, C, D>(a, b, c, d); }
+
+// The type of element I of a Tuple, and the element itself.
+template<int I, typename A, typename B, typename C, typename D>
+struct TupleElement {};
+template<typename A, typename B, typename C, typename D>
+struct TupleElement<0, A, B, C, D> { using Type = A; };
+template<typename A, typename B, typename C, typename D>
+struct TupleElement<1, A, B, C, D> { using Type = B; };
+template<typename A, typename B, typename C, typename D>
+struct TupleElement<2, A, B, C, D> { using Type = C; };
+template<typename A, typename B, typename C, typename D>
+struct TupleElement<3, A, B, C, D> { using Type = D; };
+template<int I>
+struct TupleGet {};
+template<>
+struct TupleGet<0> { template<typename A, typename B, typename C, typename D> static A& of(Tuple<A, B, C, D>& t) { return t.first; } };
+template<>
+struct TupleGet<1> { template<typename A, typename B, typename C, typename D> static B& of(Tuple<A, B, C, D>& t) { return t.second; } };
+template<>
+struct TupleGet<2> { template<typename A, typename B, typename C, typename D> static C& of(Tuple<A, B, C, D>& t) { return t.third; } };
+template<>
+struct TupleGet<3> { template<typename A, typename B, typename C, typename D> static D& of(Tuple<A, B, C, D>& t) { return t.fourth; } };
+template<int I, typename A, typename B, typename C, typename D>
+typename TupleElement<I, A, B, C, D>::Type& get(Tuple<A, B, C, D>& t) { return TupleGet<I>::of(t); }
+template<int I, typename A, typename B, typename C, typename D>
+const typename TupleElement<I, A, B, C, D>::Type& get(const Tuple<A, B, C, D>& t) { return TupleGet<I>::of(const_cast<Tuple<A, B, C, D>&>(t)); }
+
 // The range and special values of the arithmetic types.
 template<typename T>
 struct Limits

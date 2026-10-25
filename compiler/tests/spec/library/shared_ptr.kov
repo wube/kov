@@ -1,6 +1,5 @@
 // spec: SharedPtr and WeakPtr (std::shared_ptr/weak_ptr)
 // factorio: 99 shared_ptr uses in 50 files, 8 weak_ptr
-// pending: SharedPtr and WeakPtr are not in the library yet
 struct Node { int v = 4; };
 int main()
 {
@@ -8,6 +7,6 @@ int main()
   SharedPtr<Node> b = a;
   WeakPtr<Node> w = a;
   a = nullptr;
-  println("{} {} {}", b->v, w.lock() != nullptr, b.use_count());
+  println("{} {} {}", b->v, w.lock() != nullptr, b.use_count()); // the lock() temporary lives to the end of the line: 2 owners
   return 0;
 }

@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**115 pass, 15 pending, 0 failing, 0 fixed** (130 snippets, 1.9 s).
+**117 pass, 14 pending, 0 failing, 0 fixed** (131 snippets, 2.0 s).
 
 ## Language: statements, expressions, declarations
 
@@ -77,6 +77,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
+| `templates/auto_return_templates.kov` | function templates with a deduced (`auto`, `auto&`) return type | pending |  | the return type stays `auto` at the call (`firstOf(p)` has "the type auto"); C:\kov\compiler\tests\spec\templates\auto_return_templates.kov:9: codegen does not support the type auto of BinaryExpr yet (in @kov.main) |
 | `templates/nested_template_instantiation.kov` | a class template instantiated with another instantiation of itself (Stack<Stack<int>>) through a variadic push | pending |  | `nested.push()` with an empty pack picks emplace_back(const T&) and emits a call without its argument (malformed IR); C:\kov\compiler\tests\spec\templates\nested_template_instantiation.kov:7: codegen does not support a call to Vector::emplace_back without an argument for its parameter value (and the overload resolution let it through) yet (in @"Stack<Stack<int32>>::push<>()", requested by @kov.main) |
 | `templates/template_template_parameters.kov` | template template parameters | pending |  | template template parameters are not implemented; C:\kov\compiler\tests\spec\templates\template_template_parameters.kov:10: codegen does not support a call to countAll whose template arguments could not be deduced yet (in @kov.main) |
 | `templates/alias_template_conditional.kov` | an alias template over Conditional with a bool parameter (Conditional<Small, int16_t, int64_t>) | pass |  |  |
@@ -110,9 +111,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `library/pair_tuple.kov` | Pair (std::pair) and makePair; Tuple | pending | 354 pair uses in 199 files, 51 tuple | Tuple with get<N> is not in the library yet; C:\kov\compiler\tests\spec\library\pair_tuple.kov:8: codegen does not support a local of unknown type (t) yet (in @kov.main) |
-| `library/shared_ptr.kov` | SharedPtr and WeakPtr (std::shared_ptr/weak_ptr) | pending | 99 shared_ptr uses in 50 files, 8 weak_ptr | SharedPtr and WeakPtr are not in the library yet; C:\kov\compiler\tests\spec\library\shared_ptr.kov:7: codegen does not support a local of unknown type (a) yet (in @kov.main) |
-| `library/threads_atomics.kov` | Thread, Mutex, LockGuard, Atomic (std::thread, std::mutex, std::atomic) | pending | 78 std::thread, 479 mutex/lock_guard, 47 std::atomic | no threading primitives in the library yet; C:\kov\compiler\tests\spec\library\threads_atomics.kov:6: codegen does not support a local of unknown type (counter) yet (in @kov.main) |
+| `library/pair_tuple.kov` | Pair (std::pair) and makePair; Tuple | pending | 354 pair uses in 199 files, 51 tuple | Tuple with get<N> is not in the library yet; C:\kov\compiler\tests\spec\library\pair_tuple.kov:12: codegen does not support a parameter of unknown type (4: <unknown>) yet (in @kov.main) |
 | `library/variant.kov` | Variant (std::variant) | pending | 24 uses in 15 files (Kov's answer is the typed union, design.md 8.5) | Variant is not in the library; typed unions (`union enum`) are the planned replacement; C:\kov\compiler\tests\spec\library\variant.kov:6: codegen does not support a local of unknown type (v) yet (in @kov.main) |
 | `library/algorithms.kov` | algorithms (std::sort, find_if, count_if, all_of/any_of, reverse, lower_bound, remove_if, min/max/clamp) | pass | 466 algorithm calls in 247 files |  |
 | `library/array_span.kov` | Array<T, N> and Span<T> (std::array, std::span) | pass | 372 std::array uses in 193 files, 147 std::span |  |
@@ -128,9 +127,11 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `library/memory_c.kov` | memcpy, memset, memcmp, strlen, malloc/free through the library's C declarations | pass | 164 mem* calls in 84 files, 48 str* calls |  |
 | `library/optional.kov` | Optional (std::optional): value, hasValue, nullopt, assignment, comparison, valueOr | pass | 1587 uses in 658 files |  |
 | `library/ordered_map_set.kov` | ordered Map and Set (std::map/std::set): iteration in key order, lower bound | pass | 827 std::map uses in 422 files, 641 std::set in 293 files |  |
+| `library/shared_ptr.kov` | SharedPtr and WeakPtr (std::shared_ptr/weak_ptr) | pass | 99 shared_ptr uses in 50 files, 8 weak_ptr |  |
 | `library/sort_default_order.kov` | ::sort by operator< (no comparator) | pass |  |  |
 | `library/string.kov` | String (std::string): building, comparison, search, substrings, c_str, iteration | pass | 11491 uses in 2434 files |  |
 | `library/string_view.kov` | StringView (std::string_view): from literals and Strings, substr, find, prefix/suffix, comparison | pass | 1744 uses in 527 files |  |
+| `library/threads_atomics.kov` | Thread, Mutex, LockGuard, Atomic (std::thread, std::mutex, std::atomic) | pass | 78 std::thread, 479 mutex/lock_guard, 47 std::atomic |  |
 | `library/time_chrono.kov` | Duration, TimePoint, Clock (std::chrono) | pass | 394 chrono uses in 97 files |  |
 | `library/to_string_parse.kov` | toString and parsing numbers (std::to_string, strtol family) | pass | 302 to_string uses in 123 files |  |
 | `library/unique_ptr.kov` | UniquePtr (std::unique_ptr): makeUnique, move, release/reset, polymorphic delete, UniqueArray | pass | 3820 uses in 1049 files |  |

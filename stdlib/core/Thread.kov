@@ -1,0 +1,286 @@
+// Kov standard library: threads and what keeps them apart, on the Windows API (what std::thread,
+// std::mutex, std::lock_guard, std::condition_variable and std::atomic convert to). Mutex is an
+// SRW lock, ConditionVariable a CONDITION_VARIABLE, both one pointer of storage zeroed; Atomic<T>
+// is for the integer types and pointers, through the Interlocked functions.
+extern "C" void* CreateThread(void* attributes, size_t stackSize, unsigned long (*start)(void*), void* parameter, unsigned long flags, unsigned long* threadId);
+extern "C" unsigned long WaitForSingleObject(void* handle, unsigned long milliseconds);
+extern "C" int CloseHandle(void* handle);
+extern "C" unsigned long GetCurrentThreadId();
+extern "C" void Sleep(unsigned long milliseconds);
+extern "C" int SwitchToThread();
+extern "C" void AcquireSRWLockExclusive(void** lock);
+extern "C" void ReleaseSRWLockExclusive(void** lock);
+extern "C" unsigned char TryAcquireSRWLockExclusive(void** lock);
+extern "C" void AcquireSRWLockShared(void** lock);
+extern "C" void ReleaseSRWLockShared(void** lock);
+extern "C" int SleepConditionVariableSRW(void** condition, void** lock, unsigned long milliseconds, unsigned long flags);
+extern "C" void WakeConditionVariable(void** condition);
+extern "C" void WakeAllConditionVariable(void** condition);
+// The compiler turns these into atomic instructions (sequentially consistent); they are not
+// functions of any library.
+extern "C" long kov_atomic_add32(long* target, long value);
+extern "C" long kov_atomic_exchange32(long* target, long value);
+extern "C" long kov_atomic_cas32(long* target, long exchange, long comparand);
+extern "C" long kov_atomic_load32(const long* target);
+extern "C" void kov_atomic_store32(long* target, long value);
+extern "C" long long kov_atomic_add64(long long* target, long long value);
+extern "C" long long kov_atomic_exchange64(long long* target, long long value);
+extern "C" long long kov_atomic_cas64(long long* target, long long exchange, long long comparand);
+extern "C" long long kov_atomic_load64(const long long* target);
+extern "C" void kov_atomic_store64(long long* target, long long value);
+
+// The task a thread runs: a callable copied to the heap, called once on the new thread.
+struct ThreadTask
+{
+  FunctionImpl<void> run;
+  ThreadTask(FunctionImpl<void> run) : run(::move(run)) {}
+};
+
+unsigned long kovThreadStart(void* parameter)
+{
+  ThreadTask* task = (ThreadTask*)parameter;
+  task->run();
+  delete task;
+  return 0;
+}
+
+struct Thread
+{
+  void* handle = nullptr;
+  unsigned long id = 0;
+
+  Thread() {}
+  template<typename F>
+  explicit Thread(F callable)
+  {
+    ThreadTask* task = new ThreadTask(FunctionImpl<void>(callable));
+    this->handle = CreateThread(nullptr, 0, &kovThreadStart, task, 0, &this->id);
+  }
+  Thread(const Thread&) = delete;
+  Thread(Thread&& other) : handle(other.handle), id(other.id)
+  {
+    other.handle = nullptr;
+    other.id = 0;
+  }
+  Thread& operator=(const Thread&) = delete;
+  Thread& operator=(Thread&& other)
+  {
+    if (this != &other)
+    {
+      if (this->handle)
+        this->join();
+      this->handle = other.handle;
+      this->id = other.id;
+      other.handle = nullptr;
+      other.id = 0;
+    }
+    return *this;
+  }
+  ~Thread()
+  {
+    if (this->handle)
+      this->join(); // std::thread aborts here; waiting is the kinder default
+  }
+
+  bool joinable() const { return this->handle != nullptr; }
+  void join()
+  {
+    if (!this->handle)
+      return;
+    WaitForSingleObject(this->handle, 0xFFFFFFFFu);
+    CloseHandle(this->handle);
+    this->handle = nullptr;
+  }
+  void detach()
+  {
+    if (this->handle)
+      CloseHandle(this->handle);
+    this->handle = nullptr;
+  }
+  unsigned long get_id() const { return this->id; }
+  static unsigned long currentId() { return GetCurrentThreadId(); }
+  static void sleepFor(Duration d) { Sleep((unsigned long)(d.milliseconds())); }
+  static void yield() { SwitchToThread(); }
+};
+
+struct Mutex
+{
+  void* lock_ = nullptr; // SRWLOCK
+
+  Mutex() {}
+  Mutex(const Mutex&) = delete;
+  Mutex& operator=(const Mutex&) = delete;
+
+  void lock() { AcquireSRWLockExclusive(&this->lock_); }
+  void unlock() { ReleaseSRWLockExclusive(&this->lock_); }
+  bool tryLock() { return TryAcquireSRWLockExclusive(&this->lock_) != 0; }
+  bool try_lock() { return this->tryLock(); }
+};
+using RecursiveMutex = Mutex; // not recursive yet: an SRW lock deadlocks when re-entered
+
+struct SharedMutex
+{
+  void* lock_ = nullptr;
+
+  SharedMutex() {}
+  SharedMutex(const SharedMutex&) = delete;
+  SharedMutex& operator=(const SharedMutex&) = delete;
+
+  void lock() { AcquireSRWLockExclusive(&this->lock_); }
+  void unlock() { ReleaseSRWLockExclusive(&this->lock_); }
+  void lockShared() { AcquireSRWLockShared(&this->lock_); }
+  void unlockShared() { ReleaseSRWLockShared(&this->lock_); }
+  void lock_shared() { this->lockShared(); }
+  void unlock_shared() { this->unlockShared(); }
+};
+
+template<typename M>
+struct LockGuard
+{
+  M& mutex;
+  explicit LockGuard(M& mutex) : mutex(mutex) { mutex.lock(); }
+  LockGuard(const LockGuard<M>&) = delete;
+  ~LockGuard() { this->mutex.unlock(); }
+};
+template<typename M>
+using ScopedLock = LockGuard<M>;
+
+template<typename M>
+struct UniqueLock
+{
+  M* mutex = nullptr;
+  bool owns = false;
+
+  UniqueLock() {}
+  explicit UniqueLock(M& mutex) : mutex(&mutex), owns(true) { mutex.lock(); }
+  UniqueLock(const UniqueLock<M>&) = delete;
+  UniqueLock(UniqueLock<M>&& other) : mutex(other.mutex), owns(other.owns)
+  {
+    other.mutex = nullptr;
+    other.owns = false;
+  }
+  ~UniqueLock()
+  {
+    if (this->owns)
+      this->mutex->unlock();
+  }
+  void lock()
+  {
+    this->mutex->lock();
+    this->owns = true;
+  }
+  void unlock()
+  {
+    this->mutex->unlock();
+    this->owns = false;
+  }
+  bool ownsLock() const { return this->owns; }
+  bool owns_lock() const { return this->owns; }
+};
+
+template<typename M>
+struct SharedLock
+{
+  M& mutex;
+  explicit SharedLock(M& mutex) : mutex(mutex) { mutex.lockShared(); }
+  SharedLock(const SharedLock<M>&) = delete;
+  ~SharedLock() { this->mutex.unlockShared(); }
+};
+
+struct ConditionVariable
+{
+  void* condition = nullptr; // CONDITION_VARIABLE
+
+  ConditionVariable() {}
+  ConditionVariable(const ConditionVariable&) = delete;
+  ConditionVariable& operator=(const ConditionVariable&) = delete;
+
+  void wait(UniqueLock<Mutex>& lock) { SleepConditionVariableSRW(&this->condition, &lock.mutex->lock_, 0xFFFFFFFFu, 0); }
+  template<typename Predicate>
+  void wait(UniqueLock<Mutex>& lock, Predicate ready)
+  {
+    while (!ready())
+      this->wait(lock);
+  }
+  bool waitFor(UniqueLock<Mutex>& lock, Duration d)
+  {
+    return SleepConditionVariableSRW(&this->condition, &lock.mutex->lock_, (unsigned long)d.milliseconds(), 0) != 0;
+  }
+  void notifyOne() { WakeConditionVariable(&this->condition); }
+  void notifyAll() { WakeAllConditionVariable(&this->condition); }
+  void notify_one() { this->notifyOne(); }
+  void notify_all() { this->notifyAll(); }
+};
+
+// An integer or pointer read and written atomically; arithmetic through the Interlocked functions.
+template<typename T>
+struct Atomic
+{
+  T value;
+
+  Atomic() : value(T()) {}
+  implicit Atomic(T initial) : value(initial) {}
+  Atomic(const Atomic<T>&) = delete;
+  Atomic<T>& operator=(const Atomic<T>&) = delete;
+
+  T load() const
+  {
+    if constexpr (sizeof(T) == 8)
+      return (T)kov_atomic_load64((const long long*)&this->value);
+    else
+      return (T)kov_atomic_load32((const long*)&this->value);
+  }
+  void store(T v)
+  {
+    if constexpr (sizeof(T) == 8)
+      kov_atomic_store64((long long*)&this->value, (long long)v);
+    else
+      kov_atomic_store32((long*)&this->value, (long)v);
+  }
+  T exchange(T v)
+  {
+    if constexpr (sizeof(T) == 8)
+      return (T)kov_atomic_exchange64((long long*)&this->value, (long long)v);
+    else
+      return (T)kov_atomic_exchange32((long*)&this->value, (long)v);
+  }
+  T fetchAdd(T delta)
+  {
+    if constexpr (sizeof(T) == 8)
+      return (T)kov_atomic_add64((long long*)&this->value, (long long)delta);
+    else
+      return (T)kov_atomic_add32((long*)&this->value, (long)delta);
+  }
+  T fetch_add(T delta) { return this->fetchAdd(delta); }
+  T fetchSub(T delta) { return this->fetchAdd((T)(0 - delta)); }
+  T fetch_sub(T delta) { return this->fetchSub(delta); }
+  // True and `expected` kept when the value was `expected` and is now `desired`; otherwise
+  // `expected` receives the current value.
+  bool compareExchange(T& expected, T desired)
+  {
+    T seen;
+    if constexpr (sizeof(T) == 8)
+      seen = (T)kov_atomic_cas64((long long*)&this->value, (long long)desired, (long long)expected);
+    else
+      seen = (T)kov_atomic_cas32((long*)&this->value, (long)desired, (long)expected);
+    if (seen == expected)
+      return true;
+    expected = seen;
+    return false;
+  }
+  bool compare_exchange_strong(T& expected, T desired) { return this->compareExchange(expected, desired); }
+  bool compare_exchange_weak(T& expected, T desired) { return this->compareExchange(expected, desired); }
+
+  operator T() const { return this->load(); }
+  Atomic<T>& operator=(T v)
+  {
+    this->store(v);
+    return *this;
+  }
+  T operator++() { return this->fetchAdd(1) + 1; }
+  T operator++(int) { return this->fetchAdd(1); }
+  T operator--() { return this->fetchSub(1) - 1; }
+  T operator--(int) { return this->fetchSub(1); }
+  T operator+=(T delta) { return this->fetchAdd(delta) + delta; }
+  T operator-=(T delta) { return this->fetchSub(delta) - delta; }
+};
