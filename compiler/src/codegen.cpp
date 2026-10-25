@@ -146,10 +146,14 @@ namespace
       const Ty* enclosingClass = nullptr;
       std::string functionName;
       bool emitted = false;
+      bool laidOut = false; // captures and fields known (read where the lambda is written); before that only the struct's name exists
     };
     std::unordered_map<const Ty*, ClosureInfo> closures; // keyed by the lambda type (one per enclosing instantiation)
     static bool isLambda(const Ty* t) { return t && t->kind == TyKind::Lambda && t->decl; }
     static bool isAggregate(const Ty* t) { return isClass(t) || isLambda(t); }
+    static LambdaExpr* lambdaOf(const Ty* t) { return isLambda(t) && t->decl->kind == NodeKind::ClassDecl ? static_cast<ClassDecl*>(t->decl)->lambda : nullptr; }
+    static bool isGenericLambda(const Ty* t) { LambdaExpr* l = lambdaOf(t); return l && !l->templateParams.empty(); }
+    std::unordered_set<std::string> lambdaInstances; // call operators of generic lambdas emitted so far, by IR name
     std::deque<Instantiation> worklist;
     std::unordered_map<std::string, bool> requested; // instantiated names queued or emitted
 
@@ -252,7 +256,7 @@ namespace
         case TyKind::Nullptr: case TyKind::Pointer: case TyKind::LRef: case TyKind::RRef: case TyKind::Function:
           return "ptr";
         case TyKind::MemberPointer: return "i64"; // a data member's offset within its class
-        case TyKind::Lambda: return t->decl ? closureFor(t, at).structName : "ptr";
+        case TyKind::Lambda: return t->decl ? closureStructName(t) : "ptr";
         case TyKind::Array:
           return "[" + std::to_string(t->count) + " x " + llType(t->inner, at) + "]";
         case TyKind::Class: return structFor(t, at).name;
@@ -1872,17 +1876,35 @@ namespace
     }
 
     // The closure of a lambda type, created from its capture list in the current function.
-    ClosureInfo& closureFor(const Ty* t, Node* at)
+    // The IR name of a lambda's closure struct: known as soon as the type is mentioned (a slot
+    // for the variable holding it is allocated before its expression is reached); the struct is
+    // defined once the captures are known.
+    std::string closureStructName(const Ty* t)
     {
+      t = types.unqualified(t); // `const auto f = [..]{..}`: the const variable holds the same closure
+      ClosureInfo& info = closures[t];
+      if (info.structName.empty())
+        info.structName = "%closure." + std::to_string(closures.size());
+      return info.structName;
+    }
+
+    // The closure of a lambda type with its captures laid out. Only the lambda expression itself
+    // (create) may lay it out: the capture list is read from the function the lambda is written in.
+    ClosureInfo& closureFor(const Ty* t, Node* at, bool create = false)
+    {
+      t = types.unqualified(t);
       auto it = closures.find(t);
-      if (it != closures.end())
+      if (it != closures.end() && it->second.laidOut)
         return it->second;
+      if (!create)
+        unsupported(at, "a lambda used before its closure was built (its captures are read where it is written)");
       auto* c = static_cast<ClassDecl*>(t->decl);
       LambdaExpr* l = c->lambda;
       if (!l)
         unsupported(at, "a lambda without its expression");
+      std::string structName = closureStructName(t);
       ClosureInfo& info = closures[t];
-      info.structName = "%closure." + std::to_string(closures.size());
+      info.laidOut = true;
       info.enclosingClass = currentClassTy;
       bool usesThis = false;
       std::vector<Decl*> explicitDecls;
@@ -1967,7 +1989,7 @@ namespace
       const Ty* t = l->ty;
       if (!isLambda(t))
         unsupported(l, "a lambda whose type is unknown");
-      ClosureInfo info = closureFor(t, l);
+      ClosureInfo info = closureFor(t, l, true);
       std::string slot = newObjectSlot(t, l);
       for (size_t i = 0; i < info.captured.size(); ++i)
       {
@@ -2006,10 +2028,10 @@ namespace
         else
           store(load(addr, info.fieldTypes[i], l), field, info.fieldTypes[i], l);
       }
-      if (!closures[t].emitted)
+      if (!closures[t].emitted && !isGenericLambda(t)) // a generic lambda's operator is emitted per call, once its types are known
       {
         closures[t].emitted = true;
-        emitLambda(l, t);
+        emitLambda(l, t, types.function(t->inner ? t->inner : types.voidType(), t->args, false), info.functionName, nullptr);
       }
       return {slot, t, false};
     }
@@ -2088,13 +2110,21 @@ namespace
     }
 
     // Emits the lambda's function while another function is being emitted: the enclosing
-    // function's state is saved and restored around it.
-    void emitLambda(LambdaExpr* l, const Ty* t)
+    // function's state is saved and restored around it. callTy: the operator's type (parameters
+    // and result); name: its IR name; args: for an instantiation of a generic lambda, the
+    // enclosing instantiation's arguments plus its own, which declarations in the body are typed under.
+    void emitLambda(LambdaExpr* l, const Ty* t, const Ty* callTy, const std::string& name, const TemplateArgs* args)
     {
       ClosureInfo info = closureFor(t, l);
       FunctionState saved = saveState();
+      const TemplateArgs* savedArgs = currentArgs;
+      ParsedFile* savedFile = currentFile;
       resetFunctionState();
-      currentReturn = t->inner ? t->inner : types.voidType();
+      if (args)
+        currentArgs = args;
+      if (l->closure && l->closure->file)
+        currentFile = l->closure->file;
+      currentReturn = callTy->inner ? callTy->inner : types.voidType();
       sretAddr.clear();
       currentClassTy = info.enclosingClass;
       try
@@ -2107,15 +2137,15 @@ namespace
           sretAddr = "%sret";
         }
         std::vector<std::string> paramNames;
-        for (size_t i = 0; i < t->args.size(); ++i)
+        for (size_t i = 0; i < callTy->args.size(); ++i)
         {
-          const Ty* pt = t->args[i];
+          const Ty* pt = callTy->args[i];
           std::string pn = "%p" + std::to_string(i);
           paramNames.push_back(pn);
           params += ", " + std::string(isAggregate(pt) || pt->isReference() ? "ptr" : llType(pt, l)) + " " + pn;
         }
         std::string retType = hasSret ? "void" : currentReturn->isReference() ? "ptr" : llType(currentReturn, l);
-        std::string header = "define " + retType + " " + info.functionName + "(" + params + ") {\nentry:\n";
+        std::string header = "define " + retType + " " + name + "(" + params + ") {\nentry:\n";
         pushScope();
         // Captures become locals: by-value captures live in the closure, references point out.
         for (size_t i = 0; i < info.captured.size(); ++i)
@@ -2134,9 +2164,9 @@ namespace
           }
           locals[d] = {field, info.byRef[i] ? types.lref(info.fieldTypes[i]) : info.fieldTypes[i], info.byRef[i]};
         }
-        for (size_t i = 0; i < l->params.size() && i < t->args.size(); ++i)
+        for (size_t i = 0; i < l->params.size() && i < callTy->args.size(); ++i)
         {
-          const Ty* pt = t->args[i];
+          const Ty* pt = callTy->args[i];
           if (isAggregate(pt))
           {
             locals[l->params[i]] = {paramNames[i], pt, false};
@@ -2159,23 +2189,51 @@ namespace
           else
             fn += "  ret " + (currentReturn->isReference() ? std::string("ptr null") : llType(currentReturn, l) + " zeroinitializer") + "\n";
         }
-        addDefinition(info.functionName, functionText(header));
+        addDefinition(name, functionText(header));
         ++result.functions;
       }
       catch (Unsupported&)
       {
         restoreState(saved);
+        currentArgs = savedArgs;
+        currentFile = savedFile;
         throw;
       }
       restoreState(saved);
+      currentArgs = savedArgs;
+      currentFile = savedFile;
     }
 
     // Calls a closure value with arguments.
     Value callClosure(Value closure, Span<Expr*> callArgs, const std::string& sret, Node* at)
     {
-      const Ty* t = closure.ty;
+      const Ty* t = types.unqualified(closure.ty); // a const lambda variable calls the same operator
       ClosureInfo info = closureFor(t, at);
-      const Ty* ret = t->inner ? t->inner : types.voidType();
+      const Ty* callTy = types.function(t->inner ? t->inner : types.voidType(), t->args, false);
+      std::string functionName = info.functionName;
+      TemplateArgs instanceArgs;
+      LambdaExpr* genericLambda = lambdaOf(t);
+      if (genericLambda && genericLambda->templateParams.empty())
+        genericLambda = nullptr;
+      if (LambdaExpr* l = genericLambda)
+      {
+        // A generic lambda: the call's deduced arguments (recorded by the type checker, as for a
+        // function template) pick the instantiation of its call operator, emitted at first use.
+        CallExpr* call = at && at->kind == NodeKind::CallExpr ? static_cast<CallExpr*>(at) : nullptr;
+        if (!call || call->templateArgCount != l->templateParams.size())
+          unsupported(at, "a call to a generic lambda whose parameter types were not deduced");
+        TemplateArgs own;
+        for (size_t i = 0; i < l->templateParams.size(); ++i)
+          own.pairs.push_back({l->templateParams[i], call->templateArgs[i]});
+        callTy = global.retypeLambdaFor(t, own, &instanceArgs);
+        if (!callTy)
+          unsupported(at, "a generic lambda whose body could not be typed for this call");
+        std::string params;
+        for (size_t i = 0; i < callTy->args.size(); ++i)
+          params += (i ? ", " : "") + types.toString(callTy->args[i], &symbols);
+        functionName = "@\"" + types.toString(t, &symbols) + "::operator()(" + params + ")\"";
+      }
+      const Ty* ret = callTy->inner ? callTy->inner : types.voidType();
       std::string argText = "ptr " + closure.text;
       std::string resultAddr = sret;
       bool hasSret = isClass(ret);
@@ -2197,7 +2255,7 @@ namespace
           Expr* pattern = static_cast<UnaryExpr*>(arg)->operand;
           forEachPackElement(pattern, at, [&](size_t)
           {
-            const Ty* pt = position < t->args.size() ? t->args[position] : nullptr;
+            const Ty* pt = position < callTy->args.size() ? callTy->args[position] : nullptr;
             if (!pt)
               unsupported(at, "too many arguments to a lambda");
             sig += ", " + std::string(isAggregate(pt) || pt->isReference() ? "ptr" : llType(pt, at));
@@ -2206,7 +2264,7 @@ namespace
           });
           continue;
         }
-        const Ty* pt = position < t->args.size() ? t->args[position] : nullptr;
+        const Ty* pt = position < callTy->args.size() ? callTy->args[position] : nullptr;
         if (!pt)
           unsupported(at, "too many arguments to a lambda");
         sig += ", " + std::string(isAggregate(pt) || pt->isReference() ? "ptr" : llType(pt, at));
@@ -2214,13 +2272,18 @@ namespace
         ++position;
       }
       sig += ")";
+      // The instantiation's operator is emitted after the arguments: a lambda argument's closure
+      // (its capture list) is built here, in the function that writes it, before the operator's
+      // body calls it.
+      if (genericLambda && lambdaInstances.insert(functionName).second)
+        emitLambda(genericLambda, t, callTy, functionName, &instanceArgs);
       if (hasSret || ret->kind == TyKind::Void)
       {
-        emitCall("", sig + " " + info.functionName + "(" + argText + ")");
+        emitCall("", sig + " " + functionName + "(" + argText + ")");
         return hasSret ? Value{resultAddr, ret, sret.empty()} : Value{"", types.voidType(), false};
       }
       std::string r = newTemp();
-      emitCall(r + " = ", sig + " " + info.functionName + "(" + argText + ")");
+      emitCall(r + " = ", sig + " " + functionName + "(" + argText + ")");
       return {r, ret, false};
     }
 

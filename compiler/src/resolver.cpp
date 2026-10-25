@@ -259,6 +259,36 @@ struct GlobalScope::Impl
   std::atomic<size_t> instClasses{0}, instFunctions{0}, instBodies{0}, instRequests{0}, instWaits{0};
   std::atomic<uint64_t> instNanos{0};
 
+  // ---- generic lambdas: where each was written, so that its body can be typed for every call ----
+  // A lambda with template parameters (written, or invented for `auto` parameters) is a template
+  // whose call operator is instantiated per call; its body is typed in the environment of the
+  // enclosing function at the point the lambda appears: its locals, scope, this, instantiation.
+  struct LambdaEnv
+  {
+    LambdaExpr* lambda = nullptr;
+    std::vector<LocalStack::Item> locals; // the enclosing locals, template parameters included
+    Scope* scope = nullptr;
+    const Ty* thisType = nullptr;
+    Subst subst;                          // the enclosing instantiation's arguments
+    const std::vector<Token>* tokens = nullptr;
+    std::string_view text;
+    int depth = 0;
+  };
+  std::mutex lambdaEnvMutex;
+  std::unordered_map<const Ty*, LambdaEnv> lambdaEnvs; // keyed by the lambda's type (one per enclosing instantiation)
+
+  static LambdaExpr* lambdaOf(const Ty* t)
+  {
+    if (!t || t->kind != TyKind::Lambda || !t->decl || t->decl->kind != NodeKind::ClassDecl)
+      return nullptr;
+    return static_cast<ClassDecl*>(t->decl)->lambda;
+  }
+  static bool isGenericLambda(const Ty* t)
+  {
+    LambdaExpr* l = lambdaOf(t);
+    return l && !l->templateParams.empty();
+  }
+
   // Returns the record and whether the caller just became its producer.
   Instantiation* claimClass(const Ty* classTy, bool& producer)
   {
@@ -281,10 +311,14 @@ struct GlobalScope::Impl
     return result;
   }
 
-  Instantiation* claimFunction(FunctionDecl* f, const Subst& subst, bool& producer)
+  // f: a function template, or the closure of a generic lambda (then extra is the lambda's type,
+  // which differs per enclosing instantiation).
+  Instantiation* claimFunction(Decl* f, const Subst& subst, bool& producer, const void* extra = nullptr)
   {
     ++instRequests;
     std::string key(reinterpret_cast<const char*>(&f), sizeof(f));
+    if (extra)
+      key.append(reinterpret_cast<const char*>(&extra), sizeof(extra));
     for (const Subst::Pair& pair : subst.pairs)
     {
       key.append(reinterpret_cast<const char*>(&pair.param), sizeof(pair.param));
@@ -2067,6 +2101,35 @@ struct GlobalScope::Impl
     }
   }
 
+  // The type a function returning `auto`, `auto&`, `const auto*`... deduces from a return
+  // statement's expression type: the written shape around the deduced type.
+  const Ty* deducedShape(const Ty* pattern, const Ty* deduced)
+  {
+    if (pattern && containsAuto(pattern) && deduced && deduced->isKnown())
+      return deduceAuto(pattern, deduced);
+    return types.decay(deduced);
+  }
+
+  // Whether a written type is `auto`, or `auto` under qualifiers, references or pointers.
+  static bool astMentionsAuto(const Type* t)
+  {
+    for (;;)
+    {
+      if (!t)
+        return false;
+      switch (t->kind)
+      {
+        case NodeKind::AutoType: return true;
+        case NodeKind::DecltypeType: return static_cast<const DecltypeType*>(t)->isAuto;
+        case NodeKind::ConstType: t = static_cast<const ConstType*>(t)->inner; break;
+        case NodeKind::PointerType: t = static_cast<const PointerType*>(t)->pointee; break;
+        case NodeKind::LRefType: t = static_cast<const LRefType*>(t)->referenced; break;
+        case NodeKind::RRefType: t = static_cast<const RRefType*>(t)->referenced; break;
+        default: return false;
+      }
+    }
+  }
+
   // Does `t` mention one of the given template parameters?
   static bool dependsOn(const Ty* t, Span<Decl*> params)
   {
@@ -2236,11 +2299,18 @@ struct GlobalScope::Impl
   {
     if (!fnTy || fnTy->kind != TyKind::Function)
       return;
+    deduceParams(f->params, fnTy->args, argTypes, out);
+  }
+
+  // Deduction of a call's template arguments from its arguments: params are the parameter
+  // declarations (for packs), patterns their types (a function's, or a generic lambda's).
+  void deduceParams(Span<Decl*> params, Span<const Ty*> patterns, const std::vector<const Ty*>& argTypes, Subst& out)
+  {
     size_t i = 0;
-    for (size_t p = 0; p < f->params.size() && i < fnTy->args.size(); ++p)
+    for (size_t p = 0; p < params.size() && i < patterns.size(); ++p)
     {
-      auto* pd = static_cast<ParamDecl*>(f->params[p]);
-      const Ty* pattern = fnTy->args[i];
+      auto* pd = static_cast<ParamDecl*>(params[p]);
+      const Ty* pattern = patterns[i];
       if (pd->isPack)
       {
         if (Decl* packDecl = packParamOf(pattern))
@@ -2959,10 +3029,10 @@ struct GlobalScope::Impl
       {
         if (!needReturn)
           return nullptr;
-        if (inst->owner == std::this_thread::get_id())
-          return nullptr; // Recursive auto function.
         if (inst->state.load(std::memory_order_acquire) != 2)
         {
+          if (inst->owner == std::this_thread::get_id())
+            return nullptr; // Recursive auto function.
           ++impl.instWaits;
           while (inst->state.load(std::memory_order_acquire) != 2)
             std::this_thread::yield();
@@ -2977,15 +3047,18 @@ struct GlobalScope::Impl
       else if (Decl* cls = enclosingClassDecl(bodyScope))
         bodyThis = types.pointer(impl.substitute(impl.selfType(cls), full));
       const Ty* deduced = nullptr;
+      const Ty* pattern = nullptr; // the written `auto&`, `const auto*`...: the deduced type takes its shape
       subCheck(f, full, bodyScope, bodyThis, [&](Walker& sub)
       {
         sub.returnFrames.push_back(nullptr);
         sub.walkDecl(f);
         deduced = sub.returnFrames.back();
         sub.returnFrames.pop_back();
+        if (f->returnType && !f->trailingReturn)
+          pattern = sub.typeOf(f->returnType);
         ++impl.instBodies;
       });
-      inst->deducedReturn = deduced ? types.decay(deduced) : nullptr;
+      inst->deducedReturn = deduced ? impl.deducedShape(pattern, deduced) : nullptr;
       impl.instNanos += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
       inst->state.store(2, std::memory_order_release);
       return inst->deducedReturn;
@@ -3470,8 +3543,8 @@ struct GlobalScope::Impl
       if (f->body == nullptr && f->returnType == nullptr && !(f->flags & (DF_Constructor | DF_Destructor | DF_Conversion)))
         return unknown(Why::Unsupported);
       bool autoReturn = false;
-      if (f->returnType && f->returnType->kind == NodeKind::AutoType && !f->trailingReturn)
-        autoReturn = true;
+      if (f->returnType && Impl::astMentionsAuto(f->returnType) && !f->trailingReturn)
+        autoReturn = true; // `auto`, `auto&`, `const auto*`: the body decides
       if (autoReturn)
       {
         if (!f->templateParams.empty())
@@ -3483,12 +3556,23 @@ struct GlobalScope::Impl
               s.pairs.push_back({f->templateParams[i], explicitArgument(namePart->templateArgs[i], f->templateParams[i])});
           impl.deduceCall(f, fnTy, argTypesOf(args), s);
           impl.fillDefaultTemplateArgs(f, s);
+          if (call)
+          {
+            call->templateArgCount = 0;
+            for (Decl* p : f->templateParams)
+            {
+              const Ty* t = s.find(p);
+              if (!t || call->templateArgCount >= 8)
+                break;
+              call->templateArgs[call->templateArgCount++] = t;
+            }
+          }
           if (const Ty* r = instantiateFunction(f, s, true, classSubst))
             return r;
           return unknown(Why::AutoReturn);
         }
         if (const Ty* cached = f->cachedType.load(std::memory_order_acquire))
-          if (cached->kind == TyKind::Function && cached->inner->kind != TyKind::Auto)
+          if (cached->kind == TyKind::Function && !impl.containsAuto(cached->inner))
             return classSubst ? impl.substitute(cached->inner, *classSubst) : cached->inner;
         return unknown(Why::AutoReturn);
       }
@@ -3704,6 +3788,53 @@ struct GlobalScope::Impl
       return callResultOfValue(t, c);
     }
 
+    // A call to a generic lambda: its template parameters are deduced from the arguments, its
+    // body typed for them once per set of arguments (in the environment it was written in), and
+    // the call has the result type found there. The deduced arguments are recorded on the call
+    // for the code generator, as for function templates.
+    const Ty* genericLambdaCall(const Ty* t, CallExpr* c)
+    {
+      LambdaExpr* l = Impl::lambdaOf(t);
+      std::vector<const Ty*> argTypes = argTypesOf(c->args);
+      Subst deduced;
+      impl.deduceParams(l->params, t->args, argTypes, deduced);
+      Subst own; // in parameter order: the instantiation's key
+      for (Decl* p : l->templateParams)
+      {
+        const Ty* a = deduced.find(p);
+        if (!a || !a->isKnown() || types.isDependent(a))
+          return unknown(Why::Deduction);
+        own.pairs.push_back({p, a});
+      }
+      if (own.pairs.size() > 8)
+        return unknown(Why::Deduction);
+      c->templateArgCount = 0;
+      for (const Subst::Pair& p : own.pairs)
+        c->templateArgs[c->templateArgCount++] = p.type;
+      bool producer;
+      Impl::Instantiation* inst = impl.claimFunction(l->closure, own, producer, t);
+      if (!producer)
+      {
+        if (inst->state.load(std::memory_order_acquire) != 2)
+        {
+          if (inst->owner == std::this_thread::get_id())
+            return unknown(Why::AutoReturn); // the lambda calling itself through a capture
+          ++impl.instWaits;
+          while (inst->state.load(std::memory_order_acquire) != 2)
+            std::this_thread::yield();
+        }
+      }
+      else
+      {
+        const Ty* callTy = instantiationDepth > 16 ? nullptr : impl.checkLambdaInstance(t, own, nullptr, &stats);
+        inst->deducedReturn = callTy; // for a lambda: the call operator's type for these arguments
+        inst->state.store(2, std::memory_order_release);
+        ++impl.instBodies;
+      }
+      const Ty* callTy = inst->deducedReturn;
+      return callTy && callTy->kind == TyKind::Function ? callTy->inner : unknown(Why::AutoReturn);
+    }
+
     // Result of calling a value of type t: function pointers, lambdas, functors.
     const Ty* callResultOfValue(const Ty* t, CallExpr* c)
     {
@@ -3715,7 +3846,11 @@ struct GlobalScope::Impl
       if (t->kind == TyKind::Pointer && t->inner->kind == TyKind::Function)
         return t->inner->inner;
       if (t->kind == TyKind::Lambda)
+      {
+        if (c && Impl::isGenericLambda(t))
+          return genericLambdaCall(t, c);
         return t->inner ? t->inner : unknown(Why::AutoReturn);
+      }
       if (t->kind == TyKind::Class)
       {
         MemberResult r = memberOf(t, impl.opSymbols[uint32_t(P::LParen)], nullptr, c->token, false);
@@ -4263,7 +4398,7 @@ struct GlobalScope::Impl
             for (Expr* a : init.args)
               walkExpr(a);
           }
-          bool autoReturn = f->returnType && f->returnType->kind == NodeKind::AutoType && !f->trailingReturn;
+          bool autoReturn = f->returnType && Impl::astMentionsAuto(f->returnType) && !f->trailingReturn;
           if (autoReturn)
             returnFrames.push_back(nullptr);
           if (f->flags & DF_Static)
@@ -4275,12 +4410,14 @@ struct GlobalScope::Impl
           {
             const Ty* deduced = returnFrames.back();
             returnFrames.pop_back();
+            if (deduced && !returnFrames.empty() && !returnFrames.back())
+              returnFrames.back() = deduced; // an instantiation's frame around the body takes it
             if (deduced && deduced->isKnown() && !types.isDependent(deduced))
             {
               // Cache the deduced signature for callers in other files.
               const Ty* fnTy = impl.declaredTypeOf(f, nullptr, 0);
               std::vector<const Ty*> params(fnTy->args.begin(), fnTy->args.end());
-              f->cachedType.store(types.function(types.decay(deduced), Span<const Ty*>{params.data(), uint32_t(params.size())}, fnTy->variadic),
+              f->cachedType.store(types.function(impl.deducedShape(fnTy->inner, deduced), Span<const Ty*>{params.data(), uint32_t(params.size())}, fnTy->variadic),
                                   std::memory_order_release);
             }
           }
@@ -4665,6 +4802,10 @@ struct GlobalScope::Impl
         case NodeKind::LambdaExpr:
         {
           auto* l = static_cast<LambdaExpr*>(e);
+          bool generic = !l->templateParams.empty(); // a template: its call operator is typed per call
+          std::vector<LocalStack::Item> environment;
+          if (generic)
+            environment = locals.items; // what the body can see, kept for typing it for each call
           size_t mark = locals.mark();
           for (const LambdaCapture& cap : l->captures)
             if (cap.decl)
@@ -4686,6 +4827,8 @@ struct GlobalScope::Impl
           returnFrames.pop_back();
           if (!result)
             result = deduced ? types.decay(deduced) : types.voidType();
+          if (generic && (!result->isKnown() || types.isDependent(result)))
+            result = nullptr; // deduced per call
           locals.pop(mark);
           // In a template, the lambda is a different type in each instantiation (its body differs).
           int64_t instance = 0;
@@ -4699,7 +4842,23 @@ struct GlobalScope::Impl
             }
             instance = int64_t(h ? h : 1);
           }
-          return record(e, types.lambda(result, Span<const Ty*>{params.data(), uint32_t(params.size())}, l->closure, instance));
+          const Ty* lambdaTy = types.lambda(result, Span<const Ty*>{params.data(), uint32_t(params.size())}, l->closure, instance);
+          if (generic)
+          {
+            Impl::LambdaEnv env;
+            env.lambda = l;
+            env.locals = std::move(environment);
+            env.scope = scope;
+            env.thisType = thisType;
+            if (activeSubst)
+              env.subst = *activeSubst;
+            env.tokens = &tokens;
+            env.text = text;
+            env.depth = instantiationDepth;
+            std::lock_guard lock(impl.lambdaEnvMutex);
+            impl.lambdaEnvs[lambdaTy] = std::move(env);
+          }
+          return record(e, lambdaTy);
         }
         case NodeKind::BraceInitExpr:
           walkExprs(static_cast<BraceInitExpr*>(e)->args);
@@ -4759,6 +4918,92 @@ struct GlobalScope::Impl
       }
     }
   };
+
+  // The call operator of a generic lambda for one set of its own template arguments: the body
+  // typed in the environment the lambda was written in, with the expression types written in
+  // place (as retypeFor does for function templates). Returns the operator's function type
+  // (parameters and result), or null when the environment is unknown or the result has no type.
+  const Ty* checkLambdaInstance(const Ty* lambdaTy, const Subst& own, Subst* fullOut, ResolveStats* statsInto)
+  {
+    LambdaEnv env;
+    {
+      std::lock_guard lock(lambdaEnvMutex);
+      auto it = lambdaEnvs.find(lambdaTy);
+      if (it == lambdaEnvs.end())
+        return nullptr;
+      env = it->second;
+    }
+    LambdaExpr* l = env.lambda;
+    if (!l || !env.tokens || env.depth > 16)
+      return nullptr;
+    Subst full = env.subst;
+    for (const Subst::Pair& p : own.pairs)
+      if (!full.find(p.param))
+        full.pairs.push_back(p);
+    ResolveStats local;
+    if (statsInto)
+      local.fileIndex = statsInto->fileIndex;
+    Walker sub(*this, local, *env.tokens, env.text);
+    sub.scope = env.scope;
+    sub.thisType = env.thisType;
+    sub.activeSubst = &full;
+    sub.instantiationDepth = env.depth + 1;
+    sub.locals.items = env.locals;
+    for (const LambdaCapture& cap : l->captures)
+      if (cap.decl)
+        sub.walkLocalDecl(cap.decl);
+    sub.pushTemplateParams(l->templateParams);
+    std::vector<const Ty*> params;
+    for (Decl* p : l->params)
+    {
+      sub.walkParam(static_cast<ParamDecl*>(p));
+      const Ty* pt = declaredTypeOf(p, &full, 0);
+      if (!(static_cast<ParamDecl*>(p)->isPack && spliceIfPack(pt, params)))
+        params.push_back(pt);
+    }
+    sub.walkType(l->returnType);
+    const Ty* result = nullptr;
+    if (l->returnType)
+      result = sub.typeOf(l->returnType);
+    sub.returnFrames.push_back(nullptr);
+    sub.walkStmt(l->body);
+    const Ty* deduced = sub.returnFrames.back();
+    sub.returnFrames.pop_back();
+    if (!result)
+      result = deduced ? types.decay(deduced) : types.voidType();
+    if (statsInto)
+    {
+      local.instExprsTyped += local.exprsTyped;
+      local.instExprsDependent += local.exprsDependent;
+      local.instExprsUnknown += local.exprsUnknown;
+      statsInto->add(local);
+    }
+    if (fullOut)
+      *fullOut = full;
+    if (!result->isKnown() || types.isDependent(result))
+      return nullptr;
+    for (const Ty* pt : params)
+      if (!pt || !pt->isKnown())
+        return nullptr;
+    return types.function(result, Span<const Ty*>{params.data(), uint32_t(params.size())}, false);
+  }
+
+  // The deduced return type of an auto-returning function template for one instantiation,
+  // checking its body now if no call has yet.
+  const Ty* deducedReturnOf(FunctionDecl* f, const Subst& subst)
+  {
+    if (!f->file || !f->file->tokens)
+      return nullptr;
+    ResolveStats scratch;
+    Walker w(*this, scratch, *f->file->tokens, f->file->text);
+    for (Decl* p = f; p; p = p->parent)
+      for (Decl* tp : p->templateParams)
+        w.locals.push(static_cast<TemplateParamDecl*>(tp)->name, tp);
+    w.scope = lexicalScopeOf(f);
+    if (f->name.parts.size() > 1)
+      w.scope = w.semanticScopeFor(f->name);
+    return w.instantiateFunction(f, subst, true);
+  }
 };
 
 GlobalScope::GlobalScope(SymbolTable& symbols) : impl(new Impl(symbols)) {}
@@ -5126,6 +5371,12 @@ const Ty* GlobalScope::typeOfDeclIn(Decl* d, const TemplateArgs& args)
     return typeOfDecl(d);
   Subst s = toSubst(args);
   const Ty* t = impl->declaredTypeOf(d, &s, 0);
+  if (d->kind == NodeKind::FunctionDecl && t && t->kind == TyKind::Function && impl->containsAuto(t->inner))
+  {
+    // `template<typename T> auto f(T)`: the return type its body deduced for these arguments.
+    if (const Ty* r = impl->deducedReturnOf(static_cast<FunctionDecl*>(d), s))
+      return impl->types.function(r, t->args, t->variadic);
+  }
   if (impl->containsAuto(t) && d->kind == NodeKind::VariableDecl)
   {
     auto* v = static_cast<VariableDecl*>(d);
@@ -5226,6 +5477,19 @@ void GlobalScope::retypeFor(FunctionDecl* f, const TemplateArgs& args, const Ty*
   else if (Decl* cls = Impl::enclosingClassDecl(w.scope))
     w.thisType = impl->types.pointer(impl->substitute(impl->selfType(cls), subst));
   w.walkDecl(f);
+}
+
+const Ty* GlobalScope::retypeLambdaFor(const Ty* lambdaTy, const TemplateArgs& own, TemplateArgs* fullArgs)
+{
+  Subst s = toSubst(own), full;
+  const Ty* callTy = impl->checkLambdaInstance(lambdaTy, s, &full, nullptr);
+  if (fullArgs)
+  {
+    fullArgs->pairs.clear();
+    for (const auto& p : full.pairs)
+      fullArgs->pairs.push_back({p.param, p.type});
+  }
+  return callTy;
 }
 
 size_t GlobalScope::scopeCount() const { return impl->scopes.load(); }

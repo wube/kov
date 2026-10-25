@@ -3763,6 +3763,43 @@ namespace
       return n;
     }
 
+    // `auto` (also under const, references, pointers, a pack) in a lambda's parameter type.
+    static bool mentionsAuto(const Type* t)
+    {
+      for (;;)
+      {
+        if (!t)
+          return false;
+        switch (t->kind)
+        {
+          case NodeKind::AutoType: return true;
+          case NodeKind::ConstType: t = static_cast<const ConstType*>(t)->inner; break;
+          case NodeKind::PointerType: t = static_cast<const PointerType*>(t)->pointee; break;
+          case NodeKind::LRefType: t = static_cast<const LRefType*>(t)->referenced; break;
+          case NodeKind::RRefType: t = static_cast<const RRefType*>(t)->referenced; break;
+          case NodeKind::PackType: t = static_cast<const PackType*>(t)->pattern; break;
+          default: return false;
+        }
+      }
+    }
+
+    // The same type with its `auto` replaced (in place) by the given type.
+    static Type* replaceAuto(Type* t, Type* with)
+    {
+      if (!t)
+        return t;
+      switch (t->kind)
+      {
+        case NodeKind::AutoType: return with;
+        case NodeKind::ConstType: { auto* c = static_cast<ConstType*>(t); c->inner = replaceAuto(c->inner, with); return t; }
+        case NodeKind::PointerType: { auto* p = static_cast<PointerType*>(t); p->pointee = replaceAuto(p->pointee, with); return t; }
+        case NodeKind::LRefType: { auto* r = static_cast<LRefType*>(t); r->referenced = replaceAuto(r->referenced, with); return t; }
+        case NodeKind::RRefType: { auto* r = static_cast<RRefType*>(t); r->referenced = replaceAuto(r->referenced, with); return t; }
+        case NodeKind::PackType: { auto* p = static_cast<PackType*>(t); p->pattern = replaceAuto(p->pattern, with); return t; }
+        default: return t;
+      }
+    }
+
     Expr* parseLambda(uint32_t start)
     {
       LambdaExpr* l = node<LambdaExpr>(start);
@@ -3869,6 +3906,38 @@ namespace
         parseFunctionSuffix(d);
         l->params = d.params;
         l->returnType = d.trailingReturn;
+      }
+      // `auto` in a parameter makes the lambda generic: each such parameter gets an invented type
+      // parameter (as C++ does) and the call operator is deduced at every call. A lambda with
+      // template parameters keeps them on its closure, which its parameters belong to, so that
+      // the parameters' types can see them.
+      {
+        std::vector<Decl*> templateParams(l->templateParams.begin(), l->templateParams.end());
+        for (Decl* pd : l->params)
+        {
+          auto* p = static_cast<ParamDecl*>(pd);
+          if (!mentionsAuto(p->type))
+            continue;
+          static std::atomic<uint32_t> autoCounter{0};
+          TemplateParamDecl* tp = decl<TemplateParamDecl>(p->type->token);
+          tp->isType = true;
+          tp->isPack = p->isPack;
+          tp->name = symbols.intern("__auto_" + std::to_string(autoCounter++));
+          NamedType* named = node<NamedType>(p->type->token);
+          NamePart part;
+          part.symbol = tp->name;
+          named->name.parts = makeSpanOf(std::vector<NamePart>{part});
+          p->type = replaceAuto(p->type, named);
+          templateParams.push_back(tp);
+        }
+        if (!templateParams.empty())
+        {
+          if (templateParams.size() != l->templateParams.size())
+            l->templateParams = makeSpanOf(templateParams);
+          closure->templateParams = l->templateParams;
+          for (Decl* pd : l->params)
+            pd->parent = closure;
+        }
       }
       for (;;)
       {

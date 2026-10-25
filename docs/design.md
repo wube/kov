@@ -324,7 +324,8 @@ qualified Kov names with parameter types, quoted, so there is no mangling scheme
       (`Vector<int>::operator[]` returns `int&` without copying the template's AST).
    3. Expression typing in all function bodies: literals, names, `this`, calls with overload
       selection by arity, operators (built-in rules and overloaded operators by lookup), casts,
-      `new`, `auto` deduction, range-for element types, lambdas (return type from the body).
+      `new`, `auto` deduction, range-for element types, lambdas (return type from the body; an
+      `auto` parameter makes the lambda a template whose call operator is typed per call, as in C++).
    4. Member accesses through the object's type: this binds the accesses the resolver had to
       defer and is the first real use of class template instantiation.
    5. Checking template bodies per instantiation, exactly once, with the produce/wait protocol

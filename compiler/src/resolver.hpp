@@ -162,6 +162,11 @@ public:
   // Re-types the body of f for one instantiation (expression types and resolved callees are
   // rewritten in place). objectType: the instantiated class for members, or null.
   void retypeFor(FunctionDecl* f, const TemplateArgs& args, const Ty* objectType);
+  // Re-types the body of a generic lambda (one with template parameters, written or invented for
+  // its `auto` parameters) for one set of its own arguments, in the environment the lambda was
+  // written in. Returns its call operator's type (parameters and result) or null; fullArgs gets
+  // the enclosing instantiation's arguments plus the lambda's own, for declarations in the body.
+  const Ty* retypeLambdaFor(const Ty* lambdaTy, const TemplateArgs& own, TemplateArgs* fullArgs);
   TemplateArgs classArgsOf(const Ty* classType); // Parameters of the class template -> arguments of the type.
   // Overload resolution by conversion ranking among candidates (members: objectType is the
   // object they are called on, classArgs its instantiation). Null if none is viable.

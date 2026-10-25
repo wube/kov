@@ -225,8 +225,10 @@ not see `TextButton`), and `typeid(x)` yields the library's `TypeInfo`: every vt
 with the class's name, so the dynamic type of a polymorphic object is one load away;
 `typeid(T)` and non-polymorphic objects get their static name. Test: `typeid.kov`.
 
-The generic lambda (an `auto` parameter) is the one construct left out: `Table::findFirstRowWhere`
-is a hand-written template in `programs/factorio/overrides/Agui/Widget/Table.kov`.
+The generic lambda (an `auto` parameter) was the one construct left out at this point:
+`Table::findFirstRowWhere` was a hand-written template in `programs/factorio/overrides/Agui/Widget/Table.kov`
+until generic lambdas arrived the same evening (below); the override is gone and `Table.cpp`
+converts as written.
 
 ## Agui links and runs (2026-10-25, later)
 
@@ -278,8 +280,8 @@ against the map. The fastest route to each cause was to add `printf` lines to th
 source (convert.cmd regenerates it), then shrink the finding to a probe against the standard
 library alone (seconds to build, against 1.5 minutes with CommonUtil and Agui), then to a test.
 
-What is left in Agui proper: generic lambdas, pointers to member functions, thread-safe statics,
-destructors of globals at exit, `dynamic_cast`. Next: the SDL backend through C import and a
+What was left in Agui proper at that point: generic lambdas and `dynamic_cast` (both done since,
+see below), pointers to member functions, thread-safe statics, destructors of globals at exit. Next: the SDL backend through C import and a
 window, or the game's `Util` library, whichever the game's dependency order wants first.
 
 ## The specification suite (2026-10-25, later)
@@ -345,14 +347,28 @@ checked against the suite, the 40 end-to-end tests and the CommonUtil and Agui s
    compiler turns into atomic instructions), `Vector` from a brace list, `memset`, `abs(int)`,
    the C math functions, `OutOfRange`/`InvalidArgument`.
 
-The suite went from 80 pass / 49 pending to 120 pass / 11 pending; the Factorio front end stayed
+6. **Generic lambdas** (330 Factorio uses) and deduced returns of function templates. `[](auto x)
+   {...}` is a template: the parser invents a type parameter per `auto` parameter (as C++ does),
+   the closure carries the parameter list, and the call operator is typed per call. The type
+   checker keeps, for every lambda with template parameters, the environment it was written in
+   (the enclosing locals, scope, `this`, instantiation); a call deduces the lambda's parameters
+   from the arguments like a function template's, types the body in that environment once per
+   set of arguments, and takes the result type from there. The code generator emits one call
+   operator per instantiation, at the first call and after the call's arguments: a lambda
+   argument's capture list is read where it is written, so its closure has to exist before the
+   operator's body calls it (found by Agui's `Table`, where a predicate lambda captures another
+   lambda and `this`; the closure of a `const auto f = [this](int) {...}` is the expression's,
+   found by `ElementImageSet`). A lambda type depends only on parameters it does not bind itself,
+   so a generic lambda can be a template argument. `auto&`, `const auto*` and plain `auto`
+   returns of function templates take the written shape of the deduced type and are recorded on
+   the call like any deduced arguments. `Table.cpp` converts as written; its override is gone.
+
+The suite went from 80 pass / 49 pending to 124 pass / 9 pending; the Factorio front end stayed
 at 99.27% parsed and 77.6-77.8% typed (members of dependent qualifiers now count as dependent
 instead of being guessed from the primary template). Left pending, in order of Factorio use:
-generic lambdas (330 uses; the closure's call operator needs instantiating per call, which the
-lambda machinery does not do yet), the Kov-only features of design.md section 8 (`for constexpr`,
-reflection, typed unions, `fromStr`, tests), `Variant` (superseded by typed unions), auto-return
-function templates, pointers to member functions, template template parameters, and the SDL
-header import.
+the Kov-only features of design.md section 8 (`for constexpr`, reflection, typed unions,
+`fromStr`, tests), `Variant` (superseded by typed unions), pointers to member functions, template
+template parameters, and the SDL header import.
 
 ## The order that gets to a running game
 

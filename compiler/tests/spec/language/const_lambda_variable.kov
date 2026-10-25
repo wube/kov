@@ -1,0 +1,22 @@
+// spec: a lambda held by a const variable (`const auto f = [this](int) {...}`), called and passed on
+// factorio: 52 uses in 31 files
+template<typename F> int apply(const F& f, int x) { return f(x); }
+struct Grid
+{
+  int spacing = 4;
+  int width(int cols) const
+  {
+    const auto spacingAfter = [this](int col) { return col == 0 ? 0 : this->spacing; };
+    const auto cell = [](int col) { return 10 + col; };
+    int total = 0;
+    for (int c = 0; c < cols; ++c)
+      total += spacingAfter(c) + apply(cell, c);
+    return total;
+  }
+};
+int main()
+{
+  Grid g;
+  println("{}", g.width(3));
+  return 0;
+}

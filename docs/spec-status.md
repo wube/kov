@@ -6,13 +6,12 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**120 pass, 11 pending, 0 failing, 0 fixed** (131 snippets, 2.0 s).
+**124 pass, 9 pending, 0 failing, 0 fixed** (133 snippets, 2.2 s).
 
 ## Language: statements, expressions, declarations
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `language/generic_lambdas.kov` | generic lambdas (auto parameters) | pending | 330 uses in 168 files | generic lambdas are not implemented (Agui's one site is a hand-written override); C:\kov\compiler\tests\spec\language\generic_lambdas.kov:6: codegen does not support a local of unknown type (twice) yet (in @kov.main) |
 | `language/alignas.kov` | alignas on a struct | pass | 68 alignas/alignof uses in 15 files |  |
 | `language/arrays_2d.kov` | two-dimensional arrays: nested brace initialisation and indexing | pass |  |  |
 | `language/assign_through_returned_reference.kov` | assigning through a reference returned from a function | pass |  |  |
@@ -20,6 +19,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `language/auto_variables.kov` | auto variables | pass | 6641 uses in 1428 files |  |
 | `language/binary_literals.kov` | binary integer literals (0b1010) | pass |  |  |
 | `language/bitfields.kov` | bit fields | pass | 14 uses in 6 files |  |
+| `language/const_lambda_variable.kov` | a lambda held by a const variable (`const auto f = [this](int) {...}`), called and passed on | pass | 52 uses in 31 files |  |
 | `language/constexpr_function_bound.kov` | a constexpr function call as an array bound | pass |  |  |
 | `language/constexpr_values.kov` | constexpr constants and constexpr functions | pass | 2643 uses in 808 files (variables), 361 (functions) |  |
 | `language/decltype.kov` | decltype | pass | 163 uses in 57 files |  |
@@ -27,6 +27,8 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `language/designated_initializers.kov` | designated initializers | pass | 45 uses in 21 files |  |
 | `language/enum_class_cxx.kov` | C++-style enum class with underlying type, casts, flags with operators | pass | 961 uses in 701 files |  |
 | `language/exceptions.kov` | exceptions: throw, catch by reference and base, rethrow, cleanup of locals | pass | 3118 throw sites in 853 files, 457 try blocks |  |
+| `language/generic_lambda_predicates.kov` | a generic lambda called with lambda arguments that capture locals, other lambdas and this | pass |  |  |
+| `language/generic_lambdas.kov` | generic lambdas (auto parameters) | pass | 330 uses in 168 files |  |
 | `language/goto.kov` | goto | pass | 8 uses in 6 files |  |
 | `language/if_constexpr.kov` | if constexpr on type traits | pass | 411 uses in 107 files |  |
 | `language/integer_types.kov` | fixed-width integers, size_t, conversions and wrap-around | pass |  |  |
@@ -77,7 +79,6 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `templates/auto_return_templates.kov` | function templates with a deduced (`auto`, `auto&`) return type | pending |  | the return type stays `auto` at the call (`firstOf(p)` has "the type auto"); C:\kov\compiler\tests\spec\templates\auto_return_templates.kov:9: codegen does not support the type auto of BinaryExpr yet (in @kov.main) |
 | `templates/template_template_parameters.kov` | template template parameters | pending |  | template template parameters are not implemented; C:\kov\compiler\tests\spec\templates\template_template_parameters.kov:10: codegen does not support a call to countAll whose template arguments could not be deduced yet (in @kov.main) |
 | `templates/alias_template_conditional.kov` | an alias template over Conditional with a bool parameter (Conditional<Small, int16_t, int64_t>) | pass |  |  |
 | `templates/alias_template_member_access.kov` | an alias template of a class template (template<typename T> using Ptr = UniquePtr<T>;) used as a variable type | pass | 7 alias templates in 6 files |  |
@@ -85,6 +86,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/alias_template_over_trait.kov` | an alias template whose target is a type trait (template<typename T> using Plain = RemoveReference<T>;) | pass |  |  |
 | `templates/alias_template_reference.kov` | an alias template producing a reference type | pass |  |  |
 | `templates/alias_templates_traits.kov` | type traits in if constexpr (isPointer, isSame) inside a deduced function template | pass | 169 type trait uses in 77 files |  |
+| `templates/auto_return_templates.kov` | function templates with a deduced (`auto`, `auto&`) return type | pass |  |  |
 | `templates/class_template_outofline_members.kov` | members of a class template with a non-type parameter defined out of line | pass |  |  |
 | `templates/class_template_static_members.kov` | a static data member of a class template is one object per instantiation | pass |  |  |
 | `templates/class_templates.kov` | class templates: members, nested typedefs, static constexpr functions, several instantiations | pass |  |  |

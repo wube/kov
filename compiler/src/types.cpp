@@ -298,28 +298,63 @@ const Ty* TypeTable::decay(const Ty* t)
   return unqualified(t);
 }
 
-bool TypeTable::isDependent(const Ty* t) const
+namespace
 {
-  if (!t)
-    return false;
-  switch (t->kind)
+  // The template parameters a lambda binds itself (written, or invented for its `auto`
+  // parameters): a lambda type that mentions only those is not dependent; its call operator is a
+  // template, instantiated per call.
+  struct BoundParams
   {
-    case TyKind::Param: case TyKind::Auto: case TyKind::DependentMember: return true;
-    case TyKind::Pointer: case TyKind::LRef: case TyKind::RRef: case TyKind::Array: case TyKind::Value:
-      return isDependent(t->inner);
-    case TyKind::MemberPointer:
-      return isDependent(t->inner) || (!t->args.empty() && isDependent(t->args[0]));
-    case TyKind::Function: case TyKind::Class: case TyKind::Lambda: case TyKind::Pack:
-      if (isDependent(t->inner))
-        return true;
-      for (const Ty* a : t->args)
-        if (isDependent(a))
+    Span<Decl*> params;
+    const BoundParams* outer;
+    bool contains(Decl* d) const
+    {
+      for (const BoundParams* b = this; b; b = b->outer)
+        for (Decl* p : b->params)
+          if (p == d)
+            return true;
+      return false;
+    }
+  };
+
+  bool dependent(const Ty* t, const BoundParams* bound)
+  {
+    if (!t)
+      return false;
+    switch (t->kind)
+    {
+      case TyKind::Param: return !(bound && bound->contains(t->decl));
+      case TyKind::Auto: case TyKind::DependentMember: return true;
+      case TyKind::Pointer: case TyKind::LRef: case TyKind::RRef: case TyKind::Array: case TyKind::Value:
+        return dependent(t->inner, bound);
+      case TyKind::MemberPointer:
+        return dependent(t->inner, bound) || (!t->args.empty() && dependent(t->args[0], bound));
+      case TyKind::Lambda:
+      {
+        BoundParams own{Span<Decl*>{}, bound};
+        if (t->decl && t->decl->kind == NodeKind::ClassDecl && static_cast<ClassDecl*>(t->decl)->lambda)
+          own.params = static_cast<ClassDecl*>(t->decl)->lambda->templateParams;
+        if (dependent(t->inner, &own))
           return true;
-      return false;
-    default:
-      return false;
+        for (const Ty* a : t->args)
+          if (dependent(a, &own))
+            return true;
+        return false;
+      }
+      case TyKind::Function: case TyKind::Class: case TyKind::Pack:
+        if (dependent(t->inner, bound))
+          return true;
+        for (const Ty* a : t->args)
+          if (dependent(a, bound))
+            return true;
+        return false;
+      default:
+        return false;
+    }
   }
 }
+
+bool TypeTable::isDependent(const Ty* t) const { return dependent(t, nullptr); }
 
 std::string TypeTable::toString(const Ty* t, const SymbolTable* symbols) const
 {

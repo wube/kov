@@ -245,7 +245,8 @@ reference, `this`, or the defaults `[=]`/`[&]`, whose capture set is found by sc
 body for enclosing locals), emits the lambda's function right where the lambda appears, and
 calls closure values directly: `@"__lambda_3::operator()(int32)"`. `lambdas.kov` stores
 closures in variables, passes them to `apply` and `forEach` templates and captures `this` in a
-method. Not yet: init-captures, generic lambdas, conversion to function pointers.
+method. Init-captures and generic lambdas came later (the latter on 2026-10-25, see
+path-to-factorio.md); not yet: conversion to function pointers.
 
 Library, second round (same day): `Hash.kov` (`hashOf` overloads for the integers and `String`,
 FNV-1a), `Optional<T>`, `HashMap<K, V>` (open addressing with linear probing, `insert`, `find`,
