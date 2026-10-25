@@ -1800,7 +1800,7 @@ namespace
         case NodeKind::ThisExpr: usesThis = true; break;
         case NodeKind::CallExpr: visit(static_cast<CallExpr*>(n)->callee); visitExprs(static_cast<CallExpr*>(n)->args); break;
         case NodeKind::IndexExpr: visit(static_cast<IndexExpr*>(n)->base); visitExprs(static_cast<IndexExpr*>(n)->args); break;
-        case NodeKind::MemberExpr: visit(static_cast<MemberExpr*>(n)->base); break;
+        case NodeKind::MemberExpr: visit(static_cast<MemberExpr*>(n)->base); visit(static_cast<MemberExpr*>(n)->dynamicMember); break;
         case NodeKind::UnaryExpr: visit(static_cast<UnaryExpr*>(n)->operand); break;
         case NodeKind::BinaryExpr: visit(static_cast<BinaryExpr*>(n)->lhs); visit(static_cast<BinaryExpr*>(n)->rhs); break;
         case NodeKind::ConditionalExpr:
@@ -5021,6 +5021,25 @@ namespace
           auto* m = static_cast<MemberExpr*>(e);
           if (m->resolved && m->resolved->kind == NodeKind::EnumeratorDecl)
             return {std::to_string(enumeratorValue(static_cast<EnumeratorDecl*>(m->resolved))), e->ty};
+          if (const Ty* bt = m->base->ty ? types.stripRef(m->base->ty) : nullptr; bt && bt->kind == TyKind::Member && !m->dynamicMember)
+          {
+            // A reflection descriptor: m.name is the member's name, m.offset its offset in the class.
+            auto* field = static_cast<VariableDecl*>(bt->decl);
+            std::string which = m->member.empty() ? std::string() : sym(m->member.last().symbol);
+            if (which == "name")
+              return {cStringConstant(field->name.empty() ? std::string() : sym(field->name.last().symbol)), e->ty};
+            if (which == "offset")
+            {
+              const Ty* cls = bt->args.empty() ? nullptr : bt->args[0];
+              std::string addr;
+              if (!cls || !fieldAddress(cls, field, "null", addr, e))
+                unsupported(e, "the offset of a member that is not a field");
+              std::string r = newTemp();
+              fn += "  " + r + " = ptrtoint ptr " + addr + " to i64\n";
+              return {r, e->ty};
+            }
+            unsupported(e, "a member descriptor has name and offset only");
+          }
           std::string addr = lvalue(e);
           if (m->resolved && bitfieldOf.count(m->resolved))
             return loadBitfield(addr, bitfieldOf[m->resolved], types.stripRef(e->ty), e);
@@ -6546,6 +6565,51 @@ namespace
       return n->name.parts.size() == 1 && n->name.parts[0].hasTemplateArgs && sym(n->name.parts[0].symbol) == "types";
     }
 
+    // `members(T)` (design.md 8.3): the type reflected on, or null when the node is no such list.
+    Expr* reflectionSubject(Node* list)
+    {
+      if (!list || list->kind != NodeKind::CallExpr)
+        return nullptr;
+      auto* c = static_cast<CallExpr*>(list);
+      if (!c->callee || c->callee->kind != NodeKind::NameExpr || c->args.size() != 1)
+        return nullptr;
+      const QualifiedName& name = static_cast<NameExpr*>(c->callee)->name;
+      if (name.parts.size() != 1 || name.parts[0].hasTemplateArgs || sym(name.parts[0].symbol) != "members")
+        return nullptr;
+      return c->args[0];
+    }
+
+    // The descriptors of a class's non-static data members, bases first, in declaration order.
+    void collectMembers(const Ty* cls, std::vector<const Ty*>& out, Node* at, int depth)
+    {
+      if (depth > 16)
+        unsupported(at, "a class nested too deep for members(T)");
+      ClassDecl* def = classDef(cls->decl, at);
+      if (!def)
+        unsupported(at, "members(T) of a class without a definition");
+      TemplateArgs classArgs = global.classArgsOf(cls);
+      for (const ClassDecl::Base& b : def->bases)
+      {
+        const Ty* bt = global.typeOfAstIn(b.type, def, classArgs);
+        bt = bt ? types.unqualified(types.stripRef(bt)) : nullptr;
+        if (!isClass(bt))
+          unsupported(at, "members(T) with a base class of unknown type");
+        collectMembers(canonicalClass(bt, at), out, at, depth + 1);
+      }
+      for (Decl* d : def->members)
+      {
+        if (d->kind != NodeKind::VariableDecl || (d->flags & (DF_Static | DF_Typedef)))
+          continue;
+        auto* v = static_cast<VariableDecl*>(d);
+        if (v->name.empty())
+          continue;
+        const Ty* t = global.typeOfDeclIn(v, classArgs);
+        if (!t || !t->isKnown())
+          unsupported(at, "members(T) with a member of unknown type (" + sym(v->name.last().symbol) + ")");
+        out.push_back(types.member(t, v, cls));
+      }
+    }
+
     // `for constexpr (typename T : types<A, B>) body` / `for constexpr (int i : {1, 2}) body`: the
     // body once per element, re-typed and emitted with the loop variable bound to the element (a
     // type, or a constant), the way a pack expansion binds each element in turn.
@@ -6587,8 +6651,26 @@ namespace
           elements.push_back(types.valueType(elementTy, *v));
         }
       }
+      else if (Expr* subject = reflectionSubject(list))
+      {
+        // `members(T)`: T's non-static data members, bases first, in declaration order.
+        if (var->isType)
+          unsupported(f, "members(T) for a for constexpr type variable");
+        const Ty* cls = nullptr;
+        if (subject->kind == NodeKind::NameExpr)
+        {
+          NamedType tmp{};
+          tmp.kind = NodeKind::NamedType;
+          tmp.name = static_cast<NameExpr*>(subject)->name;
+          cls = global.typeOfAstIn(&tmp, currentFunction, original);
+        }
+        cls = cls ? types.unqualified(types.stripRef(cls)) : nullptr;
+        if (!isClass(cls))
+          unsupported(f, "members(T) where T is not a class");
+        collectMembers(canonicalClass(cls, f), elements, f, 0);
+      }
       else
-        unsupported(f, "a for constexpr list that is neither types<...> nor a brace list of constants");
+        unsupported(f, "a for constexpr list that is neither types<...>, members(T) nor a brace list of constants");
       const TemplateArgs* savedArgs = currentArgs;
       for (const Ty* element : elements)
       {

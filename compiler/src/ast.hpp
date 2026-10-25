@@ -298,7 +298,8 @@ struct CallExpr : Expr
   uint8_t templateArgCount = 0;
 };
 struct IndexExpr : Expr { Expr* base; Span<Expr*> args; };
-struct MemberExpr : Expr { Expr* base; QualifiedName member; P op; Decl* resolved = nullptr; };
+// dynamicMember: `object.[m]`, the member a reflection descriptor names (design.md 8.3); member is then empty.
+struct MemberExpr : Expr { Expr* base; QualifiedName member; P op; Decl* resolved = nullptr; Expr* dynamicMember = nullptr; };
 struct UnaryExpr : Expr { Expr* operand; uint32_t op; bool isKeyword; bool postfix; };
 struct BinaryExpr : Expr { Expr* lhs; Expr* rhs; uint32_t op; bool isKeyword; };
 struct ConditionalExpr : Expr { Expr* cond; Expr* then; Expr* else_; }; // then == null for Elvis.

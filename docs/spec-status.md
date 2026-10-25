@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**127 pass, 8 pending, 0 failing, 0 fixed** (135 snippets, 2.1 s).
+**129 pass, 7 pending, 0 failing, 0 fixed** (136 snippets, 2.3 s).
 
 ## Language: statements, expressions, declarations
 
@@ -146,7 +146,6 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 |---|---|---|---|---|
 | `kov/enum_from_str.kov` | Direction::fromStr returning an Optional | pending |  | fromStr waits for Optional<E> to be constructible from the compiler; C:\kov\compiler\tests\spec\kov\enum_from_str.kov:10: codegen does not support a call that did not resolve yet (in @kov.main) |
 | `kov/for_constexpr_switch.kov` | for constexpr inside a switch, one case per type (design.md 8.2) | pending |  | case labels produced inside a for constexpr body are not implemented; C:\kov\compiler\tests\spec\kov\for_constexpr_switch.kov:10: codegen does not support a case label outside a switch body yet (in @"nameOf(int32)") |
-| `kov/reflection_members.kov` | members(T) with m.name, m.type and object.[m] | pending |  | reflection is not implemented; C:\kov\compiler\tests\spec\kov\reflection_members.kov:9: codegen does not support a for constexpr list that is neither types<...> nor a brace list of constants yet (in @"describe<Settings>(const Settings&)", requested by @kov.main) |
 | `kov/typed_unions.kov` | typed unions (`union enum`) | pending |  | typed unions are not implemented; C:\kov\compiler\tests\spec\kov\typed_unions.kov:10: codegen does not support a local of unknown type (p) yet (in @kov.main) |
 | `kov/asserts_and_config.kov` | assert and release_assert statements, config constants with if constexpr, conditional functions, CallerLocation | pass |  |  |
 | `kov/attributes_inline.kov` | [[noinline]] and [[forceinline]] attributes | pass |  |  |
@@ -158,6 +157,8 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `kov/nameof.kov` | nameof(expr) as a string literal | pass |  |  |
 | `kov/no_includes_order_independence.kov` | no includes, declaration order does not matter: uses before definitions, mutually recursive types | pass |  |  |
 | `kov/real_enums.kov` | real enums: value block, methods with this as the value, count, values, str, exhaustive switch, nameof | pass |  |  |
+| `kov/reflection_bases_offsets.kov` | members(T) lists the bases' members first; m.offset; object.[m] is assignable | pass |  |  |
+| `kov/reflection_members.kov` | members(T) with m.name, m.type and object.[m] | pass |  |  |
 | `kov/requires_file.kov` | `requires <condition>;` at the top of a file (compiled only when the config says so) | pass |  |  |
 | `kov/tests_in_compiler.kov` | `test "name" { check(...); }` declarations are accepted and cost nothing without --tests | pass |  |  |
 | `kov/underscore_locals.kov` | `_` as a repeatable unnamed local living to the end of its scope | pass |  |  |

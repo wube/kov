@@ -1,6 +1,5 @@
 // spec: members(T) with m.name, m.type and object.[m]
 // design.md 8.3; replaces the serialisation and GUI macros
-// pending: reflection is not implemented
 struct Settings { int width = 640; bool fullscreen = false; };
 template<typename T>
 String describe(const T& object)

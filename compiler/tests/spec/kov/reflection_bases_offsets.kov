@@ -1,0 +1,21 @@
+// spec: members(T) lists the bases' members first; m.offset; object.[m] is assignable
+// design.md 8.3
+struct Base { int id = 7; };
+struct Derived : Base { float ratio = 0.5f; String label = "x"; };
+int main()
+{
+  Derived d;
+  String names;
+  int atZero = 0;
+  for constexpr (auto m : members(Derived))
+  {
+    names += m.name;
+    names += ",";
+    if (m.offset == 0)
+      atZero += 1;
+  }
+  for constexpr (auto m : members(Base))
+    d.[m] = 9;
+  println("{} {} {}", names, d.id, atZero);
+  return 0;
+}

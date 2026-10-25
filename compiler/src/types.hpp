@@ -29,6 +29,8 @@ enum class TyKind : uint8_t
   Auto,    // Placeholder inside a declared type, replaced by deduction.
   Pack,    // args = the types a parameter pack was deduced to.
   Value,   // A non-type template argument: inner = its type, value = the constant.
+  Member,  // A data member as a compile-time value (reflection, design.md 8.3): decl = its VariableDecl,
+           // inner = its type in the class's instantiation, args[0] = the class type.
   Unknown, // Could not be determined; reason is tracked in the statistics, not in the type.
 };
 
@@ -79,6 +81,7 @@ public:
   const Ty* param(Decl* decl);
   const Ty* dependentMember(const Ty* of, uint32_t symbol); // `T::Unit`
   const Ty* valueType(const Ty* of, int64_t value); // a non-type template argument
+  const Ty* member(const Ty* memberType, Decl* decl, const Ty* cls); // a data member as a value (`for constexpr (auto m : members(T))`)
   // instance: a hash of the enclosing instantiation's arguments, so that a lambda written in a
   // template is a different type (with its own closure and function) in each instantiation.
   const Ty* lambda(const Ty* result, Span<const Ty*> params, Decl* closure = nullptr, int64_t instance = 0);

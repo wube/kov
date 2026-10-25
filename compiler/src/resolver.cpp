@@ -2423,6 +2423,8 @@ struct GlobalScope::Impl
       case TyKind::Array: return types.array(substitute(t->inner, s, depth + 1), t->count);
       case TyKind::MemberPointer:
         return types.memberPointer(substitute(t->inner, s, depth + 1), t->args.empty() ? nullptr : substitute(t->args[0], s, depth + 1));
+      case TyKind::Member:
+        return types.member(substitute(t->inner, s, depth + 1), t->decl, t->args.empty() ? nullptr : substitute(t->args[0], s, depth + 1));
       case TyKind::Function:
       case TyKind::Class:
       case TyKind::Lambda:
@@ -2855,6 +2857,20 @@ struct GlobalScope::Impl
     bool isTypesList(const NamedType* n) const
     {
       return n->name.parts.size() == 1 && n->name.parts[0].hasTemplateArgs && symbols.name(n->name.parts[0].symbol) == "types";
+    }
+
+    // `members(T)` (design.md 8.3): the type reflected on, or null when the node is no such list.
+    Expr* reflectionSubject(Node* list) const
+    {
+      if (!list || list->kind != NodeKind::CallExpr)
+        return nullptr;
+      auto* c = static_cast<CallExpr*>(list);
+      if (!c->callee || c->callee->kind != NodeKind::NameExpr || c->args.size() != 1)
+        return nullptr;
+      const QualifiedName& name = static_cast<NameExpr*>(c->callee)->name;
+      if (name.parts.size() != 1 || name.parts[0].hasTemplateArgs || symbols.name(name.parts[0].symbol) != "members")
+        return nullptr;
+      return c->args[0];
     }
 
     TokenScope tokenScope; // this walker's file is where literals are read from, lookups included
@@ -3404,6 +3420,27 @@ struct GlobalScope::Impl
     const Ty* typeOfMember(MemberExpr* m)
     {
       const Ty* base = walkExpr(m->base);
+      if (m->dynamicMember)
+      {
+        // `object.[m]`: the data member the descriptor m names (reflection, design.md 8.3).
+        const Ty* d = types.stripRef(walkExpr(m->dynamicMember));
+        const Ty* object = m->op == P::Arrow || m->op == P::SafeArrow ? objectForArrow(base) : base;
+        if (!d || !d->isKnown())
+          return unknown(Why::Base);
+        if (d->kind != TyKind::Member || !d->decl)
+        {
+          m->resolved = nullptr;
+          ++stats.membersDependent;
+          return types.isDependent(d) ? d : unknown(Why::Unsupported); // in a template body: dependent until the loop binds m
+        }
+        m->resolved = d->decl;
+        ++stats.membersBound;
+        const Ty* t = d->inner ? d->inner : types.unknown();
+        const Ty* obj = object ? types.stripRef(object) : nullptr;
+        if (obj && obj->isConst && t->isKnown() && !t->isReference())
+          t = types.qualified(t, true, false);
+        return t;
+      }
       for (const NamePart& part : m->member.parts)
         for (Node* arg : part.templateArgs)
           walkNode(arg);
@@ -3429,6 +3466,18 @@ struct GlobalScope::Impl
         ++stats.membersUnknownBase;
         ++stats.unknownBaseMembers[symbol];
         return unknown(Why::Base);
+      }
+      if (const Ty* descriptor = types.stripRef(object); descriptor->kind == TyKind::Member)
+      {
+        // A reflection descriptor (`for constexpr (auto m : members(T))`): m.name, m.offset.
+        m->resolved = nullptr;
+        ++stats.membersBound;
+        std::string_view which = symbols.name(symbol);
+        if (which == "name")
+          return types.pointer(types.qualified(types.charType(), true, false));
+        if (which == "offset")
+          return types.sizeType();
+        return unknown(Why::Member);
       }
       MemberResult r = memberOf(object, symbol, &m->member, m->token);
       m->resolved = r.decl;
@@ -4661,6 +4710,8 @@ struct GlobalScope::Impl
           if (f->list && f->list->kind == NodeKind::NamedType && isTypesList(static_cast<NamedType*>(f->list)))
             for (Node* arg : static_cast<NamedType*>(f->list)->name.parts[0].templateArgs)
               walkNode(arg); // `types<A, B>`: the elements; the list itself is the compiler's
+          else if (Expr* subject = reflectionSubject(f->list))
+            walkExpr(subject); // `members(T)`: the type reflected on
           else
             walkNode(f->list);
           locals.push(v->name, v);

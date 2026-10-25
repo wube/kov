@@ -219,6 +219,17 @@ const Ty* TypeTable::valueType(const Ty* of, int64_t value)
   return intern(t);
 }
 
+const Ty* TypeTable::member(const Ty* memberType, Decl* decl, const Ty* cls)
+{
+  Ty t{TyKind::Member};
+  t.inner = memberType;
+  t.decl = decl;
+  const Ty* args[1] = {cls};
+  if (cls)
+    t.args = Span<const Ty*>{args, 1};
+  return intern(t);
+}
+
 const Ty* TypeTable::param(Decl* decl)
 {
   Ty t{TyKind::Param};
@@ -341,7 +352,7 @@ namespace
             return true;
         return false;
       }
-      case TyKind::Function: case TyKind::Class: case TyKind::Pack:
+      case TyKind::Function: case TyKind::Class: case TyKind::Pack: case TyKind::Member:
         if (dependent(t->inner, bound))
           return true;
         for (const Ty* a : t->args)
@@ -435,6 +446,9 @@ std::string TypeTable::toString(const Ty* t, const SymbolTable* symbols) const
     case TyKind::DependentMember: s += toString(t->inner, symbols) + "::" + (symbols ? std::string(symbols->name(uint32_t(t->value))) : std::string("?")); break;
     case TyKind::Value:
       s += t->inner && t->inner->kind == TyKind::Bool ? (t->value ? "true" : "false") : std::to_string(t->value);
+      break;
+    case TyKind::Member:
+      s += "member " + (t->decl ? declName(t->decl) : std::string("?"));
       break;
     case TyKind::MemberPointer:
       s += toString(t->inner, symbols) + " " + (t->args.empty() ? declName(t->decl) : toString(t->args[0], symbols)) + "::*";

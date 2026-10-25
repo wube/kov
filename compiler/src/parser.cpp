@@ -4049,6 +4049,14 @@ namespace
           MemberExpr* m = node<MemberExpr>(start);
           m->base = e;
           m->op = op;
+          if (accept(P::LBracket))
+          {
+            // `object.[m]`: the member a reflection descriptor names (design.md 8.3).
+            m->dynamicMember = parseExpression();
+            expect(P::RBracket, "expected ']' after '.['");
+            e = m;
+            continue;
+          }
           accept(Kw::template_);
           if (!parseQualifiedName(m->member, false))
           {

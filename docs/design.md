@@ -166,6 +166,10 @@ template<typename T> void addValues(const T& object, Values& result)
 ```
 Reflection reads declarations; it never creates names. Save and load written this way replace
 the `accumulate` idea of section 6 for the serialisation case.
+Done 2026-10-25: `for constexpr (auto m : members(T))` with `m.name`, `m.offset` and
+`object.[m]` (bases' members first, then the class's own, in declaration order; a member
+descriptor is a compile-time value the loop binds, like a template argument). Not yet: `m.type`,
+`enumerators(E)`, `alternatives(U)`, comparing types with `==` in `if constexpr`.
 
 **8.4 Real enums**, the proposal's syntax with the inner brace block for the values:
 ```
