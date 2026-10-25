@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**155 pass, 2 pending, 0 failing, 0 fixed** (157 snippets, 2.8 s).
+**156 pass, 2 pending, 0 failing, 0 fixed** (158 snippets, 2.7 s).
 
 ## Language: statements, expressions, declarations
 
@@ -52,6 +52,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `language/structured_bindings_range_for.kov` | structured bindings as the loop variable of a range for: `for (auto& [key, value] : pairs)`, over a Vector and over an InitializerList of a class template's own alias | pass |  |  |
 | `language/switch.kov` | switch with fallthrough and default | pass | 1682 uses in 697 files |  |
 | `language/switch_through_local_alias.kov` | case labels named through a local alias of a nested enum: `using Kind = Token::Special; case Kind::Unary:` | pass |  |  |
+| `language/temporaries_in_branches.kov` | a temporary made inside one branch of `?:`, or inside the right operand of `&&` / `||`, is destroyed only when that branch ran, and before the expression's value is used | pass |  |  |
 | `language/ternary_comma_sizeof.kov` | conditional operator with objects, comma operator, sizeof of expressions | pass |  |  |
 | `language/thread_local.kov` | thread_local variables | pass | 15 uses in 13 files |  |
 | `language/unions.kov` | unions | pass | 47 uses in 39 files |  |

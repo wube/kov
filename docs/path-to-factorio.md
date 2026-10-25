@@ -487,6 +487,41 @@ set), `Serialiser`/`Deserialiser` (`Map`), `FlatMap`'s initializer-list construc
 variable over `InitializerList<Pair<K, V>>`) and a brace list used as a value. Spec:
 `library/less_comparator`.
 
+## The Util smoke test runs (2026-10-25, night)
+
+`programs/factorio/tests/util_smoke.kov` evaluates four expressions with the game's
+`MathExpressions::Evaluator` (`1 + 2 * 3`, `(1 + 2) * 3`, `10 / 4`, `2 * (3 + 4) - 5`) and prints
+7, 9, 2.5 and 9: the tokenizer, the postfix tokenizer and the evaluator, their `FlatMap` tables
+of operators and named functions (lambdas stored as function pointers), `Pair`, `StringView`,
+`Span`, `debug_float_cast` and the exceptions they declare, all converted from C++ and compiled
+by kovc. `convert.cmd` now converts Util with CommonUtil and Agui (461 files), links the subset
+the evaluator needs (CommonUtil, `Util/Container` without `ExtendedBitBuffer`, `Sort`,
+`MathExpressions`, `BitBuffer`, `ToStr`, the root `Typedefs`, `FloatCast`, `BitmapFormat`,
+`NoiseRegisterIndex`) with four stand-ins in `tests/stubs` (`Log.kov`: `logAndAbort`, which the
+converter now makes of `LOG_AND_ABORT` and `LOG_ENUM_AND_ABORT`; `UtilHelpers.kov`: the two map
+helpers of `Util/Util.hpp`, whose whole header wants `Result`, SDL message boxes and regular
+expressions; `MathStubs.kov`: `Math::fabs`, since `Util/Math.hpp` brings the CPU intrinsics;
+`FloatCast.kov`: the failure handler that logs through the global context), and compares the
+output.
+
+Getting there took, in the compiler: class template argument deduction in expressions
+(`Pair(a, b)`, `Span(p, n)`), `Vector::emplace(position, args...)`, range-for bindings inside
+instantiations, `Alias{}` of a scalar, `Map`/`Set` from brace lists, `Less<>` and `Name<>` taking
+every default, a conditional of a class and a converting branch having the class type, lambdas
+without captures as pointers to function (a thunk per lambda, also for pointer-to-function
+parameters and references to them), and the KOV_DEBUG_CALLS trace no longer crashing on
+operators; in the converter: the function-macro table with text around `$1` (`toCStr`), the Log
+macros, default template arguments carried from forward declarations, a single file as an input.
+
+The first run linked and died at startup with heap corruption, exit 0xC0000374. Unbuffered marks
+on stderr (`fputs` + `fflush`, each followed by `HeapValidate`) placed it: `PostfixToken`'s
+constructor computes `number(type == Number ? strtodouble(String(data, length)) : 0)`, and the
+code generator destroyed the `String` temporary at the end of the statement whichever branch had
+run, freeing an unbuilt object for every token that is not a number. Temporaries made inside a
+branch of `?:`, or inside the right operand of `&&`/`||`, now die inside that branch (spec:
+`language/temporaries_in_branches`). Same lesson as Agui's: compiling and linking prove little,
+running does. Spec suite: 156 pass, 2 pending.
+
 ## The order that gets to a running game
 
 1. Decide exceptions and RTTI; implement them (they shape what the converter emits).

@@ -28,7 +28,8 @@ Front end (lexer, parser, resolver, type checker, template instantiation) is don
 and the bundled clang: `compiler\build\kovc.exe --exe out.exe program.kov`. Run the end-to-end
 tests with `compiler\tests\run_tests.cmd` and the specification suite `compiler\tests\spec.cmd`
 (one snippet per construct, pass/pending, writes docs/spec-status.md) after every compiler
-change; the Factorio benchmark command in docs/prototype-results.md is the regression check for the
+change, and `programs\factorio\convert.cmd`, which converts CommonUtil, Agui and Util and runs their
+three smoke tests (the one check that runs converted game code); the Factorio benchmark command in docs/prototype-results.md is the regression check for the
 front end. A new gap found in converted code gets a pending snippet in `compiler/tests/spec/`
 before it is fixed. Measure, don't guess: every speed claim comes with the benchmark command and
 numbers.

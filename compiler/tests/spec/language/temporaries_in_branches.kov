@@ -1,0 +1,22 @@
+// spec: a temporary made inside one branch of `?:`, or inside the right operand of `&&` / `||`, is destroyed only when that branch ran, and before the expression's value is used
+// found in src/Util (MathExpressions/PostfixToken: `number(type == Number ? strtodouble(String(data, length)) : 0)` destroyed an unbuilt String)
+struct Noisy
+{
+  int id;
+  Noisy(int id) : id(id) { println("+{}", id); }
+  ~Noisy() { println("-{}", this->id); }
+  int value() const { return this->id * 10; }
+};
+int pick(bool flag) { return flag ? Noisy(1).value() : 0; }
+bool both(bool flag) { return flag && Noisy(2).value() > 5; }
+bool either(bool flag) { return flag || Noisy(3).value() > 50; }
+int main()
+{
+  println("{}", pick(false));
+  println("{}", pick(true));
+  println("{}", both(false));
+  println("{}", both(true));
+  println("{}", either(true));
+  println("{}", either(false));
+  return 0;
+}

@@ -4221,12 +4221,15 @@ namespace
             Value cond = convert(rvalue(c->cond), types.boolType(), e);
             std::string tL = newLabel("cond.then"), eL = newLabel("cond.else"), jL = newLabel("cond.end");
             fn += "  br i1 " + cond.text + ", label %" + tL + ", label %" + eL + "\n";
+            size_t temps = statementTemps.size();
             startBlock(tL);
             std::string a = lvalue(c->then);
+            destroyTempsFrom(temps);
             std::string aEnd = currentBlock;
             emitBranch(jL);
             startBlock(eL);
             std::string b = lvalue(c->else_);
+            destroyTempsFrom(temps);
             std::string bEnd = currentBlock;
             emitBranch(jL);
             startBlock(jL);
@@ -5388,12 +5391,15 @@ namespace
           {
             // Both branches name objects (`cond ? a : b` with lvalues or references): the result
             // is one of them, not a copy.
+            size_t temps = statementTemps.size();
             startBlock(tL);
             std::string a = lvalue(c->then);
+            destroyTempsFrom(temps);
             std::string aEnd = currentBlock;
             emitBranch(jL);
             startBlock(eL);
             std::string b = lvalue(c->else_);
+            destroyTempsFrom(temps);
             std::string bEnd = currentBlock;
             emitBranch(jL);
             startBlock(jL);
@@ -5405,23 +5411,29 @@ namespace
           {
             // Both branches build the one temporary (a copy of an lvalue, or the value itself).
             std::string slot = newObjectSlot(t, e);
+            size_t temps = statementTemps.size();
             startBlock(tL);
             initializeFrom(slot, t, c->then, e);
+            destroyTempsFrom(temps);
             emitBranch(jL);
             startBlock(eL);
             initializeFrom(slot, t, c->else_, e);
+            destroyTempsFrom(temps);
             emitBranch(jL);
             startBlock(jL);
             if (needsDestruction(t, e))
               statementTemps.push_back({slot, t});
             return {slot, t, true};
           }
+          size_t temps = statementTemps.size();
           startBlock(tL);
           Value a = t->kind == TyKind::Void ? rvalue(c->then) : convert(rvalue(c->then), t, e);
+          destroyTempsFrom(temps); // `number(isNumber ? strtodouble(String(data, length)) : 0)`: the String exists only here
           std::string aEnd = currentBlock;
           emitBranch(jL);
           startBlock(eL);
           Value b = t->kind == TyKind::Void ? rvalue(c->else_) : convert(rvalue(c->else_), t, e);
+          destroyTempsFrom(temps);
           std::string bEnd = currentBlock;
           emitBranch(jL);
           startBlock(jL);
@@ -5766,7 +5778,9 @@ namespace
       else
         fn += "  br i1 " + l.text + ", label %" + eL + ", label %" + rL + "\n";
       startBlock(rL);
+      size_t temps = statementTemps.size();
       Value r = convert(rvalue(rhs), types.boolType(), at);
+      destroyTempsFrom(temps); // `flag && Noisy(2).value() > 5`: the Noisy exists only here
       std::string rEnd = currentBlock;
       emitBranch(eL);
       startBlock(eL);
@@ -5782,6 +5796,15 @@ namespace
       for (size_t i = statementTemps.size(); i-- > 0;)
         destroyObject(statementTemps[i]);
       statementTemps.clear();
+    }
+
+    // Destroys the temporaries made since mark: those of one branch of `?:` or of the right
+    // operand of `&&`/`||`, which exist only when that branch ran, so they die inside it.
+    void destroyTempsFrom(size_t mark)
+    {
+      for (size_t i = statementTemps.size(); i-- > mark;)
+        destroyObject(statementTemps[i]);
+      statementTemps.resize(mark);
     }
 
     void destroyObject(const Object& o)
