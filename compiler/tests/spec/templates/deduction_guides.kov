@@ -1,0 +1,11 @@
+// spec: deduction guides and the overload-set idiom: `template<typename... Ts> Overload(Ts...) -> Overload<Ts...>;` with `using Ts::operator()...;`
+// found in src/Util (Util.hpp make_overload, used with std::visit)
+// pending: deduction guides and pack using-declarations are not parsed
+template<typename... Ts> struct Overload : Ts... { using Ts::operator()...; };
+template<typename... Ts> Overload(Ts...) -> Overload<Ts...>;
+int main()
+{
+  Overload o{[](int x) { return x + 1; }, [](const char* s) { return (int)strlen(s); }};
+  println("{} {}", o(41), o("abc"));
+  return 0;
+}

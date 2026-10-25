@@ -6,12 +6,15 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**137 pass, 1 pending, 0 failing, 0 fixed** (138 snippets, 2.4 s).
+**137 pass, 7 pending, 0 failing, 0 fixed** (144 snippets, 2.4 s).
 
 ## Language: statements, expressions, declarations
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
+| `language/alias_array_function_types.kov` | aliases of array and function types: `using Row = int[3]`, `using Grid = size_t[2][3]`, `using Unary = double(double)` | pending |  | array and function types are not parsed as alias targets; C:\kov\compiler\tests\spec\language\alias_array_function_types.kov:10: codegen does not support a local of unknown type (r) yet (in @kov.main) |
+| `language/explicit_operator_call.kov` | an operator function called by name: `operator==(a, b)`, `a.operator[](i)` | pending |  | `operator ==` as a function name in an expression is not parsed; C:\kov\compiler\tests\spec\language\explicit_operator_call.kov:6: codegen does not support the statement kind ErrorStmt yet (in @"differ(const Digest&, const Digest&)") |
+| `language/specifier_order.kov` | declaration specifiers in any order: `float static f()`, `void inline g()`, `const static int x[]` in a body | pending |  | specifiers after the type are not parsed; C:\kov\compiler\tests\spec\language\specifier_order.kov:11: codegen does not support the statement kind ErrorStmt yet (in @kov.main) |
 | `language/alignas.kov` | alignas on a struct | pass | 68 alignas/alignof uses in 15 files |  |
 | `language/arrays_2d.kov` | two-dimensional arrays: nested brace initialisation and indexing | pass |  |  |
 | `language/assign_through_returned_reference.kov` | assigning through a reference returned from a function | pass |  |  |
@@ -79,6 +82,8 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
+| `templates/deduction_guides.kov` | deduction guides and the overload-set idiom: `template<typename... Ts> Overload(Ts...) -> Overload<Ts...>;` with `using Ts::operator()...;` | pending |  | deduction guides and pack using-declarations are not parsed; C:\kov\compiler\tests\spec\templates\deduction_guides.kov:8: codegen does not support a local of unknown type (o) yet (in @kov.main) |
+| `templates/requires_clause_before_body.kov` | a requires clause between a member function's qualifiers and its body: `bool operator==(const V&) const requires Comparable<T> { ... }` | pending |  | the clause's expression swallows the body's brace; LINK : fatal error LNK1561: entry point must be defined |
 | `templates/alias_template_conditional.kov` | an alias template over Conditional with a bool parameter (Conditional<Small, int16_t, int64_t>) | pass |  |  |
 | `templates/alias_template_member_access.kov` | an alias template of a class template (template<typename T> using Ptr = UniquePtr<T>;) used as a variable type | pass | 7 alias templates in 6 files |  |
 | `templates/alias_template_nested_args.kov` | an alias template whose target nests the parameter in another template argument (Vector<Pair<T, T>>) | pass |  |  |
@@ -169,6 +174,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
+| `interop/calling_convention_pointers.kov` | function pointer types with a Windows calling convention: `BOOL(__stdcall*)(void)`, `VOID(NTAPI*)(DWORD)` (one convention on x64; the word is accepted and ignored) | pending |  | `__stdcall` inside a function pointer type is not parsed; C:\kov\compiler\tests\spec\interop\calling_convention_pointers.kov:8: codegen does not support a local of unknown type (f) yet (in @kov.main) |
 | `interop/c_callbacks.kov` | Kov functions as C callbacks (function pointers with C signatures) and C function pointers stored in Kov | pass |  |  |
 | `interop/c_import_stdlib.kov` | importing C standard headers and using their functions, types and callbacks (qsort) | pass |  |  |
 | `interop/c_import_windows.kov` | importing a C header (`extern "C" import "windows.h";`) and calling into it | pass |  |  |

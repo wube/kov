@@ -1,0 +1,15 @@
+// spec: aliases of array and function types: `using Row = int[3]`, `using Grid = size_t[2][3]`, `using Unary = double(double)`
+// found in src/Util (SmallVector, RadixSort, MathExpressions/Evaluator)
+// pending: array and function types are not parsed as alias targets
+using Row = int[3];
+using Grid = int[2][3];
+using Unary = double(double);
+double twice(double x) { return x * 2; }
+int main()
+{
+  Row r = {1, 2, 3};
+  Grid g = {{1, 2, 3}, {4, 5, 6}};
+  Unary* f = &twice;
+  println("{} {} {} {}", r[2], g[1][2], (int)sizeof(Grid), f(4.0));
+  return 0;
+}

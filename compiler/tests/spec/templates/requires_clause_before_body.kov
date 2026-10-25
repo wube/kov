@@ -1,0 +1,21 @@
+// spec: a requires clause between a member function's qualifiers and its body: `bool operator==(const V&) const requires Comparable<T> { ... }`
+// found in src/Util (Container/StaticVector)
+// pending: the clause's expression swallows the body's brace
+template<typename T> constexpr bool Comparable = true;
+template<typename T>
+struct Box
+{
+  T value;
+  bool operator==(const Box& other) const requires Comparable<T>
+  {
+    return this->value == other.value;
+  }
+};
+int main()
+{
+  Box<int> a{3};
+  Box<int> b{3};
+  Box<int> c{4};
+  println("{} {}", a == b, a == c);
+  return 0;
+}

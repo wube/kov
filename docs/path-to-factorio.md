@@ -413,6 +413,40 @@ only `Variant`, which stays pending by decision (a `std::variant` becomes a type
 converter will need a mapping for the 24 uses). Not in the suite yet, and still open in design.md
 section 8: `m.type`, `enumerators(E)`, `alternatives(U)`, and the `--tests` runner.
 
+## src/Util through the converter: the first run (2026-10-25, night)
+
+With the suite's compiler-side list empty, the next module of the roadmap is the game's `Util`
+(370 files, 47k lines; 144 .cpp and 226 .hpp merged into 304 Kov files). The first run, with
+CommonUtil and Agui as context and nothing hand-written yet:
+
+```
+compiler\build\kovc.exe --no-std --quiet --convert OUT --overrides programs\factorio\overrides C:\Factorio\libraries\CommonUtil C:\Factorio\libraries\Agui C:\Factorio\src\Util
+compiler\build\kovc.exe --std stdlib --cinclude C:\Factorio\libraries\SDL3\include --errors 60 --unresolved 60 --emit-llvm out.ll OUT\CommonUtil OUT\Agui OUT\Util
+```
+
+| | |
+|---|---|
+| files parsing clean | 96.26% (43 parse errors in 18 files) |
+| expressions typed | 85.4% (7.3% dependent, 7.3% unknown) of 340k |
+| members bound | 82.9% (4.5% on an object of unknown type, 3.2% no such member) |
+| unresolved names | 8,719 (mostly other modules: `GlobalContext`, `Log`, `Map/MapSerialiser`, `RuntimeError`, Lua) |
+| std names without a mapping | ~80 kinds: traits (`is_trivially_*`, `is_arithmetic_v`...), `variant_size_v`/`visit`, `priority_queue`, `reverse_iterator`, `future`/`async`, `strong_ordering`, `time_t`/`localtime`, `uninitialized_*` |
+
+The parse errors fall into two piles. Compiler gaps, each now a pending snippet: declaration
+specifiers after the type (`float static f()`, `void inline g()`, `const static int x[]`),
+array and function types as alias targets (`using Row = T[N]`, `using Unary = double(double)`),
+operator functions called by name (`!operator==(l, r)`), `__stdcall` inside function pointer
+types, a `requires` clause between a member's qualifiers and its body, and deduction guides with
+`using Ts::operator()...` (`make_overload`). Converter bugs, to fix in `convert.cpp`: default
+arguments `= {}` written as `= ()`; a removed friend or macro-generated declaration leaving its
+`template<...>` header or `[[noreturn]]` attributes behind; the printf-format attribute macro
+written as `(4, 5)` after the parameter list; a macro standing for `extern "C"` turned into a
+constant; and `__try`/`__except` (SEH in CrashHandler and SystemUtil, which want override files
+rather than a translation). The C import also needs curl's include directory (`Util/Http`), and
+the 8.7k unresolved names say Util cannot be compiled alone: the game's root headers (`Log`,
+`GlobalContext`, `RuntimeError`), `Map` and the Lua binding come with it, so the next conversion
+set is Util plus those, with stubs for what the smoke tests do not touch.
+
 ## The order that gets to a running game
 
 1. Decide exceptions and RTTI; implement them (they shape what the converter emits).
