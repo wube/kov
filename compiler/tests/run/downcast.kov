@@ -1,0 +1,28 @@
+// static_cast and C-style casts from a base class to a derived one (pointers and references), with a second base after the polymorphic one.
+extern "C" int printf(const char* format, ...);
+struct Layout
+{
+  int kind = 0;
+  virtual ~Layout() {}
+  virtual int size() { return 1; }
+};
+struct Tag
+{
+  int tag = 7;
+};
+struct VerticalFlow : Layout, Tag
+{
+  int rows = 3;
+  int size() override { return this->rows; }
+};
+int main()
+{
+  VerticalFlow flow;
+  Layout* base = &flow;
+  Layout& ref = flow;
+  VerticalFlow* back = static_cast<VerticalFlow*>(base);
+  VerticalFlow& backRef = static_cast<VerticalFlow&>(ref);
+  VerticalFlow* cback = (VerticalFlow*)base;
+  printf("%d %d %d %d %d\n", back->rows, backRef.tag, cback->rows, back == &flow ? 1 : 0, base->size());
+  return 0;
+}

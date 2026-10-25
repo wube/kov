@@ -226,12 +226,13 @@ const Ty* TypeTable::param(Decl* decl)
   return intern(t);
 }
 
-const Ty* TypeTable::lambda(const Ty* result, Span<const Ty*> params, Decl* closure)
+const Ty* TypeTable::lambda(const Ty* result, Span<const Ty*> params, Decl* closure, int64_t instance)
 {
   Ty t{TyKind::Lambda};
   t.inner = result;
   t.args = params;
   t.decl = closure;
+  t.value = instance;
   return intern(t);
 }
 
@@ -359,6 +360,12 @@ std::string TypeTable::toString(const Ty* t, const SymbolTable* symbols) const
       if (t->decl)
       {
         s += declName(t->decl);
+        if (t->value != 0)
+        {
+          char buf[24];
+          snprintf(buf, sizeof buf, "#%llx", (unsigned long long)t->value); // the enclosing instantiation
+          s += buf;
+        }
         break;
       }
       [[fallthrough]];

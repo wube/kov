@@ -132,7 +132,7 @@ namespace
       std::string functionName;
       bool emitted = false;
     };
-    std::unordered_map<Decl*, ClosureInfo> closures; // keyed by the closure ClassDecl
+    std::unordered_map<const Ty*, ClosureInfo> closures; // keyed by the lambda type (one per enclosing instantiation)
     static bool isLambda(const Ty* t) { return t && t->kind == TyKind::Lambda && t->decl; }
     static bool isAggregate(const Ty* t) { return isClass(t) || isLambda(t); }
     std::deque<Instantiation> worklist;
@@ -1531,14 +1531,14 @@ namespace
     // The closure of a lambda type, created from its capture list in the current function.
     ClosureInfo& closureFor(const Ty* t, Node* at)
     {
-      auto it = closures.find(t->decl);
+      auto it = closures.find(t);
       if (it != closures.end())
         return it->second;
       auto* c = static_cast<ClassDecl*>(t->decl);
       LambdaExpr* l = c->lambda;
       if (!l)
         unsupported(at, "a lambda without its expression");
-      ClosureInfo& info = closures[t->decl];
+      ClosureInfo& info = closures[t];
       info.structName = "%closure." + std::to_string(closures.size());
       info.enclosingClass = currentClassTy;
       bool usesThis = false;
@@ -1614,8 +1614,8 @@ namespace
       std::string params;
       for (size_t i = 0; i < ft->args.size(); ++i)
         params += (i ? ", " : "") + types.toString(ft->args[i], &symbols);
-      info.functionName = "@\"" + std::string(symbols.name(c->name.last().symbol)) + "::operator()(" + params + ")\"";
-      return closures[t->decl];
+      info.functionName = "@\"" + types.toString(t, &symbols) + "::operator()(" + params + ")\"";
+      return closures[t];
     }
 
     // Builds the closure object of a lambda expression in a fresh slot and emits its function.
@@ -1663,9 +1663,9 @@ namespace
         else
           store(load(addr, info.fieldTypes[i], l), field, info.fieldTypes[i], l);
       }
-      if (!closures[t->decl].emitted)
+      if (!closures[t].emitted)
       {
-        closures[t->decl].emitted = true;
+        closures[t].emitted = true;
         emitLambda(l, t);
       }
       return {slot, t, false};
@@ -2974,6 +2974,59 @@ namespace
     }
 
     // Address of the `base` subobject inside the `derived` object at addr (false if not a base).
+    // An explicit cast: what convert does, plus the downcast to a derived class (pointer or
+    // reference) that an implicit conversion never makes.
+    Value explicitConvert(Value v, const Ty* to, Node* at)
+    {
+      const Ty* target = types.stripRef(to);
+      const Ty* from = v.ty;
+      bool pointers = from && target && from->kind == TyKind::Pointer && target->kind == TyKind::Pointer && isClass(from->inner) && isClass(target->inner);
+      bool objects = isClass(from) && isClass(target);
+      if (pointers || objects)
+      {
+        const Ty* fromCls = pointers ? from->inner : from;
+        const Ty* toCls = pointers ? target->inner : target;
+        std::vector<std::pair<std::string, uint32_t>> path;
+        if (classKey(fromCls) != classKey(toCls) && basePath(toCls, fromCls, path, at))
+          return {derivedAddress(path, v.text), pointers ? target : types.unqualified(toCls), false}; // `static_cast<VerticalFlow&>(layout)`
+      }
+      return convert(v, to, at);
+    }
+
+    // The chain of base-class fields from derived down to base: (struct name, field index) pairs.
+    bool basePath(const Ty* derived, const Ty* base, std::vector<std::pair<std::string, uint32_t>>& path, Node* at)
+    {
+      if (canonicalClass(derived, at) == canonicalClass(base, at))
+        return true;
+      StructInfo& info = structFor(derived, at);
+      std::string name = info.name;
+      std::vector<std::pair<Decl*, uint32_t>> bases = info.bases;
+      std::vector<const Ty*> fieldTypes = info.fieldTypes;
+      for (auto& [baseDef, index] : bases)
+      {
+        path.push_back({name, index});
+        if (basePath(fieldTypes[index], base, path, at))
+          return true;
+        path.pop_back();
+      }
+      return false;
+    }
+
+    // The derived object's address from its base subobject's, back along the path of base fields.
+    std::string derivedAddress(const std::vector<std::pair<std::string, uint32_t>>& path, const std::string& baseAddr)
+    {
+      if (path.empty())
+        return baseAddr;
+      std::string offset = "ptr null";
+      for (auto& [name, index] : path)
+        offset = "ptr getelementptr (" + name + ", " + offset + ", i32 0, i32 " + std::to_string(index) + ")";
+      std::string off = newTemp(), neg = newTemp(), r = newTemp();
+      fn += "  " + off + " = ptrtoint " + offset + " to i64\n";
+      fn += "  " + neg + " = sub i64 0, " + off + "\n";
+      fn += "  " + r + " = getelementptr i8, ptr " + baseAddr + ", i64 " + neg + "\n";
+      return r;
+    }
+
     bool baseAddress(const Ty* derived, const Ty* base, const std::string& addr, std::string& out, Node* at)
     {
       if (canonicalClass(derived, at) == canonicalClass(base, at))
@@ -4069,9 +4122,9 @@ namespace
             rvalue(static_cast<CastExpr*>(e)->operand); // `(void)x`: evaluated, result dropped
             return {"", types.voidType()};
           }
-          return convert(rvalue(static_cast<CastExpr*>(e)->operand), e->ty, e);
+          return explicitConvert(rvalue(static_cast<CastExpr*>(e)->operand), e->ty, e);
         case NodeKind::NamedCastExpr:
-          return convert(rvalue(static_cast<NamedCastExpr*>(e)->operand), e->ty, e);
+          return explicitConvert(rvalue(static_cast<NamedCastExpr*>(e)->operand), e->ty, e);
         case NodeKind::FunctionalCastExpr:
         {
           auto* c = static_cast<FunctionalCastExpr*>(e);

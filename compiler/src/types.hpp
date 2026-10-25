@@ -77,7 +77,9 @@ public:
   const Ty* enumType(Decl* decl);
   const Ty* param(Decl* decl);
   const Ty* valueType(const Ty* of, int64_t value); // a non-type template argument
-  const Ty* lambda(const Ty* result, Span<const Ty*> params, Decl* closure = nullptr);
+  // instance: a hash of the enclosing instantiation's arguments, so that a lambda written in a
+  // template is a different type (with its own closure and function) in each instantiation.
+  const Ty* lambda(const Ty* result, Span<const Ty*> params, Decl* closure = nullptr, int64_t instance = 0);
   const Ty* memberPointer(const Ty* member, const Ty* cls); // args[0] = the class (may be a parameter), decl = its declaration
   const Ty* pack(Span<const Ty*> elements);
   // Same type with qualifiers added (references and functions ignore them).

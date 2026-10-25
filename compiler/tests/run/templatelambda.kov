@@ -1,0 +1,38 @@
+// A lambda in a class template body is a different closure in each instantiation: Policy::getCoordinate resolves per instantiation, and the static call through the template parameter.
+extern "C" int printf(const char* format, ...);
+struct Point { int x; int y; };
+struct VerticalPolicy
+{
+  static int getCoordinate(Point p) { return p.y; }
+};
+struct HorizontalPolicy
+{
+  static int getCoordinate(Point p) { return p.x; }
+};
+template<typename Policy>
+struct ScrollBar
+{
+  Function<void(Point)> onDown;
+  int downMousePos = 0;
+  int thumbPos = 0;
+  ScrollBar();
+};
+template<typename Policy>
+ScrollBar<Policy>::ScrollBar()
+{
+  this->onDown = [this](Point p)
+  {
+    this->downMousePos = Policy::getCoordinate(p) + Policy::getCoordinate(Point{10, 20});
+    this->thumbPos = Policy::getCoordinate(p);
+  };
+}
+int main()
+{
+  ScrollBar<VerticalPolicy> v;
+  ScrollBar<HorizontalPolicy> h;
+  Point p{1, 2};
+  v.onDown(p);
+  h.onDown(p);
+  printf("%d %d %d %d\n", v.downMousePos, v.thumbPos, h.downMousePos, h.thumbPos);
+  return 0;
+}

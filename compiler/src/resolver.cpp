@@ -843,6 +843,13 @@ struct GlobalScope::Impl
         return {};
       if (step.found == Found::Dependent)
       {
+        if (!last && subst && step.decl && step.decl->kind == NodeKind::TemplateParamDecl)
+          if (const Ty* sub = subst->find(step.decl); sub && sub->kind == TyKind::Class && sub->decl)
+            if (Scope* inside = classScopeOf(sub))
+            {
+              current = inside; // `Policy::getCoordinate` with Policy = VerticalPolicy: the rest inside that class
+              continue;
+            }
         out = step;
         out.found = Found::Dependent;
         return out; // `T::type`: dependent on a template parameter.
@@ -2067,7 +2074,7 @@ struct GlobalScope::Impl
         if (t->kind == TyKind::Function)
           return types.function(substitute(t->inner, s, depth + 1), span, t->variadic);
         if (t->kind == TyKind::Lambda)
-          return types.lambda(substitute(t->inner, s, depth + 1), span, t->decl);
+          return types.lambda(substitute(t->inner, s, depth + 1), span, t->decl, t->value);
         return types.qualified(types.classType(t->decl, span), t->isConst, t->isVolatile);
       }
       default:
@@ -4187,7 +4194,19 @@ struct GlobalScope::Impl
           if (!result)
             result = deduced ? types.decay(deduced) : types.voidType();
           locals.pop(mark);
-          return record(e, types.lambda(result, Span<const Ty*>{params.data(), uint32_t(params.size())}, l->closure));
+          // In a template, the lambda is a different type in each instantiation (its body differs).
+          int64_t instance = 0;
+          if (activeSubst)
+          {
+            uint64_t h = 1469598103934665603ull;
+            for (auto& [d, ty] : activeSubst->pairs)
+            {
+              h = (h ^ uint64_t(reinterpret_cast<uintptr_t>(d))) * 1099511628211ull;
+              h = (h ^ uint64_t(reinterpret_cast<uintptr_t>(ty))) * 1099511628211ull;
+            }
+            instance = int64_t(h ? h : 1);
+          }
+          return record(e, types.lambda(result, Span<const Ty*>{params.data(), uint32_t(params.size())}, l->closure, instance));
         }
         case NodeKind::BraceInitExpr:
           walkExprs(static_cast<BraceInitExpr*>(e)->args);
