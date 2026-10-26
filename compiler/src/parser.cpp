@@ -1710,6 +1710,25 @@ namespace
     {
       d.type = parseTypeSuffixes(d.type);
       skipAttributes();
+      // C headers parenthesise function names to suppress macro expansion:
+      //   int (lua_gettop) (lua_State *L);
+      // Strip the wrapping parens so the name is parsed normally.
+      if (cMode && at(P::LParen) && atIdent(1) && at(P::RParen, 2))
+      {
+        advance();           // skip '('
+        parseQualifiedName(d.name, true); // consume the function name
+        advance();           // skip ')'
+        skipAttributes();
+        if (at(P::LParen) && !d.name.empty())
+        {
+          if (looksLikeParameterList(scope))
+          {
+            d.isFunction = true;
+            parseFunctionSuffix(d);
+          }
+        }
+        return;
+      }
       // Function pointer / reference-to-array: ( * name )(params) or ( & name )[N]
       if (at(P::LParen) && (((at(P::Star, 1) || at(P::Amp, 1) || at(P::AndAnd, 1)) &&
                              (atIdent(2) || at(Kw::const_, 2) || at(P::Star, 2) || atIdent(1) && false)) ||

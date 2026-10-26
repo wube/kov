@@ -6,7 +6,7 @@ setlocal
 cd /d "%~dp0"
 set KOVC=..\..\compiler\build\kovc.exe
 set SRC=C:\Factorio\src
-set CINC=--cinclude C:\Factorio\libraries\SDL3\include --cinclude C:\Factorio\libraries\Lua
+set CINC=--cinclude C:\Factorio\libraries\SDL3\include --cinclude C:\Factorio\libraries\Lua --cinclude C:\Factorio\libraries --cinclude C:\Factorio\libraries\curl\include
 %KOVC% --no-std --quiet --convert kov --overrides overrides C:\Factorio\libraries\CommonUtil C:\Factorio\libraries\Agui %SRC%\Util %SRC%\Typedefs.hpp %SRC%\Graphics\BitmapFormat.hpp %SRC%\Noise\NoiseRegisterIndex.hpp %SRC%\FloatCast.hpp || exit /b 1
 type kov\CONVERSION.md | findstr /B "Files -"
 echo == kovc on the converted sources
