@@ -2127,20 +2127,31 @@ struct GlobalScope::Impl
         }
         if (l.found == Found::No)
         {
-          if (n->name.parts.size() == 1)
+          if (n->name.parts.size() >= 1)
           {
-            if (const Ty* b = builtinByName(n->name.parts[0].symbol))
-              return b;
-            // Draft type: create a placeholder class so all references to the same unresolved name
-            // share one type. The draft gets filled in if the real definition appears later.
-            uint32_t sym = n->name.parts[0].symbol;
+            const NamePart& first = n->name.parts[0];
+            if (n->name.parts.size() == 1 && !first.hasTemplateArgs)
+              if (const Ty* b = builtinByName(first.symbol))
+                return b;
+            uint32_t sym = first.symbol;
             if (sym != UINT32_MAX && !templateParamNames.count(sym))
             {
               Scope* target = ctx.scope ? ctx.scope : &root;
               while (target->parent && target->kind != ScopeKind::Namespace)
                 target = target->parent;
               ClassDecl* draft = getOrCreateDraft(target, sym);
-              return types.classType(draft, {});
+              Span<const Ty*> args{};
+              if (first.hasTemplateArgs)
+              {
+                std::vector<const Ty*> av;
+                for (Node* a : first.templateArgs)
+                  av.push_back(templateArgument(a, nullptr, ctx, depth + 1));
+                args = {av.data(), uint32_t(av.size())};
+              }
+              const Ty* base = types.classType(draft, args);
+              for (size_t i = 1; i < n->name.parts.size(); ++i)
+                base = types.dependentMember(base, n->name.parts[i].symbol);
+              return base;
             }
           }
           return types.unknown();

@@ -26,7 +26,10 @@ in a fraction of a second? This is the core bet of Kov (see [design.md](design.m
    declarations and function bodies and resolves type names and identifiers against that tree:
    locals, parameters, template parameters, class members including inherited ones (base classes
    are resolved lazily and memoized, thread-safe), `using` aliases and directives, qualified names.
-   Phase 2 is read-only on the tree and needs no locks.
+   Phase 2 is read-only on the scope tree and needs no locks there; when a type name is not found,
+   it creates a *draft* ClassDecl in a separate sharded map (see design.md section 10) so that all
+   references to the same unresolved name share one `Ty*`. Multi-part names like
+   `Container::value_type` get a draft for the first part and `DependentMember` types for the rest.
 
 Not done, on purpose: type checking. `a.b` / `a->b` needs the type of `a`; those member accesses
 are counted as "deferred". Template instantiation and constexpr evaluation are not touched.

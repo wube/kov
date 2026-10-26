@@ -283,6 +283,12 @@ lookup for the same key returns the existing draft.
 `collectTemplateParamNames` walks the scope tree and collects every template parameter symbol
 into a set; draft creation is skipped when the symbol is in that set.
 
+**Qualified names.** Multi-part names like `Container::value_type` are handled by creating a
+draft for the first part (`Container`) and chaining the rest as `DependentMember` types
+(`draftType::value_type`). If the first part carries template arguments (`Map<K,V>::iterator`),
+they are resolved and stored on the draft's class type. This way every reference to the same
+qualified path through the same draft shares a single type chain.
+
 **Result.** On Factorio, front-end metrics are unchanged (69.6% resolved, 19.3% dependent,
 11.1% unresolved type names). Drafts give formerly-unknown types a stable `Ty*` identity,
 which downstream phases (codegen, template instantiation) can use when the definition appears.
