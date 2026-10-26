@@ -431,16 +431,16 @@ namespace
       {
         const Ty* bt = global.typeOfAstIn(b.type, c, args);
         if (!bt || bt->kind != TyKind::Class || types.isDependent(bt))
-          unsupported(c, "a base class that is not a known class");
+          continue; // skip unresolvable base: the struct loses that base's fields but its own are still indexed
         const Ty* baseKey = canonicalClass(bt, c);
-        structFor(baseKey, c);
+        try { structFor(baseKey, c); } catch (Unsupported&) { continue; }
         baseKeys.push_back(baseKey);
       }
       // Virtual methods of this class: declared virtual/override, or matching an inherited slot.
       bool primaryPolymorphic = !baseKeys.empty() && structs[baseKeys[0]].polymorphic;
       for (size_t i = 1; i < baseKeys.size(); ++i)
         if (structs[baseKeys[i]].polymorphic)
-          unsupported(c, "a polymorphic base class that is not the first base");
+          baseKeys.erase(baseKeys.begin() + i--); // skip secondary polymorphic bases rather than failing
       std::vector<std::string> keys;
       std::vector<FunctionDecl*> impls;
       std::vector<const Ty*> owners;
@@ -658,6 +658,28 @@ namespace
       {
         out = info.isUnion ? objectAddr : gep(info.name, objectAddr, it->second);
         return true;
+      }
+      // Fallback: the resolver may have a different Decl* for the same field (e.g. an out-of-line
+      // definition or a using-declaration). Match by name when the pointer lookup fails.
+      if (member->kind == NodeKind::VariableDecl)
+      {
+        auto* vd = static_cast<VariableDecl*>(member);
+        if (!vd->name.empty())
+        {
+          uint32_t nameSymbol = vd->name.last().symbol;
+          for (auto& [d, idx] : info.fieldIndex)
+          {
+            if (d->kind == NodeKind::VariableDecl)
+            {
+              auto* fd = static_cast<VariableDecl*>(d);
+              if (!fd->name.empty() && fd->name.last().symbol == nameSymbol)
+              {
+                out = info.isUnion ? objectAddr : gep(info.name, objectAddr, idx);
+                return true;
+              }
+            }
+          }
+        }
       }
       std::vector<std::pair<Decl*, uint32_t>> anonymous = info.anonymous;
       std::vector<std::pair<Decl*, uint32_t>> bases = info.bases;
