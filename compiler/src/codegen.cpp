@@ -85,6 +85,13 @@ namespace
     const Ty* currentReturn = nullptr;
     std::string sretAddr; // Hidden return slot when returning a class.
     Decl* constContext = nullptr; // The declaration whose initializer evalConst is folding (a variable template's): the context of the traits in it.
+    struct ConstContextScope // restores constContext when an Unsupported leaves the fold
+    {
+      Emitter& e;
+      Decl* saved;
+      ConstContextScope(Emitter& e, Decl* d) : e(e), saved(e.constContext) { e.constContext = d; }
+      ~ConstContextScope() { e.constContext = saved; }
+    };
     ParsedFile* currentFile = nullptr;
 
     // Template arguments in effect: of the instantiation being emitted, or temporarily of a class
@@ -3327,9 +3334,8 @@ namespace
             if (t && (t->isConst || (v->flags & DF_Constexpr)) && def->init && !locals.count(d))
             {
               ParsedFile* saved = currentFile;
-              Decl* savedContext = constContext;
+              ConstContextScope context(*this, def);
               currentFile = def->file;
-              constContext = def;
               std::optional<int64_t> r;
               if (!v->templateParams.empty())
               {
@@ -3342,7 +3348,6 @@ namespace
               }
               else
                 r = evalConst(def->init, depth + 1);
-              constContext = savedContext;
               currentFile = saved;
               return r;
             }
@@ -4542,10 +4547,11 @@ namespace
       }
       if (def->init)
       {
-        Decl* savedContext = constContext;
-        constContext = def; // traits in the initializer resolve their names in the declaration's context
-        auto c = evalConst(def->init);
-        constContext = savedContext;
+        std::optional<int64_t> c;
+        {
+          ConstContextScope context(*this, def); // traits in the initializer resolve their names in the declaration's context
+          c = evalConst(def->init);
+        }
         if (c && (st->kind == TyKind::Int || st->kind == TyKind::Char || st->kind == TyKind::Enum))
           init = std::to_string(*c);
         else if (c && st->kind == TyKind::Float)

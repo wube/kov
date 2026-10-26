@@ -522,6 +522,31 @@ branch of `?:`, or inside the right operand of `&&`/`||`, now die inside that br
 `language/temporaries_in_branches`). Same lesson as Agui's: compiling and linking prove little,
 running does. Spec suite: 156 pass, 2 pending.
 
+## The whole converted set through the code generator (2026-10-26)
+
+Running `kovc --emit-llvm` over everything converted (CommonUtil, Agui, Util and the root
+headers: 488 files) is the next check after the smoke tests, since it exercises the generator
+on all the code that types. It first died three ways: `friend Description;` (a friend class
+named without the keyword) made an unnamed member that crashed the member walk; `operator<=>`
+and `this->listValue.~vector()` were not parsed; and a value of unknown type passed where a class
+is expected looped for ever through the copy constructor (LabelString, from `src`, is not
+converted yet). With those fixed, the real gaps the report named each got a pending snippet and
+then a fix: the defaulted three-way comparison (45 of Factorio's 58), `switch` on an object with
+a conversion to an enum (Direction, Dimension), `String(count, char)` and the count forms of
+`append`/`insert`, members found in a base taking the base instantiation's substitution
+(`movement.x` on a `const Vector2D&` was typed `T`), `Table::value_type(65)` through an alias of
+an instantiation, static constexpr members of instantiations, inherited constructors next to the
+class's own, `explicit(Explicit)` on FixedPointNumberTemplate's constructors, requires-expressions
+in `if constexpr`, `isConstructible<T, Args...>`, variable templates, explicit arguments binding a
+trailing pack, `3 == id` through the reversed `operator==`, `Vector::operator==`. The game's own
+2D `Vector` is spelled `Vector2D` in the conversion, since `Vector` is the library's std::vector.
+
+The report went from about 1830 lines to 1650; what is left is almost entirely names from
+modules not yet converted (Log, GlobalContext, Lua, Map, the root `src` headers), which the next
+widening of the subset addresses. Spec suite: 173 pass, 2 pending (Variant by decision, the
+Overload deduction-guide idiom). Front end unchanged at 99.54% of files parsing, typed
+expressions 78.0% to 78.5%.
+
 ## The order that gets to a running game
 
 1. Decide exceptions and RTTI; implement them (they shape what the converter emits).
