@@ -71,9 +71,9 @@ namespace
   // stub next to a smoke test) provides.
   const std::map<std::string, std::string> knownFunctionMacros = {{"FORMAT_STRING", "$1"}, {"WHEN_ASSERT", "$1"}, {"FOR_DEVELOPER", "$1"},
                                                                   {"toCStr", "toStr($1).c_str()"},
-                                                                  {"LOG_AND_ABORT", "logAndAbort(ssprintf($1))"},
-                                                                  {"LOG_AND_ABORT_NEVER_THROW", "logAndAbort(ssprintf($1))"},
-                                                                  {"LOG_ENUM_AND_ABORT", "logAndAbort(ssprintf(\"Unknown enum value: %d\", int($1)))"}};
+                                                                  {"LOG_AND_ABORT", "Logging::logAndAbortOrThrow(__FILE__, __LINE__, LogLevel::Error, $1)"},
+                                                                  {"LOG_AND_ABORT_NEVER_THROW", "Logging::logAndAbortOrThrow(__FILE__, __LINE__, LogLevel::Error, $1)"},
+                                                                  {"LOG_ENUM_AND_ABORT", "Logging::logEnumAndAbortOrThrow(__FILE__, __LINE__, LogLevel::Error, $1)"}};
 
   // std:: names and their Kov library spelling. Names not here keep their name and are counted.
   // C library functions become `::name`: inside a namespace with its own `sqrt`, `std::sqrt` meant the C one.
@@ -209,7 +209,8 @@ namespace
     std::set<std::string> replacedFunctions;  // qualified names whose definitions were found and removed
     std::vector<Edit> edits;
     Counts counts;
-    bool importedCommon = false;    // stdlib.h, string.h and stdio.h added next to the first C import
+    bool importedCommon = false;
+    bool importedLua = false;    // stdlib.h, string.h and stdio.h added next to the first C import
     std::vector<std::string> todos; // "line: text"
     std::string_view text;
     const std::vector<Token>& toks;
@@ -237,6 +238,24 @@ namespace
     void remove(uint32_t offset, uint32_t length) { edits.push_back({offset, length, ""}); }
     void insert(uint32_t offset, const std::string& s) { edits.push_back({offset, 0, s}); }
     void replace(uint32_t offset, uint32_t length, const std::string& s) { edits.push_back({offset, length, s}); }
+
+    // s with __FILE__ and __LINE__ replaced by this file's name and the line of offset.
+    std::string withFileAndLine(std::string s, uint32_t offset) const
+    {
+      for (size_t p = s.find("__FILE__"); p != std::string::npos; p = s.find("__FILE__", p))
+      {
+        std::string literal = "\"" + in.path.filename().string() + "\"";
+        s.replace(p, 8, literal);
+        p += literal.size();
+      }
+      for (size_t p = s.find("__LINE__"); p != std::string::npos; p = s.find("__LINE__", p))
+      {
+        std::string line = std::to_string(1 + std::count(text.begin(), text.begin() + std::min<size_t>(offset, text.size()), '\n'));
+        s.replace(p, 8, line);
+        p += line.size();
+      }
+      return s;
+    }
 
     std::string_view spelling(uint32_t token) const
     {
@@ -647,6 +666,19 @@ namespace
           for (const char* prefix : cLibraries)
             if (header.rfind(prefix, 0) == 0)
               cLibrary = true;
+          if (header.rfind("Lua/", 0) == 0 || base == "lua.hpp")
+          {
+            // The game's Lua wrappers (libraries/Lua) bring the Lua C API: its headers, once per file.
+            if (importedLua)
+            {
+              counts.add("includes removed");
+              continue;
+            }
+            importedLua = true;
+            replace(offset, length, "extern \"C\" import \"lua.h\";\nextern \"C\" import \"lauxlib.h\";\nextern \"C\" import \"lualib.h\";");
+            counts.add("includes to imports");
+            continue;
+          }
           if (cHeaders.count(base) || cLibrary)
           {
             std::string imports = "extern \"C\" import \"" + (cLibrary ? header : base) + "\";";
@@ -791,6 +823,13 @@ namespace
               }
             }
           }
+        }
+        if (t.getKind() == TokenKind::Identifier && (spelling(i) == "__FILE__" || spelling(i) == "__LINE__"))
+        {
+          // The preprocessor's file name and line: the literal values, since Kov has no preprocessor.
+          replace(t.offset, endOffset(i) - t.offset, withFileAndLine(std::string(spelling(i)), t.offset));
+          counts.add("__FILE__/__LINE__ replaced");
+          continue;
         }
         if (t.getKind() == TokenKind::Identifier && spelling(i) == "Vector" && !(i >= 2 && toks[i - 1].is(P::ColonColon) && spelling(i - 2) == "std"))
         {
@@ -959,8 +998,8 @@ namespace
               // The text before $1 replaces `MACRO(`, the text after it the closing `)`; the
               // argument's own tokens stay in the stream for the other rewrites.
               size_t dollar = kf->second.find("$1");
-              std::string before = dollar == std::string::npos ? kf->second : kf->second.substr(0, dollar);
-              std::string after = dollar == std::string::npos ? std::string() : kf->second.substr(dollar + 2);
+              std::string before = withFileAndLine(dollar == std::string::npos ? kf->second : kf->second.substr(0, dollar), t.offset);
+              std::string after = withFileAndLine(dollar == std::string::npos ? std::string() : kf->second.substr(dollar + 2), t.offset);
               if (dollar == std::string::npos)
                 replace(t.offset, endOffset(j) - t.offset, before);
               else

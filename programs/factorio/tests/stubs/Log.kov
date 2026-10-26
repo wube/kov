@@ -1,8 +1,24 @@
-// Stand-in for the game's Log for the Util smoke test: the converter turns LOG_AND_ABORT and
-// LOG_ENUM_AND_ABORT into logAndAbort(message); here it prints the message and ends the program.
+// Stand-in for the game's Logging for the Util smoke test: the converter turns LOG_AND_ABORT and
+// LOG_ENUM_AND_ABORT into Logging::logAndAbortOrThrow(__FILE__, __LINE__, LogLevel::Error, ...)
+// (LogLevel is the converted Util/LogLevel.kov); here it prints the message and ends the program.
 extern "C" void abort();
-[[noreturn]] void logAndAbort(const String& message)
+class Logging
 {
-  println("abort: {}", message);
-  abort();
-}
+public:
+  static void logAndAbortOrThrow(const char* file, uint32_t line, LogLevel level, const char* format, ...)
+  {
+    println("abort at {}:{}: {}", file, line, format);
+    abort();
+  }
+  static void logAndAbortOrThrow(const char* file, uint32_t line, LogLevel level, const String& message)
+  {
+    println("abort at {}:{}: {}", file, line, message);
+    abort();
+  }
+  template<typename EnumType>
+  static void logEnumAndAbortOrThrow(const char* file, uint32_t line, LogLevel level, EnumType value)
+  {
+    println("abort at {}:{}: unknown enum value {}", file, line, int(value));
+    abort();
+  }
+};

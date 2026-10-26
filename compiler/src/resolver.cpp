@@ -1360,6 +1360,16 @@ struct GlobalScope::Impl
             if (b.symbol == n->name.parts[0].symbol)
               return b.value; // a parameter of the constexpr function being evaluated
         Lookup l = lookupQualified(n->name, ctx.scope, ctx.locals, depth + 1, ctx.subst);
+        if (l.found == Found::No && !n->resolved && n->name.parts.size() == 1 && n->name.parts[0].hasTemplateArgs &&
+            isBoolTraitName(n->name.parts[0].symbol))
+        {
+          // `isSame<T, int>` as a constant (an if constexpr condition under the substitution).
+          std::vector<const Ty*> a = traitArgs(n->name.parts[0], ctx, depth + 1);
+          if (a.empty())
+            return std::nullopt;
+          std::optional<bool> v = traitValue(symbols.name(n->name.parts[0].symbol), a);
+          return v ? std::optional<int64_t>(*v ? 1 : 0) : std::nullopt;
+        }
         // A name the context cannot see (a for constexpr variable in `int buffer[i + 1]`): the
         // declaration the type checker bound where the name is written.
         return constOfDecl(l.decl ? l.decl : n->resolved, ctx, depth);
@@ -1426,6 +1436,7 @@ struct GlobalScope::Impl
         }
       }
       case NodeKind::ParenExpr: return constEval(static_cast<ParenExpr*>(e)->inner, ctx, depth + 1);
+      case NodeKind::RequiresExpr: return static_cast<RequiresExpr*>(e)->satisfied ? 1 : 0; // set where the expression was typed
       case NodeKind::UnaryExpr:
       {
         auto* u = static_cast<UnaryExpr*>(e);
@@ -3407,11 +3418,11 @@ struct GlobalScope::Impl
       switch (l.found)
       {
         case Found::No:
-          ++stats.namesUnresolved;
-          countUnresolved(e->name, e->token);
           if (e->name.parts.size() == 1)
             if (const Ty* b = impl.builtinByName(e->name.parts[0].symbol))
               return b; // `uint32_t(x)`
+          ++stats.namesUnresolved;
+          countUnresolved(e->name, e->token);
           return unknown(Why::Name);
         case Found::Local: ++stats.namesLocal; break;
         case Found::Member: ++stats.namesMember; break;
@@ -3952,14 +3963,14 @@ struct GlobalScope::Impl
         switch (l.found)
         {
           case Found::No:
-            ++stats.namesUnresolved;
-            countUnresolved(n->name, n->token);
             if (n->name.parts.size() == 1)
               if (const Ty* b = impl.builtinByName(n->name.parts[0].symbol))
               {
-                record(n, b);
+                record(n, b); // `uint32_t(x)`: a functional cast, not an unresolved name
                 return b;
               }
+            ++stats.namesUnresolved;
+            countUnresolved(n->name, n->token);
             record(n, unknown(Why::Name));
             return types.unknown();
           case Found::Local: ++stats.namesLocal; break;
@@ -4956,6 +4967,16 @@ struct GlobalScope::Impl
           size_t mark = locals.mark();
           walkStmt(i->init);
           walkNode(i->cond);
+          if (i->isConstexpr && activeSubst && i->cond && uint8_t(i->cond->kind) > uint8_t(NodeKind::PackType) &&
+              uint8_t(i->cond->kind) >= uint8_t(NodeKind::NameExpr))
+            if (std::optional<int64_t> known = impl.constEval(static_cast<Expr*>(i->cond), ctx(), 0))
+            {
+              // if constexpr in an instantiation: the discarded branch is not checked (nor are
+              // its calls instantiated), as in C++.
+              walkStmt(*known ? i->then : i->else_);
+              locals.pop(mark);
+              break;
+            }
           walkStmt(i->then);
           walkStmt(i->else_);
           locals.pop(mark);
