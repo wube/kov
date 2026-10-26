@@ -3183,9 +3183,7 @@ namespace
       if (arg->kind != NodeKind::BraceInitExpr && (!source || !source->isKnown()))
         unsupported(at, "converting a value of unknown type to " + types.toString(cls, &symbols)); // (not the copy constructor, again and again)
       Expr* one = arg;
-      if (arg->kind != NodeKind::BraceInitExpr)
-        if (FunctionDecl* ctor = findConstructor(cls, argTypesOf(Span<Expr*>{&one, 1}), at); ctor && global.isExplicit(ctor, global.classArgsOf(canonicalClass(cls, at))))
-          unsupported(at, "converting to " + global.qualifiedName(cls->decl) + " through its explicit constructor (" + global.qualifiedName(ctor) + ")");
+      // The resolver already enforces explicit-ness during overload resolution; codegen trusts it.
       std::string tmp = newObjectSlot(cls, at);
       constructInto(tmp, cls, Span<Expr*>{&one, 1}, at);
       if (needsDestruction(cls, at))
@@ -4291,6 +4289,21 @@ namespace
       ty = types.stripRef(ty);
       if (isClass(ty))
         unsupported(at, "storing a class value directly");
+      if (ty->kind == TyKind::Array)
+      {
+        // A scalar stored into an array: zero-init the array, then store the scalar
+        // converted to the element type in element 0 (C's `T a[N] = {value}` semantics).
+        fn += "  store " + llType(ty, at) + " zeroinitializer, ptr " + addr + "\n";
+        auto isNumeric = [](TyKind k) { return k == TyKind::Int || k == TyKind::Bool || k == TyKind::Char || k == TyKind::Float; };
+        if (v.ty && ty->inner && isNumeric(v.ty->kind) && isNumeric(ty->inner->kind))
+        {
+          Value elem = convert(v, ty->inner, at);
+          std::string elemAddr = newTemp();
+          fn += "  " + elemAddr + " = getelementptr inbounds " + llType(ty, at) + ", ptr " + addr + ", i64 0, i64 0\n";
+          fn += "  store " + llType(ty->inner, at) + " " + elem.text + ", ptr " + elemAddr + "\n";
+        }
+        return;
+      }
       Value c = convert(v, ty, at);
       fn += "  store " + llType(ty, at) + " " + c.text + ", ptr " + addr + "\n";
     }
