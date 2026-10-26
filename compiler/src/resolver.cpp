@@ -352,7 +352,7 @@ struct GlobalScope::Impl
   }
 
   std::atomic<size_t> entries{0};
-  uint32_t symStd;
+  uint32_t symStd, symValue;
   uint32_t opSymbols[size_t(P::Count)]; // "operator+" etc., so operators can be looked up by name.
   uint32_t symBegin, symFirst, symSecond;
   struct BuiltinName
@@ -368,6 +368,7 @@ struct GlobalScope::Impl
     symBegin = symbols.intern("begin");
     symFirst = symbols.intern("first");
     symSecond = symbols.intern("second");
+    symValue = symbols.intern("value");
     for (uint32_t i = 0; i < uint32_t(P::Count); ++i)
       opSymbols[i] = symbols.intern("operator" + std::string(punctuatorSpelling(P(i))));
     auto add = [&](const char* name, const Ty* t) { builtinNames.push_back({symbols.intern(name), t}); };
@@ -1331,6 +1332,35 @@ struct GlobalScope::Impl
            n == "isTriviallyCopyConstructible" || n == "isTriviallyDefaultConstructible";
   }
 
+  // Walk a class's own members and its bases to find `static constexpr bool value`.
+  // Returns the VariableDecl if found, nullptr otherwise.  Used by constEval to fold
+  // `SomeTrait<T>()` (a zero-arg constructor of a TrueType/FalseType–derived struct)
+  // and `SomeTrait<T>::value` (a qualified access to the inherited static member).
+  VariableDecl* findStaticBoolValue(ClassDecl* c, int depth)
+  {
+    if (!c || depth > 8)
+      return nullptr;
+    for (Decl* m : c->members)
+    {
+      if (m->kind != NodeKind::VariableDecl || !(m->flags & DF_Static))
+        continue;
+      auto* v = static_cast<VariableDecl*>(m);
+      if (v->name.empty() || v->name.last().symbol != symValue)
+        continue;
+      if ((v->flags & DF_Constexpr) && v->init)
+        return v;
+    }
+    if (c->ownScope)
+    {
+      ensureBases(c->ownScope, depth);
+      for (Scope* base : c->ownScope->baseScopes)
+        if (base->owner && base->owner->kind == NodeKind::ClassDecl)
+          if (VariableDecl* found = findStaticBoolValue(static_cast<ClassDecl*>(base->owner), depth + 1))
+            return found;
+    }
+    return nullptr;
+  }
+
   // Minimal constant evaluation for array bounds: literals and arithmetic on them.
   // The value of a declaration used as a constant: a const/constexpr variable with an
   // initializer, an enumerator, or a non-type template parameter under the substitution.
@@ -1420,7 +1450,11 @@ struct GlobalScope::Impl
       }
       case NodeKind::MemberExpr:
       {
-        // `Enum::Value` is parsed as a name; `object.member` is never constant.
+        // `Enum::Value` is parsed as a name; `object.member` is rarely constant, but
+        // `object.value` where the member is a static constexpr variable is (e.g. trait structs).
+        Decl* d = static_cast<MemberExpr*>(e)->resolved;
+        if (d && d->kind == NodeKind::VariableDecl && (d->flags & DF_Static))
+          return constOfDecl(d, ctx, depth + 1);
         return std::nullopt;
       }
       case NodeKind::CallExpr:
@@ -1434,7 +1468,20 @@ struct GlobalScope::Impl
         Decl* d = callee->resolved;
         if (!d)
           d = lookupQualified(callee->name, ctx.scope, ctx.locals, depth + 1, ctx.subst).decl;
-        if (!d || d->kind != NodeKind::FunctionDecl)
+        if (!d)
+          return std::nullopt;
+        if (d->kind == NodeKind::ClassDecl && c->args.empty())
+        {
+          // `is_optional<T>()`: a zero-arg constructor of a type-trait struct used as bool.
+          // Return its static constexpr `value` member (inherited from TrueType/FalseType).
+          if (VariableDecl* v = findStaticBoolValue(static_cast<ClassDecl*>(d), depth + 1))
+          {
+            TypeContext vctx{lexicalScopeOf(v), nullptr, nullptr, v->file ? v->file->tokens : nullptr, v->file ? v->file->text : std::string_view()};
+            return constEval(v->init, vctx, depth + 1);
+          }
+          return std::nullopt;
+        }
+        if (d->kind != NodeKind::FunctionDecl)
           return std::nullopt;
         auto* f = static_cast<FunctionDecl*>(d);
         if (!f->body || f->body->kind != NodeKind::BlockStmt || f->params.size() != c->args.size())

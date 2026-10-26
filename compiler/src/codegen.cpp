@@ -3295,7 +3295,39 @@ namespace
           if (!c->callee || c->callee->kind != NodeKind::NameExpr)
             return std::nullopt;
           Decl* d = static_cast<NameExpr*>(c->callee)->resolved;
-          if (!d || d->kind != NodeKind::FunctionDecl)
+          if (!d)
+            return std::nullopt;
+          if (d->kind == NodeKind::ClassDecl && c->args.empty())
+          {
+            // `is_optional<T>()`: a zero-arg constructor of a type-trait struct used as bool.
+            // Walk its hierarchy for `static constexpr bool value`.
+            // Walk the class and its bases (through AST base list) for `static constexpr bool value`.
+            auto findValue = [this](ClassDecl* cls, auto&& self, int d) -> VariableDecl* {
+              if (!cls || d > 8) return nullptr;
+              for (Decl* m : cls->members)
+                if (m->kind == NodeKind::VariableDecl && (m->flags & DF_Static) && (m->flags & DF_Constexpr) &&
+                    static_cast<VariableDecl*>(m)->init && !static_cast<VariableDecl*>(m)->name.empty())
+                {
+                  auto& last = static_cast<VariableDecl*>(m)->name.last();
+                  if (std::string_view sv = symbols.name(last.symbol); sv == "value")
+                    return static_cast<VariableDecl*>(m);
+                }
+              // Walk base classes via the AST base list (Scope is incomplete in codegen)
+              for (auto& base : cls->bases)
+                if (base.type && base.type->kind == NodeKind::NamedType)
+                {
+                  Decl* bd = static_cast<NamedType*>(base.type)->resolved;
+                  if (bd && bd->kind == NodeKind::ClassDecl)
+                    if (auto* v = self(static_cast<ClassDecl*>(bd), self, d + 1))
+                      return v;
+                }
+              return nullptr;
+            };
+            if (VariableDecl* v = findValue(static_cast<ClassDecl*>(d), findValue, 0))
+              return evalConst(v->init, depth + 1);
+            return std::nullopt;
+          }
+          if (d->kind != NodeKind::FunctionDecl)
             return std::nullopt;
           auto* f = static_cast<FunctionDecl*>(d);
           if (!f->body || f->body->kind != NodeKind::BlockStmt || f->params.size() != c->args.size())
