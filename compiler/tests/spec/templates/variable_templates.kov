@@ -1,0 +1,21 @@
+// spec: a variable template (`template<typename T> inline constexpr int bytes = sizeof(T)`) is a constant per set of arguments, packs and traits included
+// found in src/Util (DeserialiserHelper: `inline constexpr bool should_construct = is_constructible_v<T, Args...> && !is_optional<T>::value`)
+template<typename T> inline constexpr int bytes = sizeof(T);
+template<typename T> inline constexpr bool isInt = isSame<T, int>;
+template<typename T, typename... Args> inline constexpr bool canBuild = isConstructible<T, Args...>;
+template<typename T>
+void describe()
+{
+  if constexpr (isInt<T>)
+    println("int of {} bytes", bytes<T>);
+  else
+    println("other of {} bytes", bytes<T>);
+}
+int main()
+{
+  println("{} {} {}", bytes<double>, isInt<int>, isInt<double>);
+  println("{} {}", canBuild<String, const char*>, canBuild<int, String>);
+  describe<int>();
+  describe<char>();
+  return 0;
+}

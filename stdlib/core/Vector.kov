@@ -76,6 +76,16 @@ struct Vector
   operator Span<const T>() const { return Span<const T>(this->items, this->length); }
   bool empty() const { return this->length == 0; }
   T& operator[](int index) { return this->items[index]; }
+  // Equal when of the same length with every element equal.
+  bool operator==(const Vector& other) const
+  {
+    if (this->length != other.length)
+      return false;
+    for (int i = 0; i < this->length; ++i)
+      if (!(this->items[i] == other.items[i]))
+        return false;
+    return true;
+  }
   T& back() { return this->items[this->length - 1]; }
   T* begin() { return this->items; }
   T* end() { return this->items + this->length; }

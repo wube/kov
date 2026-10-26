@@ -151,6 +151,7 @@ public:
   Decl* typeInfoDecl();                          // The library's TypeInfo class (what typeid yields), or null.
   Decl* enumFromStrDecl();                       // The library's enumFromStr<E>(const char*) template (E::fromStr lowers to it), or null.
   Decl* strongOrderingDecl();                    // The library's strong_ordering class (what `a <=> b` yields), or null.
+  bool isExplicit(FunctionDecl* f, const TemplateArgs& args); // `explicit`, or `explicit(cond)` with cond true under args.
   // Retypes the initializer of a static data member of a class template for one instantiation
   // (`static constexpr T ValuesPerOne = T(1) << Bits` with T and Bits bound), in place like retypeFor.
   void retypeInitializerFor(VariableDecl* v, const TemplateArgs& args);

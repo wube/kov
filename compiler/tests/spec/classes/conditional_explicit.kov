@@ -1,0 +1,20 @@
+// spec: `explicit(condition)` makes a constructor explicit only while the condition holds, so Fixed<int, false> converts from double implicitly and Fixed<int, true> does not
+// found in src/Util (FixedPointNumberTemplate<T, PrecisionBits, Explicit>: eight `explicit(Explicit)` constructors; MapPosition's coordinates convert from double)
+template<typename T, bool Explicit>
+struct Fixed
+{
+  T value;
+  explicit(Explicit) constexpr Fixed(double d) : value(T(d * 256)) {}
+  Fixed operator-(const Fixed& other) const { return Fixed(double(this->value - other.value) / 256); }
+  double toDouble() const { return this->value / 256.0; }
+};
+double diff(Fixed<int, false> a, Fixed<int, false> b) { return (a - b).toDouble(); }
+int main()
+{
+  Fixed<int, false> a(1.5);
+  a = 2.5;
+  println("{} {}", a.toDouble(), diff(a, 0.5));
+  Fixed<int, true> strict(3.0);
+  println("{}", strict.toDouble());
+  return 0;
+}

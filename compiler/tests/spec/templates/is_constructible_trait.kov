@@ -1,6 +1,5 @@
 // spec: `isConstructible<T, Args...>` is true when T can be built from Args (what std::is_constructible_v converts to), in `if constexpr` and in variable templates
 // found in src/Util (DeserialiserHelper: `inline constexpr bool should_construct = is_constructible_v<T, Args...> && !is_optional<T>::value`)
-// pending: no isConstructible yet
 struct Point
 {
   int x, y;

@@ -1,0 +1,9 @@
+// spec: two Vectors are equal when they have the same length and equal elements (`==` and `!=`)
+// found in src/Util (LocalisedString::operator==: `this->parameters == other.parameters`)
+int main()
+{
+  Vector<int> a = {1, 2, 3}, b = {1, 2, 3}, c = {1, 2};
+  Vector<String> s = {"x", "y"}, t = {"x", "z"};
+  println("{} {} {} {} {}", a == b, a == c, a != c, s == t, s != t);
+  return 0;
+}

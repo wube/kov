@@ -59,6 +59,7 @@ namespace
     bool pendingConst = false;       // `const static int x`: the const read among the specifiers, applied to the type that follows.
     Expr* pendingAlignment = nullptr; // alignas(N) seen before the current class.
     Expr* pendingCondition = nullptr; // conditional(expr) seen in the current specifiers.
+    Expr* pendingExplicitCondition = nullptr; // explicit(expr) seen in the current specifiers.
 
     void parseTranslationUnit()
     {
@@ -584,8 +585,12 @@ namespace
             break;
           }
           scratch.push_back(arg);
-          if (accept(P::Ellipsis))
+          if (accept(P::Ellipsis) && uint8_t(arg->kind) <= uint8_t(NodeKind::PackType) && arg->kind != NodeKind::PackType)
           {
+            // `isSame<Args...>`: the argument is the pack's expansion.
+            PackType* pack = node<PackType>(arg->token);
+            pack->pattern = static_cast<Type*>(arg);
+            scratch.back() = pack;
           }
           if (accept(P::Comma))
             continue;
@@ -1667,7 +1672,12 @@ namespace
           advance();
           flags |= DF_Explicit;
           if (at(P::LParen))
-            skipBalanced();
+          {
+            // explicit(condition): explicit only while the condition, a template parameter usually, is true.
+            advance();
+            pendingExplicitCondition = parseExpression();
+            expect(P::RParen, "expected ')' after the explicit condition");
+          }
         }
         else if (skipMacroSpecifier())
         {
@@ -1988,6 +1998,8 @@ namespace
       f->requiresClause = d.requiresClause ? d.requiresClause : templ.requiresClause;
       f->condition = pendingCondition;
       pendingCondition = nullptr;
+      f->explicitCondition = pendingExplicitCondition;
+      pendingExplicitCondition = nullptr;
       f->attributes = pendingAttributes;
       pendingAttributes = 0;
       f->templateParams = templ.params;
@@ -3805,12 +3817,62 @@ namespace
           }
           case Kw::requires_:
           {
+            // requires(params) { expr; typename T::x; { expr } -> Constraint; requires expr; }
             advance();
-            if (at(P::LParen))
-              skipBalanced();
-            if (at(P::LBrace))
-              skipBalanced();
-            return node<RequiresExpr>(start);
+            RequiresExpr* r = node<RequiresExpr>(start);
+            if (accept(P::LParen))
+            {
+              size_t mark = scratch.size();
+              if (!at(P::RParen))
+                for (;;)
+                {
+                  Decl* p = parseParameter();
+                  if (!p)
+                    break;
+                  scratch.push_back(p);
+                  if (!accept(P::Comma))
+                    break;
+                }
+              r->params = makeSpan<Decl*>(mark);
+              expect(P::RParen, "expected ')' after the requires parameters");
+            }
+            if (expect(P::LBrace, "expected '{' after requires"))
+            {
+              std::vector<Expr*> requirements;
+              std::vector<Type*> typeRequirements;
+              while (!at(P::RBrace) && !at(TokenKind::End))
+              {
+                if (accept(Kw::typename_))
+                {
+                  if (Type* t = parseType())
+                    typeRequirements.push_back(t);
+                }
+                else if (accept(P::LBrace))
+                {
+                  if (Expr* e = parseExpression())
+                    requirements.push_back(e);
+                  expect(P::RBrace, "expected '}' after the compound requirement");
+                  while (!at(P::Semi) && !at(P::RBrace) && !at(TokenKind::End))
+                    advance(); // `-> Constraint<...>`: the result's constraint is not checked
+                }
+                else
+                {
+                  accept(Kw::requires_); // a nested requirement: its expression must hold, which the typing of a constant does not check
+                  if (Expr* e = parseExpression())
+                    requirements.push_back(e);
+                }
+                if (!accept(P::Semi))
+                {
+                  while (!at(P::Semi) && !at(P::RBrace) && !at(TokenKind::End))
+                    advance();
+                  accept(P::Semi);
+                }
+              }
+              expect(P::RBrace, "expected '}' after the requirements");
+              r->requirements = makeSpanOf(requirements);
+              r->typeRequirements = makeSpanOf(typeRequirements);
+            }
+            return r;
           }
           default:
             break;

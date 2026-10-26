@@ -84,6 +84,7 @@ namespace
     FunctionDecl* currentFunction = nullptr;
     const Ty* currentReturn = nullptr;
     std::string sretAddr; // Hidden return slot when returning a class.
+    Decl* constContext = nullptr; // The declaration whose initializer evalConst is folding (a variable template's): the context of the traits in it.
     ParsedFile* currentFile = nullptr;
 
     // Template arguments in effect: of the instantiation being emitted, or temporarily of a class
@@ -2916,16 +2917,9 @@ namespace
         }
         if (op == P::Spaceship)
         {
-          // `operator<=>(const T&) const = default`: the order of the bases and members, into the
-          // strong_ordering result slot (or returned as an int without the library).
-          Value order = memberwiseOrder(thisArg, src, t, at);
-          if (sretAddr.empty())
-            return convert(order, types.intType(), at);
-          const Ty* ot = orderingType();
-          if (!ot)
-            unsupported(at, "a defaulted operator<=> without the library's strong_ordering");
-          fn += "  store i8 " + order.text + ", ptr " + gep(structFor(ot, at).name, sretAddr, 0) + "\n";
-          return {"", types.voidType(), false};
+          // `operator<=>(const T&) const = default`: the order of the bases and members as the
+          // value of `a <=> b` (inlined at a call; emitFunction moves it to the result slot).
+          return orderingObject(memberwiseOrder(thisArg, src, t, at), at);
         }
       }
       unsupported(at, "the defaulted function " + global.qualifiedName(f));
@@ -3108,7 +3102,7 @@ namespace
         unsupported(at, "converting a value of unknown type to " + types.toString(cls, &symbols)); // (not the copy constructor, again and again)
       Expr* one = arg;
       if (arg->kind != NodeKind::BraceInitExpr)
-        if (FunctionDecl* ctor = findConstructor(cls, argTypesOf(Span<Expr*>{&one, 1}), at); ctor && (ctor->flags & DF_Explicit))
+        if (FunctionDecl* ctor = findConstructor(cls, argTypesOf(Span<Expr*>{&one, 1}), at); ctor && global.isExplicit(ctor, global.classArgsOf(canonicalClass(cls, at))))
           unsupported(at, "converting to " + global.qualifiedName(cls->decl) + " through its explicit constructor (" + global.qualifiedName(ctor) + ")");
       std::string tmp = newObjectSlot(cls, at);
       constructInto(tmp, cls, Span<Expr*>{&one, 1}, at);
@@ -3137,6 +3131,39 @@ namespace
       Decl* d = static_cast<NameExpr*>(inner)->resolved;
       return d && (d->kind == NodeKind::ClassDecl || d->kind == NodeKind::EnumDecl || d->kind == NodeKind::UsingAliasDecl ||
                    (d->kind == NodeKind::VariableDecl && (d->flags & DF_Typedef)));
+    }
+
+    // The arguments of a variable template's use (`canBuild<String, const char*>`): the written
+    // ones, a trailing pack taking the rest.
+    TemplateArgs variableTemplateArgs(NameExpr* n, VariableDecl* v, Node* at)
+    {
+      TemplateArgs args, none;
+      const NamePart& last = n->name.last();
+      std::vector<const Ty*> packElements;
+      size_t count = v->templateParams.size();
+      auto* lastParam = count ? static_cast<TemplateParamDecl*>(v->templateParams[count - 1]) : nullptr;
+      for (size_t i = 0; i < last.templateArgs.size(); ++i)
+      {
+        Node* arg = last.templateArgs[i];
+        const Ty* t = nullptr;
+        if (uint8_t(arg->kind) <= uint8_t(NodeKind::PackType))
+          t = global.typeOfAstIn(static_cast<Type*>(arg), currentFunction, currentArgs ? *currentArgs : none);
+        else if (std::optional<int64_t> c = evalConst(static_cast<Expr*>(arg)))
+          t = types.valueType(types.intType(), *c);
+        if (!t || !t->isKnown())
+          unsupported(at, "an argument of " + global.qualifiedName(v) + " that is not a type or a constant");
+        if (lastParam && lastParam->isPack && i + 1 >= count)
+          packElements.push_back(t);
+        else if (i < count)
+          args.pairs.push_back({v->templateParams[i], t});
+        else
+          unsupported(at, "more arguments than " + global.qualifiedName(v) + " has parameters");
+      }
+      if (lastParam && lastParam->isPack)
+        args.pairs.push_back({lastParam, types.pack(Span<const Ty*>{packElements.data(), uint32_t(packElements.size())})});
+      if (args.pairs.size() < count)
+        unsupported(at, "the variable template " + global.qualifiedName(v) + " used without all its arguments");
+      return args;
     }
 
     std::optional<int64_t> evalConst(Expr* e, int depth = 0)
@@ -3183,6 +3210,7 @@ namespace
           return std::nullopt;
         }
         case NodeKind::ParenExpr: return evalConst(static_cast<ParenExpr*>(e)->inner, depth + 1);
+        case NodeKind::RequiresExpr: return static_cast<RequiresExpr*>(e)->satisfied ? 1 : 0; // typed for this instantiation
         case NodeKind::UnaryExpr:
         {
           auto* u = static_cast<UnaryExpr*>(e);
@@ -3274,7 +3302,7 @@ namespace
           {
             // A builtin type trait, evaluated under the current instantiation.
             TemplateArgs none;
-            if (std::optional<bool> trait = global.typeTraitValue(n, currentFunction, currentArgs ? *currentArgs : none))
+            if (std::optional<bool> trait = global.typeTraitValue(n, constContext ? constContext : currentFunction, currentArgs ? *currentArgs : none))
               return *trait ? 1 : 0;
             return std::nullopt;
           }
@@ -3299,8 +3327,22 @@ namespace
             if (t && (t->isConst || (v->flags & DF_Constexpr)) && def->init && !locals.count(d))
             {
               ParsedFile* saved = currentFile;
+              Decl* savedContext = constContext;
               currentFile = def->file;
-              auto r = evalConst(def->init, depth + 1);
+              constContext = def;
+              std::optional<int64_t> r;
+              if (!v->templateParams.empty())
+              {
+                // `bytes<double>`, `canBuild<String, const char*>`: the variable template's
+                // initializer for these arguments.
+                TemplateArgs args = variableTemplateArgs(n, v, e);
+                global.retypeInitializerFor(def, args);
+                ArgsScope scope(*this, &args);
+                r = evalConst(def->init, depth + 1);
+              }
+              else
+                r = evalConst(def->init, depth + 1);
+              constContext = savedContext;
               currentFile = saved;
               return r;
             }
@@ -3323,7 +3365,8 @@ namespace
                static_cast<NamedType*>(s->type)->resolved->kind == NodeKind::ParamDecl))
             t = declType(static_cast<NamedType*>(s->type)->resolved);
           else if (s->type)
-            t = currentArgs ? global.typeOfAstIn(s->type, currentFunction, *currentArgs) : global.typeOfAst(s->type, currentFunction);
+            t = currentArgs ? global.typeOfAstIn(s->type, constContext ? constContext : currentFunction, *currentArgs)
+                              : global.typeOfAst(s->type, constContext ? constContext : currentFunction); // `sizeof(T)` in a variable template's initializer
           else
             t = s->operand ? s->operand->ty : nullptr;
           if (!t || !t->isKnown() || types.isDependent(t))
@@ -3796,7 +3839,7 @@ namespace
       {
         if (m->kind != NodeKind::FunctionDecl || !(m->flags & DF_Conversion))
           continue;
-        if ((m->flags & DF_Explicit) && to->kind != TyKind::Bool)
+        if (global.isExplicit(static_cast<FunctionDecl*>(m), args) && to->kind != TyKind::Bool)
           continue;
         const Ty* ft = declType(m);
         if (!ft || ft->kind != TyKind::Function || !ft->inner || !ft->inner->isKnown())
@@ -3819,7 +3862,7 @@ namespace
       ArgsScope scope(*this, &args);
       for (Decl* m : c->members)
       {
-        if (m->kind != NodeKind::FunctionDecl || !(m->flags & DF_Conversion) || (m->flags & DF_Explicit))
+        if (m->kind != NodeKind::FunctionDecl || !(m->flags & DF_Conversion) || global.isExplicit(static_cast<FunctionDecl*>(m), args))
           continue;
         const Ty* ft = declType(m);
         if (!ft || ft->kind != TyKind::Function || !ft->inner || !ft->inner->isKnown())
@@ -4499,7 +4542,10 @@ namespace
       }
       if (def->init)
       {
+        Decl* savedContext = constContext;
+        constContext = def; // traits in the initializer resolve their names in the declaration's context
         auto c = evalConst(def->init);
+        constContext = savedContext;
         if (c && (st->kind == TyKind::Int || st->kind == TyKind::Char || st->kind == TyKind::Enum))
           init = std::to_string(*c);
         else if (c && st->kind == TyKind::Float)
@@ -5187,6 +5233,13 @@ namespace
           if (d && d->kind == NodeKind::VariableDecl && !locals.count(d))
           {
             const Ty* t = types.stripRef(declType(d));
+            if (!d->templateParams.empty())
+            {
+              // A variable template: its value for these arguments, a constant.
+              if (auto c = evalConst(e))
+                return {t && t->kind == TyKind::Bool ? (*c ? "true" : "false") : std::to_string(*c), t ? types.unqualified(t) : types.intType()};
+              unsupported(e, "a variable template whose value is not a constant");
+            }
             if (t && t->isConst && (t->kind == TyKind::Int || t->kind == TyKind::Enum || t->kind == TyKind::Char || t->kind == TyKind::Bool))
               if (auto c = evalConst(e))
                 return {t->kind == TyKind::Bool ? (*c ? "true" : "false") : std::to_string(*c), types.unqualified(t)};
@@ -5368,6 +5421,8 @@ namespace
             return {t->kind == TyKind::Float ? "0.0" : t->kind == TyKind::Pointer ? "null" : "0", t};
           unsupported(e, "this functional cast");
         }
+        case NodeKind::RequiresExpr:
+          return {static_cast<RequiresExpr*>(e)->satisfied ? "true" : "false", types.boolType()};
         case NodeKind::SizeofExpr:
         {
           auto* s = static_cast<SizeofExpr*>(e);
@@ -5378,6 +5433,10 @@ namespace
               param = static_cast<NamedType*>(s->type)->resolved;
             if (!param && s->operand)
               param = packIn(s->operand);
+            if (param && param->kind == NodeKind::TemplateParamDecl && currentArgs)
+              for (auto& [p, t] : currentArgs->pairs)
+                if (p == param && t && t->kind == TyKind::Pack)
+                  return {std::to_string(t->args.size()), types.sizeType()}; // `sizeof...(Args)` of a template pack
             if (!param || !packLocals.count(param))
               unsupported(e, "sizeof... of something that is not a parameter pack");
             return {std::to_string(packLocals[param].size()), types.sizeType()};
@@ -5724,7 +5783,7 @@ namespace
             Expr* args[2] = {b->lhs, b->rhs};
             return callRvalue(callFunction(f, {}, nullptr, "", "", Span<Expr*>{args, 2}, b), b);
           }
-        if (std::optional<Value> rewritten = rewrittenComparison(b, op, lt))
+        if (std::optional<Value> rewritten = rewrittenComparison(b, op, lt, rt))
           return *rewritten;
         if (!isClass(lt))
           unsupported(b, "an operator with a class on the right that no function defines");
@@ -5909,10 +5968,22 @@ namespace
     // The comparisons C++ rewrites when the class defines no operator for them: `a != b` as
     // `!(a == b)`, `a < b` and the other orderings as `(a <=> b) < 0`, and `==` of a class whose
     // operator<=> is defaulted as `(a <=> b) == 0`. Null when the class has none of those either.
-    std::optional<Value> rewrittenComparison(BinaryExpr* b, P op, const Ty* lt)
+    std::optional<Value> rewrittenComparison(BinaryExpr* b, P op, const Ty* lt, const Ty* rt)
     {
       Expr* rhsExpr = b->rhs;
       Span<Expr*> one{&rhsExpr, 1};
+      auto reversed = [&]() -> std::optional<Value>
+      {
+        // `3 == id` through Id::operator==(int): the operands the other way round.
+        if (!rt || !isClass(rt))
+          return std::nullopt;
+        Expr* lhsExpr = b->lhs;
+        Span<Expr*> left{&lhsExpr, 1};
+        const Ty* foundIn = nullptr;
+        if (findMemberFunction(types.unqualified(rt), "operator==", argTypesOf(left), types.unqualified(rt), b, &foundIn, true))
+          return callRvalue(operatorCall(rvalue(b->rhs), "operator==", left, b, true), b);
+        return std::nullopt;
+      };
       auto call = [&](P which) -> std::optional<Value>
       {
         std::string name = operatorName(which);
@@ -5943,15 +6014,22 @@ namespace
       switch (op)
       {
         case P::NotEq:
-          if (std::optional<Value> eq = call(P::EqEq))
-          {
-            std::string r = newTemp();
-            fn += "  " + r + " = xor i1 " + convert(*eq, types.boolType(), b).text + ", true\n";
-            return Value{r, types.boolType()};
-          }
-          return threeWayDefaulted() ? orderCompare(P::NotEq) : std::nullopt;
+        {
+          std::optional<Value> eq = call(P::EqEq);
+          if (!eq && threeWayDefaulted())
+            return orderCompare(P::NotEq);
+          if (!eq)
+            eq = reversed();
+          if (!eq)
+            return std::nullopt;
+          std::string r = newTemp();
+          fn += "  " + r + " = xor i1 " + convert(*eq, types.boolType(), b).text + ", true\n";
+          return Value{r, types.boolType()};
+        }
         case P::EqEq:
-          return threeWayDefaulted() ? orderCompare(P::EqEq) : std::nullopt;
+          if (threeWayDefaulted())
+            return orderCompare(P::EqEq);
+          return reversed();
         case P::Less: case P::Greater: case P::LessEq: case P::GreaterEq:
           return orderCompare(op);
         default:
@@ -7667,8 +7745,15 @@ namespace
           Value r = defaultedOperation(f, types.unqualified(types.stripRef(currentClassTy)), thisPointer(f), source, f);
           destroyTemps();
           popScope();
-          if (currentReturn->kind == TyKind::Void || isClass(currentReturn))
-            fn += "  ret void\n"; // a class result (strong_ordering) is in the sret slot
+          if (isClass(currentReturn))
+          {
+            // A class result (a defaulted operator<=>'s strong_ordering): into the result slot.
+            if (!sretAddr.empty() && r.ty && isClass(r.ty))
+              fn += "  store i8 " + orderOf(r, f).text + ", ptr " + gep(structFor(currentReturn, f).name, sretAddr, 0) + "\n";
+            fn += "  ret void\n";
+          }
+          else if (currentReturn->kind == TyKind::Void)
+            fn += "  ret void\n";
           else if (currentReturn->isReference())
             fn += "  ret ptr " + r.text + "\n";
           else

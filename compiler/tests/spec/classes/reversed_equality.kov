@@ -1,0 +1,15 @@
+// spec: `3 == id` and `3 != id` use Id::operator==(int) with the operands reversed, as C++20 does
+// found in src/Util (Direction::fromString: `direction.luaKeyStr() == input` with a const char* on the left and a StringView on the right)
+struct Id
+{
+  int value;
+  bool operator==(int other) const { return this->value == other; }
+};
+int main()
+{
+  Id id{3};
+  const char* text = "abc";
+  StringView view(text);
+  println("{} {} {} {} {}", 3 == id, 4 != id, id == 3, text == view, "abd" != view);
+  return 0;
+}

@@ -236,6 +236,7 @@ struct FunctionDecl : Decl
   Span<CtorInit> ctorInits;
   Expr* requiresClause = nullptr;
   Expr* condition = nullptr; // conditional(expr): calls compile to nothing while expr is false.
+  Expr* explicitCondition = nullptr; // explicit(expr): explicit only while expr (a template parameter, usually) is true.
 };
 struct VariableDecl : Decl
 {
@@ -341,7 +342,9 @@ struct FunctionalCastExpr : Expr { Type* type; Span<Expr*> args; bool braced; };
 // parser read as a type name (`typeid(q)`).
 struct TypeidExpr : Expr { Node* operand; const Ty* operandType = nullptr; Decl* operandDecl = nullptr; };
 struct FoldExpr : Expr { Expr* lhs; Expr* rhs; uint32_t op; };
-struct RequiresExpr : Expr {};
+// requires(params) { requirements; }: true when every requirement is well-typed for the types at
+// hand; the type checker sets satisfied where the expression is typed (again per instantiation).
+struct RequiresExpr : Expr { Span<Decl*> params; Span<Expr*> requirements; Span<Type*> typeRequirements; bool satisfied = false; };
 struct ParenExpr : Expr { Expr* inner; };
 struct ErrorExpr : Expr {};
 

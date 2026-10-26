@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**167 pass, 4 pending, 0 failing, 0 fixed** (171 snippets, 2.8 s).
+**173 pass, 2 pending, 0 failing, 0 fixed** (175 snippets, 3.8 s).
 
 ## Language: statements, expressions, declarations
 
@@ -67,6 +67,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `classes/aggregate_default_members.kov` | aggregate initialisation leaves omitted members with their default member initializers | pass |  |  |
 | `classes/aggregates_and_brace_init.kov` | aggregate initialisation, default member initializers, arrays of structs, nested braces | pass |  |  |
 | `classes/anonymous_members.kov` | anonymous struct and union members | pass |  |  |
+| `classes/conditional_explicit.kov` | `explicit(condition)` makes a constructor explicit only while the condition holds, so Fixed<int, false> converts from double implicitly and Fixed<int, true> does not | pass |  |  |
 | `classes/const_and_mutable.kov` | const member functions, const overloads, mutable members, const objects | pass | 198 mutable members in 127 files |  |
 | `classes/constructors.kov` | constructors: default, converting, explicit, copy, move, delegating, = default, = delete | pass | 2065 `= default`, 904 `= delete`, 1100 delegating, 2035 explicit |  |
 | `classes/conversion_operators.kov` | two conversion operators on one class (operator bool and operator String) | pass | 376 conversion operators in 292 files |  |
@@ -87,6 +88,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `classes/nested_struct_in_template.kov` | a struct nested in a class template, with members of the parameter type | pass |  |  |
 | `classes/nested_types.kov` | nested classes and enums, access through the outer class | pass | 4603 nested classes in 2847 files |  |
 | `classes/operator_overloading.kov` | operator overloading: arithmetic, comparison, subscript, call, unary, increment, conversions | pass | 2940 uses in 982 files, 376 conversion operators |  |
+| `classes/reversed_equality.kov` | `3 == id` and `3 != id` use Id::operator==(int) with the operands reversed, as C++20 does | pass |  |  |
 | `classes/static_members.kov` | static data members (in-class and out-of-line definitions), static functions, static const | pass | 1174 static const members in 719 files |  |
 | `classes/three_way_comparison_user_defined.kov` | a user-written operator<=> returning strong_ordering orders the class (`a < b` is `(a <=> b) < 0`), `x <=> y` of scalars is a strong_ordering, and a defaulted operator<=> uses the members' own | pass |  |  |
 | `classes/virtual_bases.kov` | virtual inheritance (diamond): one shared base subobject | pass |  |  |
@@ -97,8 +99,6 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
 | `templates/deduction_guides.kov` | deduction guides and the overload-set idiom: `template<typename... Ts> Overload(Ts...) -> Overload<Ts...>;` with `using Ts::operator()...;` | pending |  | deduction guides and pack using-declarations are not parsed; C:\kov\compiler\tests\spec\templates\deduction_guides.kov:8: codegen does not support a local of unknown type (o) yet (in @kov.main) |
-| `templates/is_constructible_trait.kov` | `isConstructible<T, Args...>` is true when T can be built from Args (what std::is_constructible_v converts to), in `if constexpr` and in variable templates | pending |  | no isConstructible yet; C:\kov\compiler\tests\spec\templates\is_constructible_trait.kov:25: codegen does not support a parameter of unknown type (args: <unknown>) yet (in @kov.main) |
-| `templates/requires_in_if_constexpr.kov` | a requires-expression is a constant: true when its body is valid for the types at hand, so `if constexpr (requires { t.save(); })` picks the branch | pending |  | no requires-expressions in bodies yet; C:\kov\compiler\tests\spec\templates\requires_in_if_constexpr.kov:9: codegen does not support the expression kind RequiresExpr yet (in @"save<Saver>(const Saver&)", requested by @kov.main) |
 | `templates/alias_template_conditional.kov` | an alias template over Conditional with a bool parameter (Conditional<Small, int16_t, int64_t>) | pass |  |  |
 | `templates/alias_template_member_access.kov` | an alias template of a class template (template<typename T> using Ptr = UniquePtr<T>;) used as a variable type | pass | 7 alias templates in 6 files |  |
 | `templates/alias_template_nested_args.kov` | an alias template whose target nests the parameter in another template argument (Vector<Pair<T, T>>) | pass |  |  |
@@ -120,6 +120,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/enum_through_parameter.kov` | a Kov enum reached through a template parameter: E::values, E::count, value.str() | pass |  |  |
 | `templates/forwarding_conversions.kov` | forwarding a string literal through a variadic member template into a String constructor (emplace_back("x")) | pass |  |  |
 | `templates/function_templates.kov` | function templates: deduction, explicit arguments, overloading with non-templates, full specialisation | pass | 592 full specialisations in 61 files |  |
+| `templates/is_constructible_trait.kov` | `isConstructible<T, Args...>` is true when T can be built from Args (what std::is_constructible_v converts to), in `if constexpr` and in variable templates | pass |  |  |
 | `templates/member_alias_of_instantiation_cast.kov` | a member alias of a class template instantiation, reached through an alias of the instantiation, names the substituted type (`Table::value_type(65)`) | pass |  |  |
 | `templates/member_template_in_class_template.kov` | a member function template of a class template converting its argument to T (names.add("a") into Stack<String>) | pass |  |  |
 | `templates/member_templates_explicit.kov` | member function templates called with explicit arguments, static member templates | pass |  |  |
@@ -128,12 +129,14 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/partial_specialisation.kov` | partial specialisation of class templates | pass | 8 uses in 5 files |  |
 | `templates/requires_clause_before_body.kov` | a requires clause between a member function's qualifiers and its body: `bool operator==(const V&) const requires Comparable<T> { ... }` | pass |  |  |
 | `templates/requires_clauses.kov` | constrained templates (requires clauses) | pass | 1274 requires/concept uses in 609 files |  |
+| `templates/requires_in_if_constexpr.kov` | a requires-expression is a constant: true when its body is valid for the types at hand, so `if constexpr (requires { t.save(); })` picks the branch | pass |  |  |
 | `templates/several_instantiations_in_one_call.kov` | three instantiations of one function template as arguments of a single variadic call | pass |  |  |
 | `templates/sfinae_enable_if.kov` | enable_if-style overload selection | pass | 1 use (Factorio uses requires clauses instead) |  |
 | `templates/static_constexpr_member_in_instantiation.kov` | a static constexpr member of a class template is computed with the instantiation's arguments (`T(1) << Bits`) wherever it is used | pass |  |  |
 | `templates/static_table_lookup_helper.kov` | a class's static const table keyed by StringView with a nested value struct, defined out of line from a brace list, read through a helper template with an `auto*` return | pass |  |  |
 | `templates/template_template_parameters.kov` | template template parameters | pass |  |  |
 | `templates/traits_as_values.kov` | type traits used as values (bool isSame<A, B> in an expression, not only in if constexpr) | pass |  |  |
+| `templates/variable_templates.kov` | a variable template (`template<typename T> inline constexpr int bytes = sizeof(T)`) is a constant per set of arguments, packs and traits included | pass |  |  |
 | `templates/variadic_recursion.kov` | the recursive variadic pattern: f(T first, Rest... rest) calling f(rest...) down to a non-template base case | pass |  |  |
 | `templates/variadic_templates.kov` | variadic templates: packs, sizeof..., forwarding, fold expressions | pass | 175 variadic templates in 59 files, 110 fold expressions, 218 std::forward |  |
 
@@ -172,6 +175,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `library/unique_ptr.kov` | UniquePtr (std::unique_ptr): makeUnique, move, release/reset, polymorphic delete, UniqueArray | pass | 3820 uses in 1049 files |  |
 | `library/vector.kov` | Vector (std::vector): push/emplace, index, erase, insert, iteration, nesting, moves, sort | pass | 5225 uses in 1662 files |  |
 | `library/vector_brace_init.kov` | Vector from a brace list | pass | common for constant tables (std::vector<T> v = {...}) |  |
+| `library/vector_equality.kov` | two Vectors are equal when they have the same length and equal elements (`==` and `!=`) | pass |  |  |
 
 ## Kov's own features (design.md sections 7 and 8)
 

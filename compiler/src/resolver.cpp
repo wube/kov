@@ -1057,6 +1057,12 @@ struct GlobalScope::Impl
       if (!isTypeNode(a))
         return {};
       const Ty* t = convertType(static_cast<Type*>(a), ctx, depth + 1);
+      if (t && t->kind == TyKind::Pack)
+      {
+        for (const Ty* element : t->args)
+          args.push_back(element); // `Args...` bound to a pack: its elements
+        continue;
+      }
       if (!t || !t->isKnown() || types.isDependent(t))
         return {};
       args.push_back(t);
@@ -1168,6 +1174,22 @@ struct GlobalScope::Impl
     return false;
   }
 
+  // Whether a constructor or conversion operator is explicit here: `explicit`, or `explicit(cond)`
+  // with cond true under the substitution (FixedPointNumberTemplate's `explicit(Explicit)`).
+  bool isExplicit(FunctionDecl* f, const Subst* subst)
+  {
+    if (!(f->flags & DF_Explicit))
+      return false;
+    if (!f->explicitCondition)
+      return true;
+    DeclContext dc;
+    declContextFor(f, dc);
+    ParsedFile* file = f->file;
+    TypeContext ctx{dc.scope, &dc.params, subst, file ? file->tokens : nullptr, file ? file->text : std::string_view()};
+    std::optional<int64_t> v = constEval(f->explicitCondition, ctx, 0);
+    return !v || *v != 0; // unknown: explicit, the safe side
+  }
+
   // isArray<T>, isSame<A, B>, ... ; nullopt when `name` is not a trait.
   std::optional<bool> traitValue(std::string_view name, const std::vector<const Ty*>& a)
   {
@@ -1203,6 +1225,34 @@ struct GlobalScope::Impl
           return false;
       return true;
     }
+    if (name == "isConstructible")
+    {
+      // isConstructible<T, Args...>: T has a constructor taking Args (a class without constructors
+      // takes none or a copy; a scalar takes one convertible value).
+      if (a.empty())
+        return false;
+      const Ty* t = types.unqualified(types.stripRef(a[0]));
+      std::vector<const Ty*> args(a.begin() + 1, a.end());
+      bool copy = args.size() == 1 && types.unqualified(types.stripRef(args[0])) == t;
+      if (t->kind == TyKind::Class)
+      {
+        Decl* def = t->decl && t->decl->ownScope ? t->decl : (classScopeOf(t) ? classScopeOf(t)->owner : nullptr);
+        if (!def || def->kind != NodeKind::ClassDecl)
+          return false;
+        std::vector<FunctionDecl*> ctors;
+        for (Decl* m : static_cast<ClassDecl*>(def)->members)
+          if (m->kind == NodeKind::FunctionDecl && (m->flags & DF_Constructor) && !(m->flags & DF_Delete))
+            ctors.push_back(static_cast<FunctionDecl*>(m));
+        if (copy || ctors.empty())
+          return copy || args.empty();
+        Subst s = substFor(t);
+        bool ambiguous = false;
+        return chooseAmong(ctors, args, s.pairs.empty() ? nullptr : &s, nullptr, ambiguous) != nullptr;
+      }
+      if (args.empty())
+        return t->kind != TyKind::Void && t->kind != TyKind::Function;
+      return args.size() == 1 && traitValue("isConvertible", {args[0], t}).value_or(false);
+    }
     if (name == "isSame") return a.size() == 2 && a[0] == a[1];
     if (name == "isBaseOf") return a.size() == 2 && derivesFrom(a[1], a[0]);
     if (name == "isConvertible")
@@ -1233,7 +1283,8 @@ struct GlobalScope::Impl
     std::string_view n = symbols.name(symbol);
     return n == "isArray" || n == "isPointer" || n == "isEnum" || n == "isClass" || n == "isVoid" || n == "isReference" || n == "isConst" ||
            n == "isNullPointer" || n == "isIntegral" || n == "isFloatingPoint" || n == "isArithmetic" || n == "isSigned" ||
-           n == "isUnsigned" || n == "isFunction" || n == "isTriviallyCopyable" || n == "isSame" || n == "isBaseOf" || n == "isConvertible";
+           n == "isUnsigned" || n == "isFunction" || n == "isTriviallyCopyable" || n == "isSame" || n == "isBaseOf" || n == "isConvertible" ||
+           n == "isConstructible";
   }
 
   // Minimal constant evaluation for array bounds: literals and arithmetic on them.
@@ -2699,7 +2750,7 @@ struct GlobalScope::Impl
           Subst s = substFor(p);
           for (Decl* m : static_cast<ClassDecl*>(def)->members)
           {
-            if (m->kind != NodeKind::FunctionDecl || !(m->flags & DF_Constructor) || (m->flags & DF_Explicit))
+            if (m->kind != NodeKind::FunctionDecl || !(m->flags & DF_Constructor) || isExplicit(static_cast<FunctionDecl*>(m), &s))
               continue;
             auto* f = static_cast<FunctionDecl*>(m);
             if (f->params.size() != 1)
@@ -3741,6 +3792,33 @@ struct GlobalScope::Impl
     // An explicit template argument of a call (`forward<Args>(args)`): under an instantiation that
     // binds the pack Args to one element, a non-pack parameter of the callee gets that element,
     // not a pack of one.
+    // The explicit template arguments of a call (`count<int, int, int>()`): one per parameter;
+    // a trailing pack takes the rest, and is empty when the list leaves it nothing and there is
+    // no call argument to deduce it from.
+    void bindExplicitArgs(FunctionDecl* f, const NamePart& namePart, Span<Expr*> args, Subst& s)
+    {
+      size_t n = f->templateParams.size();
+      for (size_t i = 0; i < namePart.templateArgs.size() && i < n; ++i)
+      {
+        auto* param = static_cast<TemplateParamDecl*>(f->templateParams[i]);
+        if (param->isPack && i + 1 == n)
+        {
+          std::vector<const Ty*> rest;
+          for (size_t j = i; j < namePart.templateArgs.size(); ++j)
+            rest.push_back(explicitArgument(namePart.templateArgs[j], param));
+          s.pairs.push_back({param, types.pack(Span<const Ty*>{rest.data(), uint32_t(rest.size())})});
+          return;
+        }
+        s.pairs.push_back({param, explicitArgument(namePart.templateArgs[i], param)});
+      }
+      if (n && namePart.hasTemplateArgs && args.empty())
+      {
+        auto* last = static_cast<TemplateParamDecl*>(f->templateParams[n - 1]);
+        if (last->isPack && !s.find(last))
+          s.pairs.push_back({last, types.pack({})}); // `count<int>()`: nothing left for Args
+      }
+    }
+
     const Ty* explicitArgument(Node* written, Decl* param)
     {
       const Ty* t = impl.templateArgument(written, param, ctx(), 0);
@@ -3766,8 +3844,7 @@ struct GlobalScope::Impl
           Subst s = classSubst ? *classSubst : Subst{};
           const Ty* fnTy = impl.declaredTypeOf(f, classSubst, 0);
           if (namePart)
-            for (size_t i = 0; i < namePart->templateArgs.size() && i < f->templateParams.size(); ++i)
-              s.pairs.push_back({f->templateParams[i], explicitArgument(namePart->templateArgs[i], f->templateParams[i])});
+            bindExplicitArgs(f, *namePart, args, s);
           impl.deduceCall(f, fnTy, argTypesOf(args), s);
           impl.fillDefaultTemplateArgs(f, s);
           if (call)
@@ -3813,8 +3890,7 @@ struct GlobalScope::Impl
       {
         // Explicit template arguments first, then deduction from the arguments.
         if (namePart)
-          for (size_t i = 0; i < namePart->templateArgs.size() && i < f->templateParams.size(); ++i)
-            subst.pairs.push_back({f->templateParams[i], explicitArgument(namePart->templateArgs[i], f->templateParams[i])});
+          bindExplicitArgs(f, *namePart, args, subst);
         impl.deduceCall(f, fnTy, argTypesOf(args), subst);
         impl.fillDefaultTemplateArgs(f, subst);
         if (call)
@@ -4209,11 +4285,12 @@ struct GlobalScope::Impl
         switch (op)
         {
           case P::NotEq:
-            if (operatorFunction(P::EqEq, lhs, rhs, token, 2, subst, isMember) || threeWayDefaulted(lhs, rhs, token))
-              return types.boolType();
+            if (operatorFunction(P::EqEq, lhs, rhs, token, 2, subst, isMember) || threeWayDefaulted(lhs, rhs, token) ||
+                operatorFunction(P::EqEq, rhs, lhs, token, 2, subst, isMember))
+              return types.boolType(); // `3 != id` through Id::operator==(int): the operands reversed
             break;
           case P::EqEq:
-            if (threeWayDefaulted(lhs, rhs, token))
+            if (threeWayDefaulted(lhs, rhs, token) || operatorFunction(P::EqEq, rhs, lhs, token, 2, subst, isMember))
               return types.boolType();
             break;
           case P::Less: case P::Greater: case P::LessEq: case P::GreaterEq:
@@ -5233,7 +5310,28 @@ struct GlobalScope::Impl
           return record(e, pattern ? pattern : types.unknown());
         }
         case NodeKind::RequiresExpr:
+        {
+          // `requires { t.save(); }`: true when every requirement is well-typed for the types at
+          // hand, probed on a scratch walker so that the misses count in no statistic.
+          auto* r = static_cast<RequiresExpr*>(e);
+          ResolveStats scratch;
+          Walker probe(impl, scratch, tokens, text);
+          probe.scope = scope;
+          probe.locals = locals;
+          probe.activeSubst = activeSubst;
+          probe.thisType = thisType;
+          for (Decl* p : r->params)
+            probe.locals.push(static_cast<ParamDecl*>(p)->name, p);
+          bool satisfied = true;
+          for (Type* t : r->typeRequirements)
+            if (const Ty* ty = probe.typeOf(t); !ty || !ty->isKnown())
+              satisfied = false;
+          for (Expr* requirement : r->requirements)
+            if (const Ty* ty = probe.walkExpr(requirement); !ty || !ty->isKnown())
+              satisfied = false;
+          r->satisfied = satisfied;
           return record(e, types.boolType());
+        }
         case NodeKind::ParenExpr:
           return record(e, walkExpr(static_cast<ParenExpr*>(e)->inner));
         default:
@@ -5734,7 +5832,10 @@ std::optional<bool> GlobalScope::typeTraitValue(NameExpr* e, Decl* context, cons
   ParsedFile* file = context ? context->file : nullptr;
   Impl::TypeContext ctx{dc.scope, &dc.params, args.empty() ? nullptr : &s, file ? file->tokens : nullptr, file ? file->text : std::string_view()};
   std::vector<const Ty*> a = impl->traitArgs(e->name.parts[0], ctx, 0);
-  if (a.size() != e->name.parts[0].templateArgs.size())
+  bool hasPack = false;
+  for (Node* arg : e->name.parts[0].templateArgs)
+    hasPack = hasPack || arg->kind == NodeKind::PackType; // `isConstructible<T, Args...>`: any number of types
+  if (a.empty() || (!hasPack && a.size() != e->name.parts[0].templateArgs.size()))
     return std::nullopt;
   return impl->traitValue(impl->symbols.name(e->name.parts[0].symbol), a);
 }
@@ -5804,6 +5905,12 @@ void GlobalScope::retypeFor(FunctionDecl* f, const TemplateArgs& args, const Ty*
   else if (Decl* cls = Impl::enclosingClassDecl(w.scope))
     w.thisType = impl->types.pointer(impl->substitute(impl->selfType(cls), subst));
   w.walkDecl(f);
+}
+
+bool GlobalScope::isExplicit(FunctionDecl* f, const TemplateArgs& args)
+{
+  Subst s = toSubst(args);
+  return impl->isExplicit(f, args.empty() ? nullptr : &s);
 }
 
 void GlobalScope::retypeInitializerFor(VariableDecl* v, const TemplateArgs& args)
