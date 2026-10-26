@@ -23,4 +23,5 @@ target_include_directories(kovc PRIVATE src)
 if (MSVC)
   target_compile_options(kovc PRIVATE /W4 /EHsc)
   target_compile_definitions(kovc PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_link_options(kovc PRIVATE /STACK:8388608)  # 8 MB stack for deep ASTs
 endif()

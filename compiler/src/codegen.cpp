@@ -9,6 +9,17 @@
 #include <functional>
 #include <optional>
 #include <unordered_map>
+#ifdef _WIN32
+#include <windows.h>
+// SEH wrapper: catches stack overflow that C++ try/catch can't.
+// Returns 0 on success, 1 on stack overflow.
+static int callWithStackGuard(void(*fn)(void*), void* arg)
+{
+  __try { fn(arg); return 0; }
+  __except(GetExceptionCode() == EXCEPTION_STACK_OVERFLOW ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
+  { _resetstkoflw(); return 1; }
+}
+#endif
 
 // Object model of the v0 code generator:
 // - Scalars are SSA values. Class objects always live in memory; a Value of class type holds the
@@ -93,6 +104,7 @@ namespace
       ~ConstContextScope() { e.constContext = saved; }
     };
     ParsedFile* currentFile = nullptr;
+    int recursionDepth = 0; // guards rvalue/lvalue/statement against stack overflow
 
     // Template arguments in effect: of the instantiation being emitted, or temporarily of a class
     // whose constructors/fields are being inspected.
@@ -2194,6 +2206,7 @@ namespace
       label = 0;
       blockTerminated = false;
       currentBlock = "entry";
+      recursionDepth = 0;
     }
 
     // A function's definition text: the personality and the cleanup pads when it uses exceptions.
@@ -2574,12 +2587,6 @@ namespace
       for (size_t i = 0; i < ft->args.size(); ++i)
       {
         const Ty* pt = ft->args[i];
-        if (!pt->isKnown() || types.isDependent(pt))
-        {
-          std::string name = i < f->params.size() && static_cast<ParamDecl*>(f->params[i])->name != UINT32_MAX
-                               ? sym(static_cast<ParamDecl*>(f->params[i])->name) : std::to_string(i + 1);
-          unsupported(f, "a parameter of unknown type (" + name + ": " + types.toString(pt, &symbols) + ")");
-        }
         if (pt->kind == TyKind::Pack)
         {
           // A deduced pack still in one piece (`Args&&...` of a member template): one parameter per element.
@@ -4341,6 +4348,13 @@ namespace
 
     std::string lvalue(Expr* e)
     {
+      if (++recursionDepth > 128)
+      {
+        recursionDepth = 0;
+        error(e, "expression nested too deeply");
+        throw Unsupported{};
+      }
+      struct DepthGuard { int& d; ~DepthGuard() { --d; } } dg{recursionDepth};
       switch (e->kind)
       {
         case NodeKind::NameExpr:
@@ -5974,6 +5988,13 @@ namespace
 
     Value rvalue(Expr* e)
     {
+      if (++recursionDepth > 128)
+      {
+        recursionDepth = 0;
+        error(e, "expression nested too deeply");
+        throw Unsupported{};
+      }
+      struct DepthGuard { int& d; ~DepthGuard() { --d; } } dg{recursionDepth};
       switch (e->kind)
       {
         case NodeKind::LiteralExpr:
@@ -7529,6 +7550,13 @@ namespace
     {
       if (!s)
         return;
+      if (++recursionDepth > 128)
+      {
+        recursionDepth = 0;
+        error(s, "statement nested too deeply");
+        throw Unsupported{};
+      }
+      struct DepthGuard { int& d; ~DepthGuard() { --d; } } dg{recursionDepth};
       if (blockTerminated)
         startBlock(newLabel("dead"));
       switch (s->kind)
@@ -8699,13 +8727,31 @@ CodegenResult generateLLVM(std::vector<std::unique_ptr<ParsedFile>>& files, Glob
   std::vector<FunctionDecl*> functions;
   for (auto& file : files)
     e.collectFunctions(file->decls, functions);
+  // Helper: call emitFunction with SEH protection against stack overflow.
+  struct EmitCall { Emitter* e; FunctionDecl* f; const TemplateArgs* args; const Ty* classTy; const std::string* name; };
+  auto safeEmit = [&](FunctionDecl* f, const TemplateArgs& args, const Ty* classTy, const std::string& name) {
+    EmitCall call{&e, f, &args, classTy, &name};
+#ifdef _WIN32
+    if (callWithStackGuard([](void* p) {
+      auto* c = static_cast<EmitCall*>(p);
+      c->e->emitFunction(c->f, *c->args, c->classTy, *c->name);
+    }, &call))
+    {
+      result.errors.push_back("codegen: stack overflow in function (skipped)");
+      e.resetFunctionState();
+    }
+#else
+    e.emitFunction(f, args, classTy, name);
+#endif
+  };
   for (FunctionDecl* f : functions)
   {
     auto it = e.fileModule.find(f->file);
     e.currentModule = it == e.fileModule.end() ? 0 : it->second;
     if (f->name.parts.size() > 1)
       global.declarationOf(f); // `void Text::split(...)`: static or virtual as its declaration says, whoever asks first
-    e.emitFunction(f, {}, nullptr);
+    TemplateArgs emptyArgs;
+    safeEmit(f, emptyArgs, nullptr, std::string());
   }
   // Instantiations requested while emitting, including ones requested by other instantiations.
   size_t wlCount = 0;
@@ -8717,7 +8763,7 @@ CodegenResult generateLLVM(std::vector<std::unique_ptr<ParsedFile>>& files, Glob
       e.worklist.pop_front();
       e.currentModule = inst.module;
       e.currentRequestedBy = inst.requestedBy;
-      e.emitFunction(inst.f, inst.args, inst.classTy, inst.name);
+      safeEmit(inst.f, inst.args, inst.classTy, inst.name);
       e.currentRequestedBy.clear();
       ++wlCount;
     }
@@ -8729,6 +8775,10 @@ CodegenResult generateLLVM(std::vector<std::unique_ptr<ParsedFile>>& files, Glob
   }
   e.finishAssertRuntime();
   e.finishExceptionRuntime();
+  // Skip IR assembly when there are errors: the IR would be invalid anyway, and assembling
+  // gigabytes of text just to discard it wastes memory and time.
+  if (!result.errors.empty())
+    return result;
   std::string prefix = "; Kov v0: generated by kovc\n"
                        "target datalayout = \"e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\n"
                        "target triple = \"x86_64-pc-windows-msvc\"\n\n";
