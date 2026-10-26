@@ -5839,6 +5839,15 @@ namespace
             assignObject(l.text, tmp, l.ty, b, true);
             return l;
           }
+          if (b->rhs->kind == NodeKind::BraceInitExpr)
+          {
+            // `*this = {}` or `this->data = {a, b}`: construct a temporary of the LHS type from the brace args.
+            auto* bi = static_cast<BraceInitExpr*>(b->rhs);
+            std::string tmp = newObjectSlot(lt0, b);
+            constructInto(tmp, lt0, bi->args, b);
+            assignObject(l.text, tmp, lt0, b, true);
+            return l;
+          }
           Value r = rvalue(b->rhs);
           if (!isClass(r.ty))
             unsupported(b, "assigning a non-class to a class");

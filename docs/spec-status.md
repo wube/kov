@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**176 pass, 2 pending, 0 failing, 0 fixed** (178 snippets, 3.3 s).
+**177 pass, 2 pending, 0 failing, 0 fixed** (179 snippets, 3.2 s).
 
 ## Language: statements, expressions, declarations
 
@@ -67,6 +67,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `classes/aggregate_default_members.kov` | aggregate initialisation leaves omitted members with their default member initializers | pass |  |  |
 | `classes/aggregates_and_brace_init.kov` | aggregate initialisation, default member initializers, arrays of structs, nested braces | pass |  |  |
 | `classes/anonymous_members.kov` | anonymous struct and union members | pass |  |  |
+| `classes/brace_init_assign.kov` | brace-init on the right of assignment to a class object | pass | *this = {}; this->data = {a, b}; |  |
 | `classes/conditional_explicit.kov` | `explicit(condition)` makes a constructor explicit only while the condition holds, so Fixed<int, false> converts from double implicitly and Fixed<int, true> does not | pass |  |  |
 | `classes/const_and_mutable.kov` | const member functions, const overloads, mutable members, const objects | pass | 198 mutable members in 127 files |  |
 | `classes/constructors.kov` | constructors: default, converting, explicit, copy, move, delegating, = default, = delete | pass | 2065 `= default`, 904 `= delete`, 1100 delegating, 2035 explicit |  |

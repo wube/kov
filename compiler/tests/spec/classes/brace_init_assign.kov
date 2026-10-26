@@ -1,0 +1,19 @@
+// spec: brace-init on the right of assignment to a class object
+// factorio: *this = {}; this->data = {a, b};
+class Point { int x; int y; };
+
+class Wrapper
+{
+  Point p;
+  void reset() { this->p = {}; }
+  void set(int a, int b) { this->p = {a, b}; }
+};
+
+int main()
+{
+  Wrapper w;
+  w.set(3, 4);
+  w.reset();
+  println("brace init assign: ok");
+  return 0;
+}
