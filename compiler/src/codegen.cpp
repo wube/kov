@@ -2900,7 +2900,23 @@ namespace
           unsupported(at, "a defaulted function with " + std::to_string(args.size()) + " arguments");
         Value v = rvalue(args[0]);
         if (!isClass(v.ty))
+        {
+          // A Vector value being assigned/copied into a class that wraps it (e.g. float32x4
+          // wrapping __m128): store the vector directly into the wrapper's first field and return.
+          if (v.ty && v.ty->kind == TyKind::Vector && isClass(t))
+          {
+            StructInfo& info = structFor(t, at);
+            std::string field0 = gep(info.name, thisArg, 0);
+            std::string tmp = newTemp();
+            fn += "  " + tmp + " = load " + llType(v.ty, at) + ", ptr " + v.text + "\n";
+            fn += "  store " + llType(v.ty, at) + " " + tmp + ", ptr " + field0 + "\n";
+            bool isAssign = (f->flags & DF_Constructor) == 0;
+            if (isAssign)
+              return {thisArg, classTy, false};
+            return {"", types.voidType(), false};
+          }
           unsupported(at, "a defaulted function given a non-class");
+        }
         src = v.text;
         if (classKey(v.ty) != classKey(t) && !baseAddress(v.ty, t, v.text, src, at))
           unsupported(at, "a defaulted function given an unrelated class");
@@ -4067,6 +4083,52 @@ namespace
         fn += "  " + r + " = ptrtoint ptr " + v.text + " to " + toT + "\n";
         return {r, to};
       }
+      // SSE vector to scalar: extract lane 0.
+      // __m128 -> float, __m128d -> double, __m128i -> int32/int64.
+      if (fk == TyKind::Vector && (tk == TyKind::Float || tk == TyKind::Int || tk == TyKind::Char))
+      {
+        // If element types differ, bitcast the vector first.
+        const Ty* elemTy = from->inner;
+        if (elemTy && elemTy->kind != tk)
+        {
+          // e.g. <4 x i32> -> double: bitcast <4 x i32> to <2 x double> then extract.
+          // or <4 x float> -> int32: bitcast <4 x float> to <4 x i32> then extract.
+          uint32_t totalBits = from->count * (elemTy->bits ? elemTy->bits : 32);
+          uint32_t newCount = totalBits / to->bits;
+          const Ty* newVec = types.vectorType(to, newCount);
+          std::string t1 = newTemp();
+          fn += "  " + t1 + " = bitcast " + fromT + " " + v.text + " to " + llType(newVec, at) + "\n";
+          fn += "  " + r + " = extractelement " + llType(newVec, at) + " " + t1 + ", i32 0\n";
+        }
+        else
+        {
+          fn += "  " + r + " = extractelement " + fromT + " " + v.text + ", i32 0\n";
+        }
+        return {r, to};
+      }
+      // Scalar to SSE vector: splat (broadcast to all lanes).
+      if (tk == TyKind::Vector && (fk == TyKind::Float || fk == TyKind::Int || fk == TyKind::Char || fk == TyKind::Bool))
+      {
+        const Ty* elemTy = to->inner;
+        // Convert the scalar to the element type first if needed.
+        Value scalar = (from != elemTy && types.unqualified(from) != types.unqualified(elemTy))
+                        ? convert(v, elemTy, at) : v;
+        std::string t1 = newTemp(), t2 = newTemp();
+        fn += "  " + t1 + " = insertelement " + toT + " undef, " + llType(elemTy, at) + " " + scalar.text + ", i32 0\n";
+        // Shuffle to splat lane 0 to all lanes.
+        std::string mask = "<";
+        for (uint32_t i = 0; i < to->count; ++i)
+          mask += (i ? ", " : "") + std::string("i32 0");
+        mask += ">";
+        fn += "  " + t2 + " = shufflevector " + toT + " " + t1 + ", " + toT + " undef, <" + std::to_string(to->count) + " x i32> " + mask + "\n";
+        return {t2, to};
+      }
+      // Vector to vector bitcast (same total size, different element types).
+      if (fk == TyKind::Vector && tk == TyKind::Vector)
+      {
+        fn += "  " + r + " = bitcast " + fromT + " " + v.text + " to " + toT + "\n";
+        return {r, to};
+      }
       unsupported(at, "a conversion from " + types.toString(from, &symbols) + " to " + types.toString(to, &symbols));
     }
 
@@ -4928,6 +4990,20 @@ namespace
             const Ty* q = global.typeOfAstIn(&tmp, currentFunction, currentArgs ? *currentArgs : none);
             if (q && isClass(q) && !q->args.empty())
               classTy = canonicalClass(q, c);
+          }
+          // move(x) and forward(x): identity casts (lref -> rref in the type system,
+          // but both are just a pointer in LLVM IR).
+          if (!classTy && f->params.size() == 1 && c->args.size() == 1 &&
+              !f->templateParams.empty() && c->templateArgCount != f->templateParams.size())
+          {
+            std::string_view fname = f->name.empty() ? "" : symbols.name(f->name.last().symbol);
+            if (fname == "move" || fname == "forward")
+            {
+              std::string addr = lvalue(c->args[0]);
+              const Ty* argTy = c->args[0]->ty;
+              if (argTy) argTy = types.stripRef(argTy);
+              return {addr, argTy ? argTy : types.unknown(), false};
+            }
           }
           return callFunction(f, calleeArgs(f, classTy, c, c), classTy, thisArg, sret, c->args, c, indirect);
         }
