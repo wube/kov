@@ -150,7 +150,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 
 | Snippet | Construct | Status | Factorio | Note |
 |---|---|---|---|---|
-| `library/variant.kov` | Variant (std::variant) | pending | 24 uses in 15 files (Kov's answer is the typed union, design.md 8.5) | by decision there is no Variant class: a std::variant becomes a typed union (`union enum`, design.md 8.5); what is missing is the converter's mapping of the 24 uses; C:\kov\compiler\tests\spec\library\variant.kov:6: codegen does not support a local of unknown type (v) yet (in @kov.main) |
+| `library/variant.kov` | Variant (std::variant) | pending | 24 uses in 15 files (Kov's answer is the typed union, design.md 8.5) | by decision there is no Variant class: a std::variant becomes a typed union (`union enum`, design.md 8.5); what is missing is the converter's mapping of the 24 uses; C:\kov\compiler\tests\spec\library\variant.kov:7: codegen does not support an operator with a class on the right that no function defines yet (in @kov.main) |
 | `library/algorithms.kov` | algorithms (std::sort, find_if, count_if, all_of/any_of, reverse, lower_bound, remove_if, min/max/clamp) | pass | 466 algorithm calls in 247 files |  |
 | `library/array_span.kov` | Array<T, N> and Span<T> (std::array, std::span) | pass | 372 std::array uses in 193 files, 147 std::span |  |
 | `library/containers_deque_queue.kov` | Deque and Queue (std::deque, std::queue): push at both ends, pop, front/back | pass | 116 deque uses in 68 files |  |

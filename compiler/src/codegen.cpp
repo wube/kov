@@ -5129,7 +5129,29 @@ namespace
         {
           const Ty* t = c->ty;
           if (!t || !t->isKnown())
-            unsupported(c, "a call that did not resolve");
+          {
+            // Try to derive the type from the resolved declaration.
+            if (d && d->kind == NodeKind::ClassDecl)
+            {
+              NamedType tmp{};
+              tmp.kind = NodeKind::NamedType;
+              tmp.name = n->name;
+              TemplateArgs none;
+              t = global.typeOfAstIn(&tmp, currentFunction, currentArgs ? *currentArgs : none);
+              if (t) t = types.unqualified(types.stripRef(t));
+              if (!t || !t->isKnown())
+                t = types.classType(static_cast<ClassDecl*>(d), {});
+            }
+            else if (d && d->kind == NodeKind::EnumDecl)
+              t = types.enumType(static_cast<ClassDecl*>(d));
+            else if (d && (d->kind == NodeKind::UsingAliasDecl || d->kind == NodeKind::TemplateParamDecl))
+            {
+              t = declType(d);
+              if (t) t = types.unqualified(types.stripRef(t));
+            }
+            if (!t || !t->isKnown())
+              unsupported(c, "a call that did not resolve");
+          }
           if (isClass(t))
           {
             std::string addr = sret.empty() ? newObjectSlot(t, c) : sret;
@@ -6771,7 +6793,14 @@ namespace
           }
         }
         if (!t || !t->isKnown())
-          unsupported(b, "an assignment to an expression of unknown type");
+        {
+          // Fall back to the RHS type when the LHS type is unknown.
+          const Ty* rhsTy = b->rhs->ty ? types.stripRef(b->rhs->ty) : nullptr;
+          if (rhsTy && rhsTy->isKnown())
+            t = rhsTy;
+          else
+            unsupported(b, "an assignment to an expression of unknown type");
+        }
         Value rhs = rvalue(b->rhs);
         const BitfieldInfo* bits = nullptr;
         if (b->lhs->kind == NodeKind::MemberExpr)
@@ -7574,6 +7603,13 @@ namespace
     void declareLocal(VariableDecl* v)
     {
       const Ty* t = declType(v);
+      if ((!t || !t->isKnown() || types.isDependent(t)) && v->init && v->init->ty)
+      {
+        // Fall back to the initializer's type when the declared type is unknown (e.g. auto).
+        const Ty* initTy = types.stripRef(v->init->ty);
+        if (initTy && initTy->isKnown() && !types.isDependent(initTy))
+          t = initTy;
+      }
       if (!t || !t->isKnown() || types.isDependent(t))
         unsupported(v, "a local of unknown type (" + (v->name.empty() ? std::string("[bindings]") : sym(v->name.last().symbol)) + ")");
       if ((v->flags & DF_Static) && !(v->flags & DF_Typedef))
