@@ -1,0 +1,48 @@
+// Hand-written Dimensions class (from Map/Dimensions.hpp, not in the converted set).
+// Provides compile-time constants for the terrain hierarchy.
+
+class Dimensions
+{
+public:
+  class PixelPosition
+  {
+  public:
+    static constexpr uint32_t bitShift = 5;
+    static constexpr uint32_t sideSize = 1 << bitShift;
+  };
+
+  class AdvancedTile
+  {
+  public:
+    static constexpr uint32_t bitShift = 1;
+    static constexpr uint32_t sideSize = 1 << bitShift;
+    static constexpr uint32_t positionMask = sideSize - 1;
+  };
+
+  class Chunk
+  {
+  public:
+    static constexpr uint32_t sideBitShift = 5;
+    static constexpr uint32_t sideSize = 1 << sideBitShift;
+    static constexpr uint32_t area = sideSize * sideSize;
+    static constexpr uint32_t positionMask = sideSize - 1;
+    static constexpr uint32_t advancedTileInChunkSide = 1 << (sideBitShift - AdvancedTile::bitShift);
+    static constexpr uint32_t advancedPositionMask = advancedTileInChunkSide - 1;
+    static constexpr uint32_t propertiesArrayWidth = sideSize + 1;
+  };
+
+  class Noise
+  {
+  public:
+    static constexpr float scale = 0.5f;
+  };
+
+  class ParticleTile
+  {
+  public:
+    static constexpr uint32_t bitShift = 3;
+    static constexpr uint32_t sideSize = 1 << bitShift;
+    static constexpr uint32_t chunkSideSize = 1 << (Chunk::sideBitShift - bitShift);
+    static constexpr uint32_t chunkMask = chunkSideSize - 1;
+  };
+};

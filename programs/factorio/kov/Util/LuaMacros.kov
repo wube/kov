@@ -1,0 +1,17 @@
+// Hand-written wrappers for Lua convenience macros.
+// In C, these are #define macros in lua.h / lauxlib.h; preprocessing
+// expands them away, so Kov imports only the underlying API functions.
+// These inline wrappers restore the short names the converted code uses.
+
+extern "C" import "lua.h";
+extern "C" import "lauxlib.h";
+
+inline void lua_pop(lua_State* L, int32_t n) { lua_settop(L, -(n) - 1); }
+inline void lua_newtable(lua_State* L) { lua_createtable(L, 0, 0); }
+inline bool lua_isfunction(lua_State* L, int32_t n) { return lua_type(L, n) == 6; }
+inline void lua_pushcfunction(lua_State* L, lua_CFunction f) { lua_pushcclosure(L, f, 0); }
+inline lua_Number lua_tonumber(lua_State* L, int32_t i) { return lua_tonumberx(L, i, nullptr); }
+inline lua_Integer lua_tointeger(lua_State* L, int32_t i) { return lua_tointegerx(L, i, nullptr); }
+inline const char* lua_tostring(lua_State* L, int32_t i) { return lua_tolstring(L, i, nullptr); }
+inline const char* luaL_checkstring(lua_State* L, int32_t n) { return luaL_checklstring(L, n, nullptr); }
+inline const char* luaL_typename(lua_State* L, int32_t i) { return lua_typename(L, lua_type(L, i)); }
