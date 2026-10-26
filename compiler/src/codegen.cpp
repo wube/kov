@@ -2915,11 +2915,24 @@ namespace
               return {thisArg, classTy, false};
             return {"", types.voidType(), false};
           }
-          unsupported(at, "a defaulted function given a non-class");
+          // For defaulted comparisons (operator==, operator<=>), convert the scalar to
+          // a temporary of the class type through its converting constructor, e.g. `fixedPoint == 0`.
+          if (!(f->flags & (DF_Constructor | DF_Destructor)) && isClass(t))
+          {
+            std::string tmp = newObjectSlot(t, at);
+            Expr* one = args[0];
+            constructInto(tmp, t, Span<Expr*>{&one, 1}, at);
+            src = tmp;
+          }
+          else
+            unsupported(at, "a defaulted function given a non-class");
         }
-        src = v.text;
-        if (classKey(v.ty) != classKey(t) && !baseAddress(v.ty, t, v.text, src, at))
-          unsupported(at, "a defaulted function given an unrelated class");
+        if (src.empty())
+        {
+          src = v.text;
+          if (classKey(v.ty) != classKey(t) && !baseAddress(v.ty, t, v.text, src, at))
+            unsupported(at, "a defaulted function given an unrelated class");
+        }
       }
       return defaultedOperation(f, t, thisArg, src, at);
     }
@@ -3107,7 +3120,22 @@ namespace
         }
         Value v = rvalue(arg);
         if (!isAggregate(v.ty))
+        {
+          // A Vector value being passed to a class parameter that wraps it (e.g. float32x4
+          // wrapping __m128): construct the wrapper and store the vector into its first field.
+          if (v.ty && v.ty->kind == TyKind::Vector && isClass(pt))
+          {
+            std::string copy = newObjectSlot(pt, at);
+            fn += "  store " + llType(pt, at) + " zeroinitializer, ptr " + copy + "\n";
+            StructInfo& info = structFor(pt, at);
+            std::string field0 = gep(info.name, copy, 0);
+            std::string tmp = newTemp();
+            fn += "  " + tmp + " = load " + llType(v.ty, at) + ", ptr " + v.text + "\n";
+            fn += "  store " + llType(v.ty, at) + " " + tmp + ", ptr " + field0 + "\n";
+            return "ptr " + copy;
+          }
           unsupported(at, "passing a non-class to a class parameter");
+        }
         if (isClass(v.ty) && isClass(pt) && classKey(v.ty) != classKey(pt))
           v = convert(v, types.unqualified(pt), at); // a base, or a conversion operator
         std::string copy = newObjectSlot(pt, at);
