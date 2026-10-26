@@ -1,0 +1,38 @@
+// Test: compound if constexpr with !, ||, and local using alias in trait args.
+// The PtreeUtil pattern: `if constexpr (!isSame<Make, FromPtree> || !isArithmetic<value_type>)`
+
+struct FromPtree {};
+struct NotFromPtree {};
+
+struct Item { int32_t x; };
+
+template<typename T>
+struct Vec {
+  using value_type = T;
+  T data;
+};
+
+template<class T, class Make>
+int32_t classify()
+{
+  using value_type = T::value_type;
+  if constexpr (!isSame<Make, FromPtree> || !isArithmetic<value_type>)
+    return 1;
+  else
+    return 0;
+}
+
+fn main() -> int32_t
+{
+  // Make=FromPtree, value_type=Item (not arithmetic)
+  // !true || !false = false || true = true -> 1
+  int32_t a = classify<Vec<Item>, FromPtree>();
+  // Make=NotFromPtree, value_type=Item
+  // !false || ... = true (short-circuit) -> 1
+  int32_t b = classify<Vec<Item>, NotFromPtree>();
+  // Make=FromPtree, value_type=int32_t (arithmetic)
+  // !true || !true = false || false = false -> 0
+  int32_t c = classify<Vec<int32_t>, FromPtree>();
+  println("{}{}{}", a, b, c);
+  return 0;
+}

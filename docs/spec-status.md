@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**178 pass, 2 pending, 0 failing, 0 fixed** (180 snippets, 3.1 s).
+**179 pass, 2 pending, 0 failing, 0 fixed** (181 snippets, 3.3 s).
 
 ## Language: statements, expressions, declarations
 
@@ -112,6 +112,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/class_template_outofline_members.kov` | members of a class template with a non-type parameter defined out of line | pass |  |  |
 | `templates/class_template_static_members.kov` | a static data member of a class template is one object per instantiation | pass |  |  |
 | `templates/class_templates.kov` | class templates: members, nested typedefs, static constexpr functions, several instantiations | pass |  |  |
+| `templates/compound_constexpr_trait.kov` | compound_constexpr_trait | pass |  |  |
 | `templates/ctad.kov` | class template argument deduction from constructor arguments | pass |  |  |
 | `templates/ctad_in_expression.kov` | class template argument deduction in an expression, not only a declaration: `Pair(a, b)` as a call argument, `Span(p, n)` in a return | pass |  |  |
 | `templates/dependent_member_typedef.kov` | a member typedef of a dependent instantiation as a return type (typename Vector<T>::iterator) | pass |  |  |

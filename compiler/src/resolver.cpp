@@ -1608,7 +1608,19 @@ struct GlobalScope::Impl
     QualifiedName prefix = name;
     prefix.parts.count -= 1;
     Lookup l = lookupQualified(prefix, ctx.scope, ctx.locals, depth + 1, ctx.subst);
-    if (!l.decl || (l.decl->kind != NodeKind::ClassDecl && l.decl->kind != NodeKind::UsingAliasDecl))
+    if (!l.decl)
+      return s;
+    if (l.decl->kind == NodeKind::TemplateParamDecl && ctx.subst)
+    {
+      // `T::value_type` where T is a template parameter: the substituted class carries the
+      // arguments that resolve the member (`using value_type = T;` inside Vec<int> needs
+      // Vec's T mapped to int).
+      const Ty* sub = ctx.subst->find(l.decl);
+      if (sub && sub->kind == TyKind::Class && !sub->args.empty())
+        return substFor(sub);
+      return s;
+    }
+    if (l.decl->kind != NodeKind::ClassDecl && l.decl->kind != NodeKind::UsingAliasDecl)
       return s;
     const Ty* qualifier = typeOfTypeDecl(l.decl, l, prefix.last(), ctx, depth + 1);
     if (!qualifier || qualifier->kind != TyKind::Class || qualifier->args.empty())
