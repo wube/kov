@@ -1,0 +1,27 @@
+// spec: short-circuit evaluation in constant expressions (true || <unknown> is true)
+// factorio: is_memcpy_saveable<T> = isFundamental<T> && !isPointer<T> || force_memcpy_save<T>
+template<typename T>
+constexpr bool unknownTrait = false; // pretend this can't be folded for some T
+
+template<typename T>
+constexpr bool alwaysTrue = true || unknownTrait<T>;
+
+template<typename T>
+constexpr bool alwaysFalse = false && unknownTrait<T>;
+
+int main()
+{
+  static_assert(alwaysTrue<int>);
+  static_assert(!alwaysFalse<int>);
+
+  // Short-circuit in if constexpr
+  if constexpr (true || unknownTrait<int>)
+  {
+    println("short-circuit or: ok");
+  }
+  if constexpr (!(false && unknownTrait<int>))
+  {
+    println("short-circuit and: ok");
+  }
+  return 0;
+}

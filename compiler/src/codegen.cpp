@@ -3168,8 +3168,25 @@ namespace
       }
       if (lastParam && lastParam->isPack)
         args.pairs.push_back({lastParam, types.pack(Span<const Ty*>{packElements.data(), uint32_t(packElements.size())})});
-      if (args.pairs.size() < count)
+      // Fill in default arguments for parameters not covered by the written arguments.
+      for (size_t i = args.pairs.size(); i < count; ++i)
+      {
+        auto* param = static_cast<TemplateParamDecl*>(v->templateParams[i]);
+        if (param->defaultArg)
+        {
+          const Ty* t = nullptr;
+          if (param->isType && uint8_t(param->defaultArg->kind) <= uint8_t(NodeKind::PackType))
+            t = global.typeOfAstIn(static_cast<Type*>(param->defaultArg), currentFunction, currentArgs ? *currentArgs : none);
+          else if (std::optional<int64_t> c = evalConst(static_cast<Expr*>(param->defaultArg)))
+            t = types.valueType(types.intType(), *c);
+          if (t && t->isKnown())
+          {
+            args.pairs.push_back({param, t});
+            continue;
+          }
+        }
         unsupported(at, "the variable template " + global.qualifiedName(v) + " used without all its arguments");
+      }
       return args;
     }
 
@@ -3237,7 +3254,16 @@ namespace
         {
           auto* b = static_cast<BinaryExpr*>(e);
           auto l = evalConst(b->lhs, depth + 1);
+          // Short-circuit: `true || <unknown>` is 1, `false && <unknown>` is 0.
+          if (l && P(b->op) == P::OrOr && *l)
+            return 1;
+          if (l && P(b->op) == P::AndAnd && !*l)
+            return 0;
           auto r = evalConst(b->rhs, depth + 1);
+          if (l && r && P(b->op) == P::OrOr)
+            return (*l || *r) ? 1 : 0;
+          if (l && r && P(b->op) == P::AndAnd)
+            return (*l && *r) ? 1 : 0;
           if (!l && r && !b->isKeyword && (P(b->op) == P::Minus || P(b->op) == P::Plus) && isParenthesizedTypeName(b->lhs))
             return P(b->op) == P::Minus ? -*r : *r; // `(DWORD)-11` from a C header, parsed as a subtraction
           if (!l || !r || b->isKeyword)

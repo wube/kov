@@ -1,0 +1,30 @@
+// spec: isFundamental, isTriviallyDestructible, isTriviallyCopyAssignable, isTriviallyDefaultConstructible
+// factorio: is_fundamental_v, is_trivially_destructible_v used in Serialiser/Container code
+class Simple { int x; };
+class NonTrivial { ~NonTrivial() { } };
+class WithCtor { WithCtor(int x) { } };
+
+int main()
+{
+  // isFundamental
+  static_assert(isFundamental<int>);
+  static_assert(isFundamental<float>);
+  static_assert(isFundamental<bool>);
+  static_assert(!isFundamental<Simple>);
+
+  // isTriviallyDestructible
+  static_assert(isTriviallyDestructible<int>);
+  static_assert(isTriviallyDestructible<Simple>);
+  static_assert(!isTriviallyDestructible<NonTrivial>);
+
+  // isTriviallyCopyAssignable (uses isTriviallyCopyable under the hood)
+  static_assert(isTriviallyCopyAssignable<int>);
+  static_assert(isTriviallyCopyAssignable<Simple>);
+
+  // isTriviallyDefaultConstructible
+  static_assert(isTriviallyDefaultConstructible<int>);
+  static_assert(isTriviallyDefaultConstructible<Simple>);
+
+  println("type traits: ok");
+  return 0;
+}

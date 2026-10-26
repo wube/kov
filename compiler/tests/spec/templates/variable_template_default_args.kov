@@ -1,0 +1,18 @@
+// spec: variable templates with default template arguments
+// factorio: force_memcpy_save<T, class = void> used with one argument
+template<typename T, typename U = int>
+constexpr int mySize = sizeof(T) + sizeof(U);
+
+template<typename T>
+constexpr bool isBig = mySize<T> > 8;
+
+int main()
+{
+  // mySize<float> should fill in the default U = int
+  static_assert(mySize<float> == 8);   // sizeof(float) + sizeof(int) = 4 + 4
+  static_assert(mySize<double> == 12); // sizeof(double) + sizeof(int) = 8 + 4
+  static_assert(!isBig<float>);        // 8 > 8 is false
+  static_assert(isBig<double>);        // 12 > 8 is true
+  println("variable template default args: ok");
+  return 0;
+}

@@ -1253,6 +1253,49 @@ struct GlobalScope::Impl
         return t->kind != TyKind::Void && t->kind != TyKind::Function;
       return args.size() == 1 && traitValue("isConvertible", {args[0], t}).value_or(false);
     }
+    if (name == "isFundamental")
+      return one() && (isArithmeticKind(one()) || one()->kind == TyKind::Void || one() == types.nullptrType());
+    if (name == "isTriviallyDestructible")
+    {
+      const Ty* t = one();
+      if (!t)
+        return false;
+      if (t->kind != TyKind::Class)
+        return true; // scalars, enums, pointers
+      Decl* def = t->decl;
+      if (!def || def->kind != NodeKind::ClassDecl)
+        return false;
+      for (Decl* m : static_cast<ClassDecl*>(def)->members)
+        if (m->kind == NodeKind::FunctionDecl && (m->flags & DF_Destructor) && !(m->flags & DF_Default))
+          return false;
+      return true;
+    }
+    if (name == "isTriviallyCopyAssignable" || name == "isTriviallyCopyConstructible")
+    {
+      const Ty* t = one();
+      if (!t)
+        return false;
+      if (t->kind != TyKind::Class)
+        return true;
+      // Conservative: a class is trivially copyable if isTriviallyCopyable says so
+      return traitValue("isTriviallyCopyable", a);
+    }
+    if (name == "isTriviallyDefaultConstructible")
+    {
+      const Ty* t = one();
+      if (!t)
+        return false;
+      if (t->kind != TyKind::Class)
+        return true;
+      Decl* def = t->decl;
+      if (!def || def->kind != NodeKind::ClassDecl)
+        return false;
+      for (Decl* m : static_cast<ClassDecl*>(def)->members)
+        if (m->kind == NodeKind::FunctionDecl && (m->flags & DF_Constructor) && static_cast<FunctionDecl*>(m)->params.empty() &&
+            !(m->flags & DF_Default))
+          return false;
+      return true;
+    }
     if (name == "isSame") return a.size() == 2 && a[0] == a[1];
     if (name == "isBaseOf") return a.size() == 2 && derivesFrom(a[1], a[0]);
     if (name == "isConvertible")
@@ -1284,7 +1327,8 @@ struct GlobalScope::Impl
     return n == "isArray" || n == "isPointer" || n == "isEnum" || n == "isClass" || n == "isVoid" || n == "isReference" || n == "isConst" ||
            n == "isNullPointer" || n == "isIntegral" || n == "isFloatingPoint" || n == "isArithmetic" || n == "isSigned" ||
            n == "isUnsigned" || n == "isFunction" || n == "isTriviallyCopyable" || n == "isSame" || n == "isBaseOf" || n == "isConvertible" ||
-           n == "isConstructible";
+           n == "isConstructible" || n == "isFundamental" || n == "isTriviallyDestructible" || n == "isTriviallyCopyAssignable" ||
+           n == "isTriviallyCopyConstructible" || n == "isTriviallyDefaultConstructible";
   }
 
   // Minimal constant evaluation for array bounds: literals and arithmetic on them.
@@ -1448,7 +1492,17 @@ struct GlobalScope::Impl
       case NodeKind::BinaryExpr:
       {
         auto* b = static_cast<BinaryExpr*>(e);
-        auto l = constEval(b->lhs, ctx, depth + 1), r = constEval(b->rhs, ctx, depth + 1);
+        auto l = constEval(b->lhs, ctx, depth + 1);
+        // Short-circuit: `true || <unknown>` is 1, `false && <unknown>` is 0.
+        if (l && P(b->op) == P::OrOr && *l)
+          return 1;
+        if (l && P(b->op) == P::AndAnd && !*l)
+          return 0;
+        auto r = constEval(b->rhs, ctx, depth + 1);
+        if (l && r && P(b->op) == P::OrOr)
+          return (*l || *r) ? 1 : 0;
+        if (l && r && P(b->op) == P::AndAnd)
+          return (*l && *r) ? 1 : 0;
         if (!l || !r || b->isKeyword)
           return std::nullopt;
         switch (P(b->op))

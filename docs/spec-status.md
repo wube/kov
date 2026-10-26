@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**173 pass, 2 pending, 0 failing, 0 fixed** (175 snippets, 3.3 s).
+**176 pass, 2 pending, 0 failing, 0 fixed** (178 snippets, 3.3 s).
 
 ## Language: statements, expressions, declarations
 
@@ -132,10 +132,13 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/requires_in_if_constexpr.kov` | a requires-expression is a constant: true when its body is valid for the types at hand, so `if constexpr (requires { t.save(); })` picks the branch | pass |  |  |
 | `templates/several_instantiations_in_one_call.kov` | three instantiations of one function template as arguments of a single variadic call | pass |  |  |
 | `templates/sfinae_enable_if.kov` | enable_if-style overload selection | pass | 1 use (Factorio uses requires clauses instead) |  |
+| `templates/short_circuit_consteval.kov` | short-circuit evaluation in constant expressions (true || <unknown> is true) | pass | is_memcpy_saveable<T> = isFundamental<T> && !isPointer<T> || force_memcpy_save<T> |  |
 | `templates/static_constexpr_member_in_instantiation.kov` | a static constexpr member of a class template is computed with the instantiation's arguments (`T(1) << Bits`) wherever it is used | pass |  |  |
 | `templates/static_table_lookup_helper.kov` | a class's static const table keyed by StringView with a nested value struct, defined out of line from a brace list, read through a helper template with an `auto*` return | pass |  |  |
 | `templates/template_template_parameters.kov` | template template parameters | pass |  |  |
 | `templates/traits_as_values.kov` | type traits used as values (bool isSame<A, B> in an expression, not only in if constexpr) | pass |  |  |
+| `templates/type_traits_fundamental.kov` | isFundamental, isTriviallyDestructible, isTriviallyCopyAssignable, isTriviallyDefaultConstructible | pass | is_fundamental_v, is_trivially_destructible_v used in Serialiser/Container code |  |
+| `templates/variable_template_default_args.kov` | variable templates with default template arguments | pass | force_memcpy_save<T, class = void> used with one argument |  |
 | `templates/variable_templates.kov` | a variable template (`template<typename T> inline constexpr int bytes = sizeof(T)`) is a constant per set of arguments, packs and traits included | pass |  |  |
 | `templates/variadic_recursion.kov` | the recursive variadic pattern: f(T first, Rest... rest) calling f(rest...) down to a non-template base case | pass |  |  |
 | `templates/variadic_templates.kov` | variadic templates: packs, sizeof..., forwarding, fold expressions | pass | 175 variadic templates in 59 files, 110 fold expressions, 218 std::forward |  |
