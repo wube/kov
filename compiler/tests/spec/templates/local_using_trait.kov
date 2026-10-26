@@ -1,0 +1,25 @@
+// Test: a local using alias used as a type trait argument inside if constexpr.
+// The pattern from Logging.kov: `using U = UnderlyingType<E>; if constexpr (isUnsigned<U>)`
+
+enum Signed : int32_t { A = -1, B = 0 };
+enum Unsigned : uint32_t { X = 0, Y = 1 };
+
+template<typename E>
+int32_t classify()
+{
+  using U = UnderlyingType<E>;
+  if constexpr (isUnsigned<U>)
+    return 1;
+  else
+    return 0;
+}
+
+fn main() -> int32_t
+{
+  int32_t r = classify<Unsigned>() * 10 + classify<Signed>();
+  // Unsigned -> uint32 -> isUnsigned = true -> 1
+  // Signed   -> int32  -> isUnsigned = false -> 0
+  // result = 10
+  println("{}", r);
+  return 0;
+}

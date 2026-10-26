@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**177 pass, 2 pending, 0 failing, 0 fixed** (179 snippets, 3.2 s).
+**178 pass, 2 pending, 0 failing, 0 fixed** (180 snippets, 3.0 s).
 
 ## Language: statements, expressions, declarations
 
@@ -122,6 +122,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/forwarding_conversions.kov` | forwarding a string literal through a variadic member template into a String constructor (emplace_back("x")) | pass |  |  |
 | `templates/function_templates.kov` | function templates: deduction, explicit arguments, overloading with non-templates, full specialisation | pass | 592 full specialisations in 61 files |  |
 | `templates/is_constructible_trait.kov` | `isConstructible<T, Args...>` is true when T can be built from Args (what std::is_constructible_v converts to), in `if constexpr` and in variable templates | pass |  |  |
+| `templates/local_using_trait.kov` | local_using_trait | pass |  |  |
 | `templates/member_alias_of_instantiation_cast.kov` | a member alias of a class template instantiation, reached through an alias of the instantiation, names the substituted type (`Table::value_type(65)`) | pass |  |  |
 | `templates/member_template_in_class_template.kov` | a member function template of a class template converting its argument to T (names.add("a") into Stack<String>) | pass |  |  |
 | `templates/member_templates_explicit.kov` | member function templates called with explicit arguments, static member templates | pass |  |  |

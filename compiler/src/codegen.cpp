@@ -6822,6 +6822,12 @@ namespace
         case NodeKind::IfStmt:
         {
           auto* i = static_cast<IfStmt*>(s);
+          if (i->isConstexpr && i->constexprKnown >= 0)
+          {
+            // The resolver already folded this if constexpr during instantiation.
+            statement(i->constexprKnown ? i->then : i->else_);
+            break;
+          }
           if (i->isConstexpr && !i->init && i->cond && i->cond->kind != NodeKind::VariableDecl && i->cond->kind != NodeKind::DeclStmt)
             if (std::optional<int64_t> known = evalConst(static_cast<Expr*>(i->cond)))
             {

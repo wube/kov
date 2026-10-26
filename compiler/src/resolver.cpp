@@ -5026,7 +5026,9 @@ struct GlobalScope::Impl
             if (std::optional<int64_t> known = impl.constEval(static_cast<Expr*>(i->cond), ctx(), 0))
             {
               // if constexpr in an instantiation: the discarded branch is not checked (nor are
-              // its calls instantiated), as in C++.
+              // its calls instantiated), as in C++.  Store the result so codegen can read it
+              // without re-evaluating (codegen's TypeContext lacks function-body locals).
+              i->constexprKnown = int8_t(*known ? 1 : 0);
               walkStmt(*known ? i->then : i->else_);
               locals.pop(mark);
               break;
