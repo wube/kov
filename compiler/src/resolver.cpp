@@ -1487,7 +1487,11 @@ struct GlobalScope::Impl
         auto v = constEval(u->operand, ctx, depth + 1);
         if (!v || u->isKeyword)
           return std::nullopt;
-        return P(u->op) == P::Minus ? -*v : P(u->op) == P::Plus ? *v : std::optional<int64_t>();
+        if (P(u->op) == P::Minus) return -*v;
+        if (P(u->op) == P::Plus) return *v;
+        if (P(u->op) == P::Bang) return !*v ? 1 : 0;
+        if (P(u->op) == P::Tilde) return ~*v;
+        return std::nullopt;
       }
       case NodeKind::BinaryExpr:
       {
