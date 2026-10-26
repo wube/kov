@@ -403,6 +403,12 @@ struct GlobalScope::Impl
     add("nullptr_t", types.nullptrType());
     add("_Bool", types.boolType());
     add("wchar_t", types.charType(16, true));
+    add("__m128", types.vectorType(types.floatType(32), 4));
+    add("__m128d", types.vectorType(types.floatType(64), 2));
+    add("__m128i", types.vectorType(types.intType(32), 4));
+    add("__m256", types.vectorType(types.floatType(32), 8));
+    add("__m256d", types.vectorType(types.floatType(64), 4));
+    add("__m256i", types.vectorType(types.intType(32), 8));
   }
 
   const Ty* builtinByName(uint32_t symbol) const

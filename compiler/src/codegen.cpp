@@ -268,6 +268,8 @@ namespace
         case TyKind::Lambda: return t->decl ? closureStructName(t) : "ptr";
         case TyKind::Array:
           return "[" + std::to_string(t->count) + " x " + llType(t->inner, at) + "]";
+        case TyKind::Vector:
+          return "<" + std::to_string(t->count) + " x " + llType(t->inner, at) + ">";
         case TyKind::Class: return structFor(t, at).name;
         case TyKind::Enum: return llType(enumUnderlying(t->decl), at);
         default:
@@ -306,6 +308,7 @@ namespace
           return std::max<uint64_t>(size, 1);
         }
         case TyKind::Array: return t->count * sizeOf(t->inner, at);
+        case TyKind::Vector: return t->count * sizeOf(t->inner, at);
         case TyKind::Enum: return sizeOf(enumUnderlying(t->decl), at);
         case TyKind::Class:
         {
@@ -331,6 +334,7 @@ namespace
       switch (t->kind)
       {
         case TyKind::Array: return alignOf(t->inner, at);
+        case TyKind::Vector: return t->count * sizeOf(t->inner, at); // SSE vectors are 16-byte aligned
         case TyKind::Class:
         {
           uint64_t align = 1;
@@ -1631,6 +1635,21 @@ namespace
         {
           initializeFrom(addr, t, static_cast<ParenExpr*>(init)->inner, at);
           return;
+        }
+        // SSE intrinsic returning a vector → store directly into the wrapper class's first field.
+        if (init->kind == NodeKind::CallExpr && (!init->ty || !init->ty->isKnown()))
+        {
+          Value v = rvalue(init);
+          if (v.ty && v.ty->kind == TyKind::Vector)
+          {
+            StructInfo& info = structFor(t, at);
+            std::string field0 = gep(info.name, addr, 0);
+            std::string tmp = newTemp();
+            fn += "  " + tmp + " = load " + llType(v.ty, at) + ", ptr " + v.text + "\n";
+            fn += "  store " + llType(v.ty, at) + " " + tmp + ", ptr " + field0 + "\n";
+            return;
+          }
+          // Not a vector — fall through to the non-class converting constructor path.
         }
         if (init->ty && !isClass(types.stripRef(init->ty)) && isClass(t))
         {
@@ -4915,6 +4934,9 @@ namespace
         if (!d)
           if (std::optional<Value> v = vaBuiltin(n, c))
             return *v;
+        if (!d)
+          if (std::optional<Value> v = sseBuiltin(n, c))
+            return *v;
         if (!d || d->kind == NodeKind::ClassDecl || d->kind == NodeKind::EnumDecl || d->kind == NodeKind::UsingAliasDecl ||
             d->kind == NodeKind::TemplateParamDecl || (d->kind == NodeKind::VariableDecl && (d->flags & DF_Typedef)))
         {
@@ -5158,6 +5180,619 @@ namespace
       else
         fn += "  call void " + intrinsic + "(ptr " + list + ")\n";
       return Value{"", types.voidType(), false};
+    }
+
+    // SSE intrinsics: _mm_* functions and _MM_SHUFFLE macros.
+    // They are not declared; the codegen emits LLVM IR directly for each one.
+
+    // The LLVM vector type for an SSE suffix: ps = <4 x float>, pd = <2 x double>,
+    // si128/epi32/epu32/epi8 = <4 x i32> (or <2 x i64>, <16 x i8> as needed).
+    const Ty* sseTypeByName(const std::string& name)
+    {
+      if (name.ends_with("_ps")) return types.vectorType(types.floatType(32), 4);
+      if (name.ends_with("_pd")) return types.vectorType(types.floatType(64), 2);
+      if (name.ends_with("_si128")) return types.vectorType(types.intType(32), 4);
+      if (name.ends_with("_epi32") || name.ends_with("_epu32")) return types.vectorType(types.intType(32), 4);
+      if (name.ends_with("_epi64")) return types.vectorType(types.intType(64), 2);
+      if (name.ends_with("_epi8")) return types.vectorType(types.intType(8), 16);
+      return nullptr;
+    }
+
+    // Load a SIMD vector from an argument expression. If the argument is an SSE wrapper class
+    // (float32x4, float64x2, int32x4), extract the first field; otherwise load directly.
+    std::string sseArg(Expr* arg, const Ty* vecTy, Node* at)
+    {
+      Value v = rvalue(arg);
+      std::string src = v.text;
+      const Ty* vt = v.ty ? types.unqualified(types.stripRef(v.ty)) : nullptr;
+      if (vt && vt->kind == TyKind::Class)
+      {
+        StructInfo& info = structFor(vt, at);
+        if (!info.fieldDecls.empty())
+          src = gep(info.name, v.text, 0); // field 0: the __m128/__m128d/__m128i member
+      }
+      std::string r = newTemp();
+      fn += "  " + r + " = load " + llType(vecTy, at) + ", ptr " + src + "\n";
+      return r;
+    }
+
+    // Evaluate a scalar argument (float, double, int32_t) as a register value.
+    std::string sseScalar(Expr* arg, const Ty* scalarTy, Node* at)
+    {
+      Value v = rvalue(arg);
+      return convert(v, scalarTy, at).text;
+    }
+
+    // Declare an LLVM intrinsic if not already declared, and return its name.
+    std::string sseIntrinsic(const std::string& name, const std::string& retTy, const std::string& paramTys)
+    {
+      std::string full = "@" + name;
+      if (!declaredNames[full])
+      {
+        declaredNames[full] = true;
+        decls += "declare " + retTy + " " + full + "(" + paramTys + ")\n";
+      }
+      return full;
+    }
+
+    // Emit a binary SSE operation: fadd, fsub, fmul, fdiv, add, sub for vectors.
+    std::string sseBinOp(const std::string& op, const std::string& tyStr, const std::string& a, const std::string& b)
+    {
+      std::string r = newTemp();
+      fn += "  " + r + " = " + op + " " + tyStr + " " + a + ", " + b + "\n";
+      return r;
+    }
+
+    // Emit an LLVM call.
+    std::string sseCall(const std::string& intrinsic, const std::string& retTy, const std::string& args)
+    {
+      std::string r = newTemp();
+      fn += "  " + r + " = call " + retTy + " " + intrinsic + "(" + args + ")\n";
+      return r;
+    }
+
+    // Store a vector result into a temporary alloca and return its address with the vector type.
+    Value sseResult(const std::string& reg, const Ty* vecTy, Node* at)
+    {
+      std::string slot = newTemp();
+      allocas += "  " + slot + " = alloca " + llType(vecTy, at) + "\n";
+      fn += "  store " + llType(vecTy, at) + " " + reg + ", ptr " + slot + "\n";
+      return {slot, vecTy, false};
+    }
+
+    std::optional<Value> sseBuiltin(NameExpr* n, CallExpr* c)
+    {
+      if (n->name.parts.size() != 1)
+        return std::nullopt;
+      std::string name = sym(n->name.parts[0].symbol);
+
+      // _MM_SHUFFLE(z, y, x, w) = ((z<<6)|(y<<4)|(x<<2)|w)
+      if (name == "_MM_SHUFFLE" && c->args.size() == 4)
+      {
+        auto e = [&](int i) { return evalConst(c->args[i], 0); };
+        auto z = e(0), y = e(1), x = e(2), w = e(3);
+        if (z && y && x && w)
+          return Value{std::to_string((*z << 6) | (*y << 4) | (*x << 2) | *w), types.intType(32)};
+        return std::nullopt;
+      }
+      if (name == "_MM_SHUFFLE2" && c->args.size() == 2)
+      {
+        auto a = evalConst(c->args[0], 0), b = evalConst(c->args[1], 0);
+        if (a && b)
+          return Value{std::to_string((*a << 1) | *b), types.intType(32)};
+        return std::nullopt;
+      }
+
+      if (!name.starts_with("_mm_"))
+        return std::nullopt;
+
+      // Determine the vector type from the name suffix.
+      const Ty* v4f = types.vectorType(types.floatType(32), 4);
+      const Ty* v2d = types.vectorType(types.floatType(64), 2);
+      const Ty* v4i = types.vectorType(types.intType(32), 4);
+      const Ty* v2i64 = types.vectorType(types.intType(64), 2);
+      const Ty* v16i8 = types.vectorType(types.intType(8), 16);
+
+      auto ll = [&](const Ty* t) { return llType(t, c); };
+
+      // --- undefined (zero args) ---
+      if (name == "_mm_undefined_ps")  return sseResult("undef", v4f, c);
+      if (name == "_mm_undefined_pd")  return sseResult("undef", v2d, c);
+      if (name == "_mm_undefined_si128") return sseResult("undef", v4i, c);
+      if (name == "_mm_setzero_si128") return sseResult("zeroinitializer", v4i, c);
+
+      // --- arithmetic: binary float ---
+      auto floatBinOp = [&](const std::string& op, const Ty* vt) -> std::optional<Value>
+      {
+        if (c->args.size() < 2) return std::nullopt;
+        std::string a = sseArg(c->args[0], vt, c);
+        std::string b = sseArg(c->args[1], vt, c);
+        return sseResult(sseBinOp(op, ll(vt), a, b), vt, c);
+      };
+
+      if (name == "_mm_add_ps")  return floatBinOp("fadd", v4f);
+      if (name == "_mm_sub_ps")  return floatBinOp("fsub", v4f);
+      if (name == "_mm_mul_ps")  return floatBinOp("fmul", v4f);
+      if (name == "_mm_div_ps")  return floatBinOp("fdiv", v4f);
+      if (name == "_mm_add_pd")  return floatBinOp("fadd", v2d);
+      if (name == "_mm_sub_pd")  return floatBinOp("fsub", v2d);
+      if (name == "_mm_mul_pd")  return floatBinOp("fmul", v2d);
+      if (name == "_mm_div_pd")  return floatBinOp("fdiv", v2d);
+
+      // --- arithmetic: binary integer ---
+      auto intBinOp = [&](const std::string& op, const Ty* vt) -> std::optional<Value>
+      {
+        if (c->args.size() < 2) return std::nullopt;
+        std::string a = sseArg(c->args[0], vt, c);
+        std::string b = sseArg(c->args[1], vt, c);
+        return sseResult(sseBinOp(op, ll(vt), a, b), vt, c);
+      };
+
+      if (name == "_mm_add_epi32") return intBinOp("add", v4i);
+      if (name == "_mm_sub_epi32") return intBinOp("sub", v4i);
+
+      // --- bitwise: implemented as integer and/or/xor then bitcast back ---
+      auto bitwiseOp = [&](const std::string& op, const Ty* vt) -> std::optional<Value>
+      {
+        if (c->args.size() < 2) return std::nullopt;
+        // Load as the native type, bitcast to i128 for the operation, bitcast back.
+        std::string a = sseArg(c->args[0], vt, c);
+        std::string b = sseArg(c->args[1], vt, c);
+        // For float types, bitcast to <4 x i32> for the integer operation.
+        bool needsCast = (vt == v4f || vt == v2d);
+        const Ty* intVt = (vt == v2d) ? v2i64 : v4i;
+        std::string ai = a, bi = b;
+        if (needsCast)
+        {
+          ai = newTemp(); fn += "  " + ai + " = bitcast " + ll(vt) + " " + a + " to " + ll(intVt) + "\n";
+          bi = newTemp(); fn += "  " + bi + " = bitcast " + ll(vt) + " " + b + " to " + ll(intVt) + "\n";
+        }
+        std::string ri = sseBinOp(op, ll(intVt), ai, bi);
+        std::string res = ri;
+        if (needsCast)
+        {
+          res = newTemp(); fn += "  " + res + " = bitcast " + ll(intVt) + " " + ri + " to " + ll(vt) + "\n";
+        }
+        return sseResult(res, vt, c);
+      };
+
+      if (name == "_mm_and_ps")    return bitwiseOp("and", v4f);
+      if (name == "_mm_or_ps")     return bitwiseOp("or", v4f);
+      if (name == "_mm_xor_ps")    return bitwiseOp("xor", v4f);
+      if (name == "_mm_and_pd")    return bitwiseOp("and", v2d);
+      if (name == "_mm_or_pd")     return bitwiseOp("or", v2d);
+      if (name == "_mm_xor_pd")    return bitwiseOp("xor", v2d);
+      if (name == "_mm_and_si128") return bitwiseOp("and", v4i);
+      if (name == "_mm_or_si128")  return bitwiseOp("or", v4i);
+      if (name == "_mm_xor_si128") return bitwiseOp("xor", v4i);
+
+      // andnot: ~a & b
+      auto andnotOp = [&](const Ty* vt) -> std::optional<Value>
+      {
+        if (c->args.size() < 2) return std::nullopt;
+        std::string a = sseArg(c->args[0], vt, c);
+        std::string b = sseArg(c->args[1], vt, c);
+        bool needsCast = (vt == v4f || vt == v2d);
+        const Ty* intVt = (vt == v2d) ? v2i64 : v4i;
+        std::string ai = a, bi = b;
+        if (needsCast)
+        {
+          ai = newTemp(); fn += "  " + ai + " = bitcast " + ll(vt) + " " + a + " to " + ll(intVt) + "\n";
+          bi = newTemp(); fn += "  " + bi + " = bitcast " + ll(vt) + " " + b + " to " + ll(intVt) + "\n";
+        }
+        // NOT a
+        std::string notA = newTemp();
+        fn += "  " + notA + " = xor " + ll(intVt) + " " + ai + ", <";
+        for (uint32_t i = 0; i < intVt->count; ++i) fn += (i ? ", " : "") + std::string(intVt->inner->bits == 64 ? "i64 -1" : "i32 -1");
+        fn += ">\n";
+        std::string ri = sseBinOp("and", ll(intVt), notA, bi);
+        std::string res = ri;
+        if (needsCast)
+        {
+          res = newTemp(); fn += "  " + res + " = bitcast " + ll(intVt) + " " + ri + " to " + ll(vt) + "\n";
+        }
+        return sseResult(res, vt, c);
+      };
+
+      if (name == "_mm_andnot_ps")    return andnotOp(v4f);
+      if (name == "_mm_andnot_pd")    return andnotOp(v2d);
+      if (name == "_mm_andnot_si128") return andnotOp(v4i);
+
+      // --- float comparisons: fcmp, then select to produce all-ones or all-zeros mask ---
+      auto cmpOp = [&](const std::string& pred, const Ty* vt) -> std::optional<Value>
+      {
+        if (c->args.size() < 2) return std::nullopt;
+        std::string a = sseArg(c->args[0], vt, c);
+        std::string b = sseArg(c->args[1], vt, c);
+        std::string cmp = newTemp();
+        std::string boolVt = "<" + std::to_string(vt->count) + " x i1>";
+        fn += "  " + cmp + " = fcmp " + pred + " " + ll(vt) + " " + a + ", " + b + "\n";
+        // Select: true → all-ones, false → all-zeros (as float bit pattern)
+        const Ty* intVt = (vt == v2d) ? v2i64 : v4i;
+        std::string allOnes = "<";
+        for (uint32_t i = 0; i < intVt->count; ++i) allOnes += (i ? ", " : "") + std::string(intVt->inner->bits == 64 ? "i64 -1" : "i32 -1");
+        allOnes += ">";
+        std::string sel = newTemp();
+        fn += "  " + sel + " = select " + boolVt + " " + cmp + ", " + ll(intVt) + " " + allOnes + ", " + ll(intVt) + " zeroinitializer\n";
+        std::string res = newTemp();
+        fn += "  " + res + " = bitcast " + ll(intVt) + " " + sel + " to " + ll(vt) + "\n";
+        return sseResult(res, vt, c);
+      };
+
+      if (name == "_mm_cmpeq_ps")  return cmpOp("oeq", v4f);
+      if (name == "_mm_cmpge_ps")  return cmpOp("oge", v4f);
+      if (name == "_mm_cmpgt_ps")  return cmpOp("ogt", v4f);
+      if (name == "_mm_cmple_ps")  return cmpOp("ole", v4f);
+      if (name == "_mm_cmplt_ps")  return cmpOp("olt", v4f);
+      if (name == "_mm_cmpneq_ps") return cmpOp("une", v4f);
+      if (name == "_mm_cmpeq_pd")  return cmpOp("oeq", v2d);
+      if (name == "_mm_cmpge_pd")  return cmpOp("oge", v2d);
+      if (name == "_mm_cmpgt_pd")  return cmpOp("ogt", v2d);
+      if (name == "_mm_cmple_pd")  return cmpOp("ole", v2d);
+      if (name == "_mm_cmplt_pd")  return cmpOp("olt", v2d);
+      if (name == "_mm_cmpneq_pd") return cmpOp("une", v2d);
+
+      // --- integer comparisons ---
+      auto icmpOp = [&](const std::string& pred, const Ty* vt) -> std::optional<Value>
+      {
+        if (c->args.size() < 2) return std::nullopt;
+        std::string a = sseArg(c->args[0], vt, c);
+        std::string b = sseArg(c->args[1], vt, c);
+        std::string cmp = newTemp();
+        std::string boolVt = "<" + std::to_string(vt->count) + " x i1>";
+        fn += "  " + cmp + " = icmp " + pred + " " + ll(vt) + " " + a + ", " + b + "\n";
+        std::string sel = newTemp();
+        std::string allOnes = "<";
+        for (uint32_t i = 0; i < vt->count; ++i) allOnes += (i ? ", " : "") + std::string(vt->inner->bits == 64 ? "i64 -1" : "i32 -1");
+        allOnes += ">";
+        fn += "  " + sel + " = select " + boolVt + " " + cmp + ", " + ll(vt) + " " + allOnes + ", " + ll(vt) + " zeroinitializer\n";
+        return sseResult(sel, vt, c);
+      };
+
+      if (name == "_mm_cmpeq_epi32") return icmpOp("eq", v4i);
+      if (name == "_mm_cmpgt_epi32") return icmpOp("sgt", v4i);
+      if (name == "_mm_cmplt_epi32") return icmpOp("slt", v4i);
+
+      // --- set (splat / build) ---
+      if (name == "_mm_set1_ps" && c->args.size() >= 1)
+      {
+        std::string s = sseScalar(c->args[0], types.floatType(32), c);
+        std::string v = newTemp();
+        fn += "  " + v + " = insertelement " + ll(v4f) + " undef, float " + s + ", i32 0\n";
+        std::string splat = newTemp();
+        fn += "  " + splat + " = shufflevector " + ll(v4f) + " " + v + ", " + ll(v4f) + " undef, <4 x i32> zeroinitializer\n";
+        return sseResult(splat, v4f, c);
+      }
+      if (name == "_mm_set1_pd" && c->args.size() >= 1)
+      {
+        std::string s = sseScalar(c->args[0], types.floatType(64), c);
+        std::string v = newTemp();
+        fn += "  " + v + " = insertelement " + ll(v2d) + " undef, double " + s + ", i32 0\n";
+        std::string splat = newTemp();
+        fn += "  " + splat + " = shufflevector " + ll(v2d) + " " + v + ", " + ll(v2d) + " undef, <2 x i32> zeroinitializer\n";
+        return sseResult(splat, v2d, c);
+      }
+      if (name == "_mm_set1_epi32" && c->args.size() >= 1)
+      {
+        std::string s = sseScalar(c->args[0], types.intType(32), c);
+        std::string v = newTemp();
+        fn += "  " + v + " = insertelement " + ll(v4i) + " undef, i32 " + s + ", i32 0\n";
+        std::string splat = newTemp();
+        fn += "  " + splat + " = shufflevector " + ll(v4i) + " " + v + ", " + ll(v4i) + " undef, <4 x i32> zeroinitializer\n";
+        return sseResult(splat, v4i, c);
+      }
+      // _mm_set_ps(d, c, b, a) builds <a, b, c, d> — note reversed order
+      if (name == "_mm_set_ps" && c->args.size() >= 4)
+      {
+        std::string vec = "undef";
+        for (int i = 3; i >= 0; --i)
+        {
+          std::string s = sseScalar(c->args[i], types.floatType(32), c);
+          std::string next = newTemp();
+          fn += "  " + next + " = insertelement " + ll(v4f) + " " + vec + ", float " + s + ", i32 " + std::to_string(3 - i) + "\n";
+          vec = next;
+        }
+        return sseResult(vec, v4f, c);
+      }
+      if (name == "_mm_set_pd" && c->args.size() >= 2)
+      {
+        std::string s0 = sseScalar(c->args[1], types.floatType(64), c);
+        std::string s1 = sseScalar(c->args[0], types.floatType(64), c);
+        std::string v = newTemp();
+        fn += "  " + v + " = insertelement " + ll(v2d) + " undef, double " + s0 + ", i32 0\n";
+        std::string v2 = newTemp();
+        fn += "  " + v2 + " = insertelement " + ll(v2d) + " " + v + ", double " + s1 + ", i32 1\n";
+        return sseResult(v2, v2d, c);
+      }
+      if (name == "_mm_set_epi32" && c->args.size() >= 4)
+      {
+        std::string vec = "undef";
+        for (int i = 3; i >= 0; --i)
+        {
+          std::string s = sseScalar(c->args[i], types.intType(32), c);
+          std::string next = newTemp();
+          fn += "  " + next + " = insertelement " + ll(v4i) + " " + vec + ", i32 " + s + ", i32 " + std::to_string(3 - i) + "\n";
+          vec = next;
+        }
+        return sseResult(vec, v4i, c);
+      }
+
+      // --- load (unaligned) ---
+      if (name == "_mm_loadu_ps" && c->args.size() >= 1)
+      {
+        std::string p = rvalue(c->args[0]).text;
+        std::string r = newTemp();
+        fn += "  " + r + " = load " + ll(v4f) + ", ptr " + p + ", align 1\n";
+        return sseResult(r, v4f, c);
+      }
+      if (name == "_mm_loadu_pd" && c->args.size() >= 1)
+      {
+        std::string p = rvalue(c->args[0]).text;
+        std::string r = newTemp();
+        fn += "  " + r + " = load " + ll(v2d) + ", ptr " + p + ", align 1\n";
+        return sseResult(r, v2d, c);
+      }
+      if (name == "_mm_loadu_si128" && c->args.size() >= 1)
+      {
+        std::string p = rvalue(c->args[0]).text;
+        std::string r = newTemp();
+        fn += "  " + r + " = load " + ll(v4i) + ", ptr " + p + ", align 1\n";
+        return sseResult(r, v4i, c);
+      }
+
+      // --- store (unaligned) — returns void ---
+      if (name == "_mm_storeu_ps" && c->args.size() >= 2)
+      {
+        std::string p = rvalue(c->args[0]).text;
+        std::string v = sseArg(c->args[1], v4f, c);
+        fn += "  store " + ll(v4f) + " " + v + ", ptr " + p + ", align 1\n";
+        return Value{"", types.voidType(), false};
+      }
+      if (name == "_mm_storeu_pd" && c->args.size() >= 2)
+      {
+        std::string p = rvalue(c->args[0]).text;
+        std::string v = sseArg(c->args[1], v2d, c);
+        fn += "  store " + ll(v2d) + " " + v + ", ptr " + p + ", align 1\n";
+        return Value{"", types.voidType(), false};
+      }
+
+      // --- cast (bitcast between vector types, no conversion) ---
+      auto castOp = [&](const Ty* from, const Ty* to) -> std::optional<Value>
+      {
+        if (c->args.size() < 1) return std::nullopt;
+        std::string a = sseArg(c->args[0], from, c);
+        std::string r = newTemp();
+        fn += "  " + r + " = bitcast " + ll(from) + " " + a + " to " + ll(to) + "\n";
+        return sseResult(r, to, c);
+      };
+
+      if (name == "_mm_castps_si128") return castOp(v4f, v4i);
+      if (name == "_mm_castsi128_ps") return castOp(v4i, v4f);
+      if (name == "_mm_castps_pd")    return castOp(v4f, v2d);
+      if (name == "_mm_castpd_ps")    return castOp(v2d, v4f);
+      if (name == "_mm_castsi128_pd") return castOp(v4i, v2d);
+      if (name == "_mm_castpd_si128") return castOp(v2d, v4i);
+
+      // --- convert (type conversion) ---
+      if (name == "_mm_cvtepi32_ps" && c->args.size() >= 1)
+      {
+        std::string a = sseArg(c->args[0], v4i, c);
+        std::string r = newTemp();
+        fn += "  " + r + " = sitofp " + ll(v4i) + " " + a + " to " + ll(v4f) + "\n";
+        return sseResult(r, v4f, c);
+      }
+      if (name == "_mm_cvtps_epi32" && c->args.size() >= 1)
+      {
+        std::string a = sseArg(c->args[0], v4f, c);
+        std::string intr = sseIntrinsic("llvm.x86.sse2.cvtps2dq", ll(v4i), ll(v4f));
+        return sseResult(sseCall(intr, ll(v4i), ll(v4f) + " " + a), v4i, c);
+      }
+      if (name == "_mm_cvtps_pd" && c->args.size() >= 1)
+      {
+        // Low 2 floats → 2 doubles
+        std::string a = sseArg(c->args[0], v4f, c);
+        const Ty* v2f = types.vectorType(types.floatType(32), 2);
+        std::string lo = newTemp();
+        fn += "  " + lo + " = shufflevector " + ll(v4f) + " " + a + ", " + ll(v4f) + " undef, <2 x i32> <i32 0, i32 1>\n";
+        std::string r = newTemp();
+        fn += "  " + r + " = fpext " + ll(v2f) + " " + lo + " to " + ll(v2d) + "\n";
+        return sseResult(r, v2d, c);
+      }
+      if (name == "_mm_cvtpd_ps" && c->args.size() >= 1)
+      {
+        std::string a = sseArg(c->args[0], v2d, c);
+        const Ty* v2f = types.vectorType(types.floatType(32), 2);
+        std::string lo = newTemp();
+        fn += "  " + lo + " = fptrunc " + ll(v2d) + " " + a + " to " + ll(v2f) + "\n";
+        std::string r = newTemp();
+        fn += "  " + r + " = shufflevector " + ll(v2f) + " " + lo + ", " + ll(v2f) + " zeroinitializer, <4 x i32> <i32 0, i32 1, i32 2, i32 3>\n";
+        return sseResult(r, v4f, c);
+      }
+
+      // --- min / max / sqrt / rcp / rsqrt ---
+      auto unaryIntr = [&](const std::string& intr, const Ty* vt) -> std::optional<Value>
+      {
+        if (c->args.size() < 1) return std::nullopt;
+        std::string a = sseArg(c->args[0], vt, c);
+        std::string i = sseIntrinsic(intr, ll(vt), ll(vt));
+        return sseResult(sseCall(i, ll(vt), ll(vt) + " " + a), vt, c);
+      };
+      auto binaryIntr = [&](const std::string& intr, const Ty* vt) -> std::optional<Value>
+      {
+        if (c->args.size() < 2) return std::nullopt;
+        std::string a = sseArg(c->args[0], vt, c);
+        std::string b = sseArg(c->args[1], vt, c);
+        std::string i = sseIntrinsic(intr, ll(vt), ll(vt) + ", " + ll(vt));
+        return sseResult(sseCall(i, ll(vt), ll(vt) + " " + a + ", " + ll(vt) + " " + b), vt, c);
+      };
+
+      if (name == "_mm_min_ps")  return binaryIntr("llvm.x86.sse.min.ps", v4f);
+      if (name == "_mm_max_ps")  return binaryIntr("llvm.x86.sse.max.ps", v4f);
+      if (name == "_mm_min_pd")  return binaryIntr("llvm.x86.sse2.min.pd", v2d);
+      if (name == "_mm_max_pd")  return binaryIntr("llvm.x86.sse2.max.pd", v2d);
+      if (name == "_mm_sqrt_ps") return unaryIntr("llvm.sqrt.v4f32", v4f);
+      if (name == "_mm_sqrt_pd") return unaryIntr("llvm.sqrt.v2f64", v2d);
+      if (name == "_mm_rcp_ps")  return unaryIntr("llvm.x86.sse.rcp.ps", v4f);
+      if (name == "_mm_rsqrt_ps") return unaryIntr("llvm.x86.sse.rsqrt.ps", v4f);
+
+      // --- movemask (returns i32) ---
+      if (name == "_mm_movemask_ps" && c->args.size() >= 1)
+      {
+        std::string a = sseArg(c->args[0], v4f, c);
+        std::string i = sseIntrinsic("llvm.x86.sse.movmsk.ps", "i32", ll(v4f));
+        return Value{sseCall(i, "i32", ll(v4f) + " " + a), types.intType(32)};
+      }
+      if (name == "_mm_movemask_pd" && c->args.size() >= 1)
+      {
+        std::string a = sseArg(c->args[0], v2d, c);
+        std::string i = sseIntrinsic("llvm.x86.sse2.movmsk.pd", "i32", ll(v2d));
+        return Value{sseCall(i, "i32", ll(v2d) + " " + a), types.intType(32)};
+      }
+      if (name == "_mm_movemask_epi8" && c->args.size() >= 1)
+      {
+        std::string a = sseArg(c->args[0], v4i, c);
+        std::string ab = newTemp();
+        fn += "  " + ab + " = bitcast " + ll(v4i) + " " + a + " to " + ll(v16i8) + "\n";
+        std::string i = sseIntrinsic("llvm.x86.sse2.pmovmskb.128", "i32", ll(v16i8));
+        return Value{sseCall(i, "i32", ll(v16i8) + " " + ab), types.intType(32)};
+      }
+
+      // --- shuffle ---
+      if (name == "_mm_shuffle_ps" && c->args.size() >= 3)
+      {
+        std::string a = sseArg(c->args[0], v4f, c);
+        std::string b = sseArg(c->args[1], v4f, c);
+        auto imm = evalConst(c->args[2], 0);
+        if (!imm) return std::nullopt;
+        int m = int(*imm);
+        int i0 = m & 3, i1 = (m >> 2) & 3, i2 = ((m >> 4) & 3) + 4, i3 = ((m >> 6) & 3) + 4;
+        std::string r = newTemp();
+        fn += "  " + r + " = shufflevector " + ll(v4f) + " " + a + ", " + ll(v4f) + " " + b +
+              ", <4 x i32> <i32 " + std::to_string(i0) + ", i32 " + std::to_string(i1) + ", i32 " + std::to_string(i2) + ", i32 " + std::to_string(i3) + ">\n";
+        return sseResult(r, v4f, c);
+      }
+      if (name == "_mm_shuffle_pd" && c->args.size() >= 3)
+      {
+        std::string a = sseArg(c->args[0], v2d, c);
+        std::string b = sseArg(c->args[1], v2d, c);
+        auto imm = evalConst(c->args[2], 0);
+        if (!imm) return std::nullopt;
+        int m = int(*imm);
+        int i0 = m & 1, i1 = ((m >> 1) & 1) + 2;
+        std::string r = newTemp();
+        fn += "  " + r + " = shufflevector " + ll(v2d) + " " + a + ", " + ll(v2d) + " " + b +
+              ", <2 x i32> <i32 " + std::to_string(i0) + ", i32 " + std::to_string(i1) + ">\n";
+        return sseResult(r, v2d, c);
+      }
+      if (name == "_mm_shuffle_epi32" && c->args.size() >= 2)
+      {
+        std::string a = sseArg(c->args[0], v4i, c);
+        auto imm = evalConst(c->args[1], 0);
+        if (!imm) return std::nullopt;
+        int m = int(*imm);
+        int i0 = m & 3, i1 = (m >> 2) & 3, i2 = (m >> 4) & 3, i3 = (m >> 6) & 3;
+        std::string r = newTemp();
+        fn += "  " + r + " = shufflevector " + ll(v4i) + " " + a + ", " + ll(v4i) + " undef, <4 x i32> <i32 " +
+              std::to_string(i0) + ", i32 " + std::to_string(i1) + ", i32 " + std::to_string(i2) + ", i32 " + std::to_string(i3) + ">\n";
+        return sseResult(r, v4i, c);
+      }
+
+      // --- unpack (interleave) ---
+      auto unpackOp = [&](const Ty* vt, bool high) -> std::optional<Value>
+      {
+        if (c->args.size() < 2) return std::nullopt;
+        std::string a = sseArg(c->args[0], vt, c);
+        std::string b = sseArg(c->args[1], vt, c);
+        uint32_t half = vt->count / 2;
+        uint32_t start = high ? half : 0;
+        std::string mask = "<" + std::to_string(vt->count) + " x i32> <";
+        for (uint32_t i = 0; i < half; ++i)
+        {
+          if (i) mask += ", ";
+          mask += "i32 " + std::to_string(start + i) + ", i32 " + std::to_string(vt->count + start + i);
+        }
+        mask += ">";
+        std::string r = newTemp();
+        fn += "  " + r + " = shufflevector " + ll(vt) + " " + a + ", " + ll(vt) + " " + b + ", " + mask + "\n";
+        return sseResult(r, vt, c);
+      };
+
+      if (name == "_mm_unpacklo_ps")    return unpackOp(v4f, false);
+      if (name == "_mm_unpackhi_ps")    return unpackOp(v4f, true);
+      if (name == "_mm_unpacklo_pd")    return unpackOp(v2d, false);
+      if (name == "_mm_unpackhi_pd")    return unpackOp(v2d, true);
+      if (name == "_mm_unpacklo_epi32") return unpackOp(v4i, false);
+      if (name == "_mm_unpackhi_epi32") return unpackOp(v4i, true);
+      if (name == "_mm_unpacklo_epi64") return unpackOp(v2i64, false);
+      if (name == "_mm_unpackhi_epi64") return unpackOp(v2i64, true);
+
+      // --- shifts ---
+      // Immediate shifts: slli, srli, srai
+      auto shiftImmOp = [&](const std::string& op, const Ty* vt) -> std::optional<Value>
+      {
+        if (c->args.size() < 2) return std::nullopt;
+        std::string a = sseArg(c->args[0], vt, c);
+        std::string imm = sseScalar(c->args[1], types.intType(32), c);
+        // Splat the immediate into a vector
+        std::string splat = newTemp();
+        fn += "  " + splat + " = insertelement " + ll(vt) + " zeroinitializer, i32 " + imm + ", i32 0\n";
+        std::string splat2 = newTemp();
+        fn += "  " + splat2 + " = shufflevector " + ll(vt) + " " + splat + ", " + ll(vt) + " undef, <" + std::to_string(vt->count) + " x i32> zeroinitializer\n";
+        return sseResult(sseBinOp(op, ll(vt), a, splat2), vt, c);
+      };
+
+      if (name == "_mm_slli_epi32") return shiftImmOp("shl", v4i);
+      if (name == "_mm_srli_epi32") return shiftImmOp("lshr", v4i);
+      if (name == "_mm_srai_epi32") return shiftImmOp("ashr", v4i);
+
+      // Variable shifts (by __m128i count, low 64 bits):
+      auto shiftVarOp = [&](const std::string& intr, const Ty* vt) -> std::optional<Value>
+      {
+        if (c->args.size() < 2) return std::nullopt;
+        std::string a = sseArg(c->args[0], vt, c);
+        std::string b = sseArg(c->args[1], v4i, c);
+        std::string i = sseIntrinsic(intr, ll(vt), ll(vt) + ", " + ll(v4i));
+        return sseResult(sseCall(i, ll(vt), ll(vt) + " " + a + ", " + ll(v4i) + " " + b), vt, c);
+      };
+
+      if (name == "_mm_sll_epi32") return shiftVarOp("llvm.x86.sse2.psll.d", v4i);
+      if (name == "_mm_srl_epi32") return shiftVarOp("llvm.x86.sse2.psrl.d", v4i);
+      if (name == "_mm_sra_epi32") return shiftVarOp("llvm.x86.sse2.psra.d", v4i);
+
+      // _mm_srli_si128: byte shift right (psrldq)
+      if (name == "_mm_srli_si128" && c->args.size() >= 2)
+      {
+        std::string a = sseArg(c->args[0], v16i8, c);
+        auto imm = evalConst(c->args[1], 0);
+        if (!imm || *imm < 0 || *imm > 16) return std::nullopt;
+        int shift = int(*imm);
+        // Build shuffle mask: shift bytes right, fill with zeros
+        std::string mask = "<16 x i32> <";
+        for (int i = 0; i < 16; ++i)
+        {
+          if (i) mask += ", ";
+          int src = i + shift;
+          mask += "i32 " + std::to_string(src < 16 ? src : 16); // 16+ maps to the zero vector
+        }
+        mask += ">";
+        std::string r = newTemp();
+        fn += "  " + r + " = shufflevector " + ll(v16i8) + " " + a + ", " + ll(v16i8) + " zeroinitializer, " + mask + "\n";
+        // Bitcast back to v4i
+        std::string res = newTemp();
+        fn += "  " + res + " = bitcast " + ll(v16i8) + " " + r + " to " + ll(v4i) + "\n";
+        return sseResult(res, v4i, c);
+      }
+
+      // --- widening multiply ---
+      if (name == "_mm_mul_epu32" && c->args.size() >= 2)
+      {
+        std::string a = sseArg(c->args[0], v4i, c);
+        std::string b = sseArg(c->args[1], v4i, c);
+        std::string i = sseIntrinsic("llvm.x86.sse2.pmulu.dq", ll(v2i64), ll(v4i) + ", " + ll(v4i));
+        return sseResult(sseCall(i, ll(v2i64), ll(v4i) + " " + a + ", " + ll(v4i) + " " + b), v2i64, c);
+      }
+
+      return std::nullopt; // not an SSE intrinsic we handle
     }
 
     // The pointer an `->` applies to: the value itself, or what the class's operator-> returns

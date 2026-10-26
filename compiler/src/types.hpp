@@ -31,6 +31,7 @@ enum class TyKind : uint8_t
   Value,   // A non-type template argument: inner = its type, value = the constant.
   Member,  // A data member as a compile-time value (reflection, design.md 8.3): decl = its VariableDecl,
            // inner = its type in the class's instantiation, args[0] = the class type.
+  Vector,  // SIMD vector: inner = element type (Float or Int), count = lane count (e.g. 4 for <4 x float>)
   Unknown, // Could not be determined; reason is tracked in the statistics, not in the type.
 };
 
@@ -88,6 +89,7 @@ public:
   const Ty* lambda(const Ty* result, Span<const Ty*> params, Decl* closure = nullptr, int64_t instance = 0);
   const Ty* memberPointer(const Ty* member, const Ty* cls); // args[0] = the class (may be a parameter), decl = its declaration
   const Ty* pack(Span<const Ty*> elements);
+  const Ty* vectorType(const Ty* element, uint32_t count); // SIMD vector: <count x element>
   // Same type with qualifiers added (references and functions ignore them).
   const Ty* qualified(const Ty* t, bool isConst, bool isVolatile);
   const Ty* unqualified(const Ty* t);

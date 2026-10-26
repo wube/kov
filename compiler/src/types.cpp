@@ -187,6 +187,14 @@ const Ty* TypeTable::array(const Ty* element, uint32_t count)
   return intern(t);
 }
 
+const Ty* TypeTable::vectorType(const Ty* element, uint32_t count)
+{
+  Ty t{TyKind::Vector};
+  t.inner = element;
+  t.count = count;
+  return intern(t);
+}
+
 const Ty* TypeTable::function(const Ty* result, Span<const Ty*> params, bool variadic)
 {
   Ty t{TyKind::Function};
@@ -466,6 +474,7 @@ std::string TypeTable::toString(const Ty* t, const SymbolTable* symbols) const
       for (size_t i = 0; i < t->args.size(); ++i)
         s += (i ? ", " : "") + toString(t->args[i], symbols);
       break;
+    case TyKind::Vector: s += "__m128" + std::string(t->inner && t->inner->kind == TyKind::Float && t->inner->bits == 64 ? "d" : t->inner && t->inner->kind == TyKind::Int ? "i" : ""); break;
     case TyKind::Unknown: s += "<unknown>"; break;
   }
   return s;
