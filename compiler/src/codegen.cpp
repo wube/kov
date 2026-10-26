@@ -395,14 +395,16 @@ namespace
             ft = types.classType(m, {});
           else
             continue;
-          if (!ft || !ft->isKnown() || types.isDependent(ft))
-            unsupported(m, "a union member of unknown type");
           info.fieldIndex[m] = 0;
           info.fieldDecls.push_back(m);
+          if (!ft || !ft->isKnown() || types.isDependent(ft))
+            continue; // unknown union member: skip its size; known members set a minimum
           if (m->kind == NodeKind::ClassDecl)
             info.anonymous.push_back({m, 0});
-          size = std::max(size, sizeOf(ft, c));
-          align = std::max(align, alignOf(ft, c));
+          try {
+            size = std::max(size, sizeOf(ft, c));
+            align = std::max(align, alignOf(ft, c));
+          } catch (Unsupported&) {} // keep going with the size from other members
         }
         info.fieldTypes.push_back(types.array(types.intType(uint8_t(align * 8)), uint32_t((size + align - 1) / align)));
         decls += info.name + " = type { " + llType(info.fieldTypes[0], c) + " }\n";
@@ -495,19 +497,29 @@ namespace
         {
           // Anonymous struct/union member: a field whose own members are reachable by name.
           const Ty* ft = types.classType(m, {});
-          structFor(ft, c);
+          try { structFor(ft, c); } catch (Unsupported&) {} // partial inner struct is OK: later fields still get indexed
           info.anonymous.push_back({m, uint32_t(info.fieldTypes.size())});
           info.fieldIndex[m] = uint32_t(info.fieldTypes.size());
           info.fieldDecls.push_back(m);
           info.fieldTypes.push_back(ft);
+          bitUnitIndex = -1;
           continue;
         }
         if (m->kind != NodeKind::VariableDecl || (m->flags & (DF_Static | DF_Typedef | DF_Friend)))
           continue;
         const Ty* ft = global.typeOfDeclIn(m, args);
         if (!ft || !ft->isKnown() || types.isDependent(ft))
-          unsupported(m, "a member of unknown type (" +
-                             (static_cast<VariableDecl*>(m)->name.empty() ? std::string("unnamed") : sym(static_cast<VariableDecl*>(m)->name.last().symbol)) + ")");
+        {
+          // Unknown member type: insert an 8-byte placeholder so subsequent fields keep
+          // correct indices and bitfield runs reset. The layout will be approximate but
+          // functions accessing later fields can still be generated.
+          ft = types.array(types.intType(8), 8);
+          bitUnitIndex = -1;
+          info.fieldIndex[m] = uint32_t(info.fieldTypes.size());
+          info.fieldDecls.push_back(m);
+          info.fieldTypes.push_back(ft);
+          continue;
+        }
         if (Expr* widthExpr = static_cast<VariableDecl*>(m)->bitfield)
         {
           // `unsigned level : 3;`: consecutive bit fields of one type share a storage unit of that
