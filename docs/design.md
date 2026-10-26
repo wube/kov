@@ -263,6 +263,30 @@ the switch they cost nothing. Fixtures are ordinary classes constructed in the t
   unwinding; `catch` by pointer matches the pointee type's spelling only (no base conversion);
   `new T(args)` leaks the memory when the constructor throws (to fix with the allocator work).
 
+### 10. Draft types for forward references (decided 2026-10-26)
+
+When the resolver encounters an unresolved type name during Phase 2 (e.g. a class used before
+its definition is indexed), it creates a *draft* `ClassDecl` marked with `ATTR_Draft` instead
+of returning `Unknown`. All references to the same name in the same namespace share the same
+`Ty*` pointer (a `TyKind::Class` pointing at the draft Decl), so when the real definition
+arrives the Decl is filled in and every use sees the resolved type without patching.
+
+**Mechanics.** Drafts live in a separate sharded map (`DraftShard[16]` in `GlobalScope::Impl`,
+keyed by `{Scope*, symbol}`) to avoid data races with the lock-free Phase 2 scope lookups.
+`getOrCreateDraft` allocates a `ClassDecl` with `ATTR_Draft`, gives it an empty `ownScope`
+parented to the target namespace, and inserts it into the shard under a lock. The target
+namespace is the nearest enclosing `ScopeKind::Namespace` of the use site (or root). A second
+lookup for the same key returns the existing draft.
+
+**Template parameter guard.** Template parameters (`T`, `U`, ...) are not in scope during some
+`convertType` paths, so an unresolved `T` must not get a draft class. During `finishIndex`,
+`collectTemplateParamNames` walks the scope tree and collects every template parameter symbol
+into a set; draft creation is skipped when the symbol is in that set.
+
+**Result.** On Factorio, front-end metrics are unchanged (69.6% resolved, 19.3% dependent,
+11.1% unresolved type names). Drafts give formerly-unknown types a stable `Ty*` identity,
+which downstream phases (codegen, template instantiation) can use when the definition appears.
+
 ## Benchmark target
 
 Factorio: ~1.3M lines of own C++ in ~8,000 files (~1.6M with tests). The real build, measured

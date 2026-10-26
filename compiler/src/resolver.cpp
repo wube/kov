@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_set>
 
 void ResolveStats::add(const ResolveStats& o)
 {
@@ -134,6 +135,7 @@ struct Scope
     entries.push_back({owner, ns});
     return ns;
   }
+
 };
 
 namespace
@@ -240,6 +242,63 @@ struct GlobalScope::Impl
   std::vector<std::pair<VariableDecl*, Scope*>> deferredVariables; // Out-of-line static data member definitions.
   std::unordered_map<Decl*, VariableDecl*> variableDefinitions;    // Static data member -> its `T C::x = ...;` definition.
   std::atomic<size_t> scopes{1};
+  // Draft types: created during Phase 2 for unresolved type names, stored separately from the
+  // scope tree so Phase 2 lookups remain lock-free. Keyed by (scope*, symbol).
+  struct DraftKey { Scope* scope; uint32_t symbol; bool operator==(const DraftKey& o) const { return scope == o.scope && symbol == o.symbol; } };
+  struct DraftHash { size_t operator()(const DraftKey& k) const { return std::hash<uintptr_t>()(reinterpret_cast<uintptr_t>(k.scope)) ^ (k.symbol * 2654435761u); } };
+  static constexpr uint32_t draftShardCount = 16;
+  struct DraftShard
+  {
+    std::mutex mutex;
+    std::unordered_map<DraftKey, ClassDecl*, DraftHash> map;
+  };
+  DraftShard draftShards[draftShardCount];
+  std::mutex draftStorageMutex;
+  std::vector<std::unique_ptr<ClassDecl>> draftClasses;
+  std::unordered_set<uint32_t> templateParamNames;
+
+  void collectTemplateParamNames(Scope* scope)
+  {
+    for (Decl* p : scope->templateParams)
+      templateParamNames.insert(static_cast<TemplateParamDecl*>(p)->name);
+    for (uint32_t i = 0; i < scope->shardCount; ++i)
+      for (auto& [sym, entries] : scope->shards[i].map)
+        for (const Entry& e : entries)
+        {
+          for (Decl* p : e.decl->templateParams)
+            templateParamNames.insert(static_cast<TemplateParamDecl*>(p)->name);
+          if (e.scope)
+            collectTemplateParamNames(e.scope);
+        }
+  }
+
+  ClassDecl* getOrCreateDraft(Scope* scope, uint32_t symbol)
+  {
+    DraftKey key{scope, symbol};
+    DraftShard& shard = draftShards[symbol % draftShardCount];
+    {
+      std::lock_guard lock(shard.mutex);
+      auto it = shard.map.find(key);
+      if (it != shard.map.end())
+        return it->second;
+    }
+    auto cd = std::make_unique<ClassDecl>();
+    cd->kind = NodeKind::ClassDecl;
+    cd->attributes = ATTR_Draft;
+    cd->name.parts = {};
+    cd->ownScope = new Scope(ScopeKind::Class, scope, cd.get(), 4);
+    cd->ownScope->name = symbol;
+    ClassDecl* raw = cd.get();
+    {
+      std::lock_guard lock(draftStorageMutex);
+      draftClasses.push_back(std::move(cd));
+    }
+    {
+      std::lock_guard lock(shard.mutex);
+      auto [it, inserted] = shard.map.emplace(key, raw);
+      return it->second; // If another thread beat us, return theirs.
+    }
+  }
 
   // ---- template instantiations: each (template, arguments) pair is checked exactly once ----
   struct Instantiation
@@ -2069,8 +2128,21 @@ struct GlobalScope::Impl
         if (l.found == Found::No)
         {
           if (n->name.parts.size() == 1)
+          {
             if (const Ty* b = builtinByName(n->name.parts[0].symbol))
               return b;
+            // Draft type: create a placeholder class so all references to the same unresolved name
+            // share one type. The draft gets filled in if the real definition appears later.
+            uint32_t sym = n->name.parts[0].symbol;
+            if (sym != UINT32_MAX && !templateParamNames.count(sym))
+            {
+              Scope* target = ctx.scope ? ctx.scope : &root;
+              while (target->parent && target->kind != ScopeKind::Namespace)
+                target = target->parent;
+              ClassDecl* draft = getOrCreateDraft(target, sym);
+              return types.classType(draft, {});
+            }
+          }
           return types.unknown();
         }
         if (l.found == Found::Dependent && l.decl && l.decl->kind == NodeKind::TemplateParamDecl)
@@ -5668,6 +5740,7 @@ void GlobalScope::finishIndex()
     }
   }
   impl->deferredVariables.clear();
+  impl->collectTemplateParamNames(&impl->root);
 }
 
 void GlobalScope::resolveFile(ParsedFile& file, const std::vector<Token>& tokens, std::string_view text, ResolveStats& stats)
