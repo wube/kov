@@ -2640,7 +2640,7 @@ namespace
             Decl* owner = global.owningClass(f);
             Span<Decl*> classParams = owner ? owner->templateParams : Span<Decl*>{};
             size_t classCount = def->templateParams.size() > f->templateParams.size() ? def->templateParams.size() - f->templateParams.size() : 0;
-            if (classCount == classParams.size())
+            if (classCount == classParams.size() && classCount + f->templateParams.size() <= def->templateParams.size())
             {
               std::vector<std::pair<Decl*, const Ty*>> added;
               for (auto& [d, t] : defArgs.pairs)
