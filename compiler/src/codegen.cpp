@@ -707,6 +707,42 @@ namespace
       return false;
     }
 
+    // Look up a field by symbol name in a class's own members and its bases (used when the
+    // resolver left MemberExpr::resolved null).  Searches the AST directly, without building
+    // struct layouts, so it's safe for types that structFor would choke on.
+    Decl* findFieldByName(const Ty* classTy, uint32_t nameSymbol, Node* at, int depth = 0)
+    {
+      if (depth > 16 || !classTy || classTy->kind != TyKind::Class || !classTy->decl)
+        return nullptr;
+      Decl* def = global.definitionOf(classTy->decl);
+      if (!def || def->kind != NodeKind::ClassDecl)
+        return nullptr;
+      auto* c = static_cast<ClassDecl*>(def);
+      TemplateArgs args = global.classArgsOf(classTy);
+      for (Decl* m : c->members)
+      {
+        if (m->kind == NodeKind::VariableDecl && !(m->flags & (DF_Static | DF_Typedef | DF_Friend)))
+        {
+          auto* vd = static_cast<VariableDecl*>(m);
+          if (!vd->name.empty() && vd->name.last().symbol == nameSymbol)
+            return m;
+        }
+        // Search anonymous struct/union members.
+        if (m->kind == NodeKind::ClassDecl && static_cast<ClassDecl*>(m)->name.empty() && static_cast<ClassDecl*>(m)->isDefinition)
+          if (Decl* found = findFieldByName(types.classType(m, {}), nameSymbol, at, depth + 1))
+            return found;
+      }
+      // Search base classes.
+      for (const ClassDecl::Base& b : c->bases)
+      {
+        const Ty* bt = global.typeOfAstIn(b.type, c, args);
+        if (bt && bt->kind == TyKind::Class)
+          if (Decl* found = findFieldByName(bt, nameSymbol, at, depth + 1))
+            return found;
+      }
+      return nullptr;
+    }
+
     // --- class metadata: constructors, destructors ---
 
     FunctionDecl* findConstructor(const Ty* classTy, const std::vector<const Ty*>& argTypes, Node* at)
@@ -2233,6 +2269,8 @@ namespace
       if (l->closure && l->closure->file)
         currentFile = l->closure->file;
       currentReturn = callTy->inner ? callTy->inner : types.voidType();
+      if (!currentReturn->isKnown())
+        currentReturn = types.pointer(types.voidType());
       sretAddr.clear();
       currentClassTy = info.enclosingClass;
       try
@@ -2250,7 +2288,7 @@ namespace
           const Ty* pt = callTy->args[i];
           std::string pn = "%p" + std::to_string(i);
           paramNames.push_back(pn);
-          params += ", " + std::string(isAggregate(pt) || pt->isReference() ? "ptr" : llType(pt, l)) + " " + pn;
+          params += ", " + std::string(isAggregate(pt) || pt->isReference() || !pt->isKnown() ? "ptr" : llType(pt, l)) + " " + pn;
         }
         std::string retType = hasSret ? "void" : currentReturn->isReference() ? "ptr" : llType(currentReturn, l);
         std::string header = "define " + retType + " " + name + "(" + params + ") {\nentry:\n";
@@ -2338,7 +2376,7 @@ namespace
       if (!lambdaInstances.insert(name).second)
         return name;
       bool hasSret = isClass(ret);
-      std::string retType = hasSret ? "void" : ret->isReference() ? "ptr" : llType(ret, at);
+      std::string retType = hasSret ? "void" : (!ret || !ret->isKnown()) ? "ptr" : ret->isReference() ? "ptr" : llType(ret, at);
       std::string params, args = "ptr null";
       if (hasSret)
       {
@@ -2348,7 +2386,7 @@ namespace
       for (size_t i = 0; i < fnTy->args.size(); ++i)
       {
         const Ty* pt = fnTy->args[i];
-        std::string ty = isAggregate(pt) || pt->isReference() ? "ptr" : llType(pt, at);
+        std::string ty = isAggregate(pt) || pt->isReference() || !pt->isKnown() ? "ptr" : llType(pt, at);
         params += (params.empty() ? "" : ", ") + ty + " %a" + std::to_string(i);
         args += ", " + ty + " %a" + std::to_string(i);
       }
@@ -2571,6 +2609,8 @@ namespace
         s.hasSret = true;
         s.returnType = "void";
       }
+      else if (!ret || !ret->isKnown())
+        s.returnType = "ptr"; // unknown return type: treat as opaque pointer
       else
         s.returnType = ret->isReference() ? "ptr" : llType(ret, f);
       if (method)
@@ -2592,12 +2632,12 @@ namespace
           // A deduced pack still in one piece (`Args&&...` of a member template): one parameter per element.
           for (const Ty* e : pt->args)
           {
-            s.paramTypes.push_back(isAggregate(e) || e->isReference() ? "ptr" : llType(e, f));
+            s.paramTypes.push_back(isAggregate(e) || e->isReference() || !e->isKnown() ? "ptr" : llType(e, f));
             s.paramTys.push_back(e);
           }
           continue;
         }
-        s.paramTypes.push_back(isAggregate(pt) || pt->isReference() ? "ptr" : llType(pt, f));
+        s.paramTypes.push_back(isAggregate(pt) || pt->isReference() || !pt->isKnown() ? "ptr" : llType(pt, f));
         s.paramTys.push_back(pt);
       }
       s.variadic = ft->variadic;
@@ -5256,6 +5296,8 @@ namespace
         s.hasSret = true;
         s.returnType = "void";
       }
+      else if (!ret || !ret->isKnown())
+        s.returnType = "ptr";
       else
         s.returnType = ret->isReference() ? "ptr" : llType(ret, c);
       std::string args, resultAddr;
@@ -6150,9 +6192,25 @@ namespace
             unsupported(e, "a member descriptor has name and offset only");
           }
           std::string addr = lvalue(e);
+          // Use the field's declared type when the expression type is unknown.
+          const Ty* memberTy = e->ty;
+          const Ty* memberTyStripped = memberTy ? types.stripRef(memberTy) : nullptr;
+          if ((!memberTyStripped || !memberTyStripped->isKnown()) && m->resolved && m->resolved->kind == NodeKind::VariableDecl)
+            memberTy = declType(m->resolved);
+          memberTyStripped = memberTy ? types.stripRef(memberTy) : nullptr;
+          if ((!memberTyStripped || !memberTyStripped->isKnown()) && !m->member.empty())
+          {
+            // Try finding the field by name for its declared type.
+            const Ty* bt = m->base->ty ? types.stripRef(m->base->ty) : nullptr;
+            if (m->op == P::Arrow && bt && bt->kind == TyKind::Pointer)
+              bt = types.stripRef(bt->inner);
+            if (bt && isClass(bt))
+              if (Decl* fd = findFieldByName(bt, m->member.last().symbol, e))
+                memberTy = declType(fd);
+          }
           if (m->resolved && bitfieldOf.count(m->resolved))
-            return loadBitfield(addr, bitfieldOf[m->resolved], types.stripRef(e->ty), e);
-          return load(addr, e->ty, e);
+            return loadBitfield(addr, bitfieldOf[m->resolved], types.stripRef(memberTy), e);
+          return load(addr, memberTy, e);
         }
         case NodeKind::IndexExpr:
         {
@@ -6697,6 +6755,21 @@ namespace
       {
         std::string addr = lvalue(b->lhs);
         const Ty* t = types.stripRef(b->lhs->ty);
+        if ((!t || !t->isKnown()) && b->lhs->kind == NodeKind::MemberExpr)
+        {
+          auto* mx = static_cast<MemberExpr*>(b->lhs);
+          if (mx->resolved && mx->resolved->kind == NodeKind::VariableDecl)
+            t = types.stripRef(declType(mx->resolved));
+          if ((!t || !t->isKnown()) && !mx->member.empty())
+          {
+            const Ty* bt = mx->base->ty ? types.stripRef(mx->base->ty) : nullptr;
+            if (mx->op == P::Arrow && bt && bt->kind == TyKind::Pointer)
+              bt = types.stripRef(bt->inner);
+            if (bt && isClass(bt))
+              if (Decl* fd = findFieldByName(bt, mx->member.last().symbol, b))
+                t = types.stripRef(declType(fd));
+          }
+        }
         if (!t || !t->isKnown())
           unsupported(b, "an assignment to an expression of unknown type");
         Value rhs = rvalue(b->rhs);
@@ -8557,6 +8630,10 @@ namespace
       resetFunctionState();
       currentFunction = f;
       currentReturn = ft->inner;
+      // If the return type is unknown, pretend it's ptr so the function body can be emitted;
+      // return statements will try to convert their value to a pointer (and throw if they can't).
+      if (!currentReturn || !currentReturn->isKnown())
+        currentReturn = types.pointer(types.voidType());
       sretAddr.clear();
       currentFunctionName = nameOverride.empty() ? functionName(f, args, classTy) : nameOverride;
       try
