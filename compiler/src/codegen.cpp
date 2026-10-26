@@ -8692,14 +8692,24 @@ CodegenResult generateLLVM(std::vector<std::unique_ptr<ParsedFile>>& files, Glob
     e.emitFunction(f, {}, nullptr);
   }
   // Instantiations requested while emitting, including ones requested by other instantiations.
-  while (!e.worklist.empty())
+  size_t wlCount = 0;
+  try
   {
-    Emitter::Instantiation inst = e.worklist.front();
-    e.worklist.pop_front();
-    e.currentModule = inst.module;
-    e.currentRequestedBy = inst.requestedBy;
-    e.emitFunction(inst.f, inst.args, inst.classTy, inst.name);
-    e.currentRequestedBy.clear();
+    while (!e.worklist.empty())
+    {
+      Emitter::Instantiation inst = e.worklist.front();
+      e.worklist.pop_front();
+      e.currentModule = inst.module;
+      e.currentRequestedBy = inst.requestedBy;
+      e.emitFunction(inst.f, inst.args, inst.classTy, inst.name);
+      e.currentRequestedBy.clear();
+      ++wlCount;
+    }
+  }
+  catch (const std::bad_alloc&)
+  {
+    result.errors.push_back("codegen: out of memory after " + std::to_string(wlCount) + " template instantiations (" +
+                            std::to_string(e.worklist.size()) + " remaining)");
   }
   e.finishAssertRuntime();
   e.finishExceptionRuntime();
@@ -8708,7 +8718,18 @@ CodegenResult generateLLVM(std::vector<std::unique_ptr<ParsedFile>>& files, Glob
                        "target triple = \"x86_64-pc-windows-msvc\"\n\n";
   if (e.moduleCount <= 1)
   {
-    result.ir = prefix + e.declsFor(0) + e.moduleDecls[0] + e.ctorsText(0) + "\n" + e.shared + e.body;
+    // Pre-compute pieces and reserve to avoid temporary-string OOM on large programs.
+    std::string decls = e.declsFor(0);
+    std::string ctors = e.ctorsText(0);
+    size_t total = prefix.size() + decls.size() + e.moduleDecls[0].size() + ctors.size() + 1 + e.shared.size() + e.body.size();
+    result.ir.reserve(total);
+    result.ir.append(prefix);
+    result.ir.append(decls);
+    result.ir.append(e.moduleDecls[0]);
+    result.ir.append(ctors);
+    result.ir.push_back('\n');
+    result.ir.append(e.shared);
+    result.ir.append(std::move(e.body));
     return result;
   }
   for (unsigned k = 0; k < e.moduleCount; ++k)
