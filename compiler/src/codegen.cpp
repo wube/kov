@@ -415,14 +415,8 @@ namespace
         ++result.structs;
         return structs[key];
       }
-      if (!c->templateParams.empty() && args.pairs.size() != c->templateParams.size())
-      {
-        Decl* lastParam = c->templateParams[c->templateParams.size() - 1];
-        bool emptyPack = args.pairs.size() + 1 == c->templateParams.size() && lastParam->kind == NodeKind::TemplateParamDecl &&
-                         static_cast<TemplateParamDecl*>(lastParam)->isPack;
-        if (!emptyPack)
-          unsupported(at, "the class template " + global.qualifiedName(c) + " used without all its arguments");
-      }
+      // If the class template doesn't have all its arguments (e.g. default args not resolved),
+      // build the struct anyway: fields whose types depend on missing args get 8-byte placeholders.
       StructInfo& info = structs[key];
       info.name = "%struct." + std::to_string(structs.size());
       // Bases first (resolved before deciding on the vtable pointer).
