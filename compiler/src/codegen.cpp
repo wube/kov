@@ -3142,8 +3142,15 @@ namespace
             unsupported(at, "binding a non-class to a class reference");
           std::string addr = o.text;
           if (isClass(o.ty) && classKey(o.ty) != classKey(pt))
-            if (!baseAddress(o.ty, types.stripRef(pt), o.text, addr, at))
-              unsupported(at, "binding an unrelated class to a reference");
+          {
+            if (baseAddress(o.ty, types.stripRef(pt), o.text, addr, at))
+              return "ptr " + addr;
+            if (findConstructor(cls, {o.ty}, at))
+              return "ptr " + convertedTemporary(cls, arg, at);
+            if (conversionOperator(o.ty, types.unqualified(cls), at))
+              return "ptr " + convert(o, types.unqualified(cls), at).text;
+            unsupported(at, "binding an unrelated class to a reference");
+          }
           return "ptr " + addr;
         }
         const Ty* referenced = types.stripRef(pt);
@@ -3221,6 +3228,16 @@ namespace
         a = convert(a, types.unqualified(pt), at); // `draw(image)` with `operator const Image*()`
       if (isLambda(a.ty) && pt && pt->kind == TyKind::Pointer && pt->inner && pt->inner->kind == TyKind::Function)
         a = convert(a, pt, at); // a lambda without captures as a pointer to function
+      if (isAggregate(a.ty) && !pt)
+      {
+        FunctionDecl* conv = conversionOperator(a.ty, types.intType(32), at);
+        if (conv)
+        {
+          const Ty* ft = declType(conv);
+          const Ty* ret = types.unqualified(types.stripRef(ft->inner));
+          a = convert(a, ret, at);
+        }
+      }
       if (isAggregate(a.ty))
         unsupported(at, "passing a class (" + types.toString(a.ty, &symbols) + ") where a scalar is expected");
       if (pt && a.ty->kind == TyKind::Pointer && (pt->kind == TyKind::Int || pt->kind == TyKind::Char || pt->kind == TyKind::Enum))
