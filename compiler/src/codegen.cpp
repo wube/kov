@@ -1281,6 +1281,8 @@ namespace
           }
         }
         // Which value goes to which field: in order, or by name for `.x = 1` designators.
+        if (info.fieldDecls.empty() && !args.empty())
+          return; // draft type or empty struct: memory is already zeroed above
         std::vector<Expr*> valueOf(info.fieldDecls.size(), nullptr);
         size_t next = 0;
         for (size_t k = 0; k < args.size(); ++k)
@@ -4118,6 +4120,20 @@ namespace
             TemplateArgs args = global.classArgsOf(canonicalClass(from, at));
             return convert(callRvalue(callFunction(op, args, canonicalClass(from, at), v.text, "", {}, at), at), to, at);
           }
+        if (fk == TyKind::Class && tk == TyKind::Bool)
+        {
+          // No conversion operator found: load the first word and compare to 0.
+          std::string first = newTemp(), r = newTemp();
+          fn += "  " + first + " = load i64, ptr " + v.text + "\n";
+          fn += "  " + r + " = icmp ne i64 " + first + ", 0\n";
+          return {r, to};
+        }
+        if (fk == TyKind::Class && from->decl && (from->decl->attributes & ATTR_Draft))
+        {
+          // Draft type to scalar: return a zero value.
+          std::string zero = tk == TyKind::Float ? "0.0" : tk == TyKind::Pointer || tk == TyKind::Nullptr ? "null" : "0";
+          return {zero, to};
+        }
         unsupported(at, "a conversion from " + types.toString(from, &symbols) + " to " + types.toString(to, &symbols));
       }
       std::string r = newTemp();

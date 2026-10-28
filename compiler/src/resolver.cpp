@@ -2403,6 +2403,8 @@ struct GlobalScope::Impl
     }
   }
 
+  static bool isDraft(const Ty* t) { return t && t->decl && (t->decl->attributes & ATTR_Draft); }
+
   bool containsAuto(const Ty* t) const
   {
     for (; t; t = t->inner)
@@ -5014,7 +5016,7 @@ struct GlobalScope::Impl
           scope = saved;
           // Deduce `auto` now that the initializer is typed, and cache it on the declaration.
           const Ty* declared = impl.declaredTypeOf(v, activeSubst, 0);
-          if ((!declared || !declared->isKnown()) && v->type && !activeSubst)
+          if ((!declared || !declared->isKnown() || impl.isDraft(declared)) && v->type && !activeSubst)
           {
             // A type only the function's locals know (`using Match = Pair<int, int>;` in the body):
             // resolved here, where the locals are, and cached for everyone asking later.
