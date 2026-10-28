@@ -1,0 +1,27 @@
+// SPEC: b = a++ on a class with its own operator++ must assign the pre-increment value
+// STATUS: pass
+
+extern "C" import "stdio.h";
+
+struct Counter
+{
+  int value;
+  Counter() : value(0) {}
+  Counter(int v) : value(v) {}
+  Counter operator++(int)
+  {
+    Counter old = *this;
+    value++;
+    return old;
+  }
+};
+
+int main()
+{
+  Counter a(5);
+  Counter b = a++;
+  printf("%d %d\n", b.value, a.value);
+  // expected: 5 6
+  return 0;
+}
+// EXPECT: 5 6

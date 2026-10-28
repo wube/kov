@@ -1717,7 +1717,7 @@ namespace
           }
           // Not a vector — fall through to the non-class converting constructor path.
         }
-        if (init->ty && !isClass(types.stripRef(init->ty)) && isClass(t))
+        if (init->ty && init->ty->isKnown() && !isClass(types.stripRef(init->ty)) && isClass(t))
         {
           // A non-class value: through a converting constructor (`String s = "text"`).
           Expr* one = init;
@@ -6659,7 +6659,53 @@ namespace
         if (isClass(ot))
         {
           Value o = rvalue(u->operand);
-          return callRvalue(operatorCall(o, operatorName(op), {}, u, true), u);
+          std::string opName = operatorName(op);
+          if (u->postfix)
+          {
+            const Ty* foundIn = nullptr;
+            std::vector<const Ty*> intArg = {types.intType(32)};
+            FunctionDecl* pf = findMemberFunction(o.ty, opName, intArg, o.ty, u, &foundIn, true);
+            if (!pf)
+            {
+              // No postfix operator++(int): fall back to prefix operator++()
+              return callRvalue(operatorCall(o, opName, {}, u, true), u);
+            }
+            std::string thisArg = o.text;
+            if (canonicalClass(o.ty, u) != foundIn)
+            {
+              std::string addr;
+              if (baseAddress(o.ty, foundIn, o.text, addr, u))
+                thisArg = addr;
+            }
+            TemplateArgs fnArgs = global.classArgsOf(foundIn);
+            std::string fname = useFunction(pf, fnArgs, foundIn);
+            Signature s;
+            const Ty* ret;
+            {
+              ArgsScope scope(*this, &fnArgs);
+              s = signatureOf(pf);
+              ret = declType(pf)->inner;
+            }
+            std::string argText = "ptr " + thisArg;
+            std::string resultAddr;
+            if (s.hasSret)
+            {
+              resultAddr = newObjectSlot(ret, u);
+              statementTemps.push_back({resultAddr, ret});
+              argText += ", ptr " + resultAddr;
+            }
+            argText += ", i32 0";
+            std::string sig = s.returnType + " ";
+            if (s.returnType == "void")
+            {
+              emitCall("", sig + fname + "(" + argText + ")");
+              return s.hasSret ? callRvalue({resultAddr, ret, true}, u) : Value{"", types.voidType(), false};
+            }
+            std::string r = newTemp();
+            emitCall(r + " = ", sig + fname + "(" + argText + ")");
+            return callRvalue({r, ret, false}, u);
+          }
+          return callRvalue(operatorCall(o, opName, {}, u, true), u);
         }
         std::string addr = lvalue(u->operand);
         Value old = load(addr, ot, u);

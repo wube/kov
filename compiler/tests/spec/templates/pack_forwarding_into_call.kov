@@ -1,0 +1,30 @@
+// SPEC: forwarding a parameter pack into another template call
+// STATUS: pass
+
+extern "C" import "stdio.h";
+
+struct Thing
+{
+  int x;
+  int y;
+  Thing() : x(0), y(0) {}
+  Thing(int x, int y) : x(x), y(y) {}
+};
+
+template<typename T>
+struct Box
+{
+  T stored;
+  template<typename... Args>
+  void emplace(Args&&... args) { stored = T(forward<Args>(args)...); }
+};
+
+int main()
+{
+  Box<Thing> b;
+  b.emplace(10, 20);
+  printf("%d %d\n", b.stored.x, b.stored.y);
+  // expected: 10 20
+  return 0;
+}
+// EXPECT: 10 20

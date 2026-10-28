@@ -1,0 +1,25 @@
+// SPEC: operator< with a class-type operand on the right emits valid IR
+// STATUS: pass
+
+extern "C" import "stdio.h";
+
+struct Key
+{
+  int id;
+  Key(int id) : id(id) {}
+  static Key of(int v) { return Key(v); }
+  bool operator<(const Key& other) const { return this->id < other.id; }
+};
+
+int main()
+{
+  Key a(3);
+  Key b = Key::of(7);
+  if (a < b)
+    printf("less\n");
+  else
+    printf("not less\n");
+  // expected: less
+  return 0;
+}
+// EXPECT: less

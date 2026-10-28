@@ -6,7 +6,7 @@ construct's count in the game's sources (`src`, `CommonUtil`, `Agui`; 7,371 file
 ordered by what the conversion needs. A pending row is a known gap and shows the compiler's first
 complaint; it turns into a failure of the suite the day it starts passing, so the row gets removed.
 
-**179 pass, 2 pending, 0 failing, 0 fixed** (181 snippets, 3.3 s).
+**183 pass, 2 pending, 0 failing, 0 fixed** (185 snippets, 3.3 s).
 
 ## Language: statements, expressions, declarations
 
@@ -55,6 +55,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `language/switch_through_local_alias.kov` | case labels named through a local alias of a nested enum: `using Kind = Token::Special; case Kind::Unary:` | pass |  |  |
 | `language/temporaries_in_branches.kov` | a temporary made inside one branch of `?:`, or inside the right operand of `&&` / `||`, is destroyed only when that branch ran, and before the expression's value is used | pass |  |  |
 | `language/ternary_comma_sizeof.kov` | conditional operator with objects, comma operator, sizeof of expressions | pass |  |  |
+| `language/ternary_in_for_init.kov` | ternary_in_for_init | pass |  |  |
 | `language/thread_local.kov` | thread_local variables | pass | 15 uses in 13 files |  |
 | `language/unions.kov` | unions | pass | 47 uses in 39 files |  |
 | `language/variadic_c_functions.kov` | calling C variadic functions and C-style ... declarations | pass |  |  |
@@ -68,6 +69,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `classes/aggregates_and_brace_init.kov` | aggregate initialisation, default member initializers, arrays of structs, nested braces | pass |  |  |
 | `classes/anonymous_members.kov` | anonymous struct and union members | pass |  |  |
 | `classes/brace_init_assign.kov` | brace-init on the right of assignment to a class object | pass | *this = {}; this->data = {a, b}; |  |
+| `classes/class_operator_rhs.kov` | class_operator_rhs | pass |  |  |
 | `classes/conditional_explicit.kov` | `explicit(condition)` makes a constructor explicit only while the condition holds, so Fixed<int, false> converts from double implicitly and Fixed<int, true> does not | pass |  |  |
 | `classes/const_and_mutable.kov` | const member functions, const overloads, mutable members, const objects | pass | 198 mutable members in 127 files |  |
 | `classes/constructors.kov` | constructors: default, converting, explicit, copy, move, delegating, = default, = delete | pass | 2065 `= default`, 904 `= delete`, 1100 delegating, 2035 explicit |  |
@@ -89,6 +91,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `classes/nested_struct_in_template.kov` | a struct nested in a class template, with members of the parameter type | pass |  |  |
 | `classes/nested_types.kov` | nested classes and enums, access through the outer class | pass | 4603 nested classes in 2847 files |  |
 | `classes/operator_overloading.kov` | operator overloading: arithmetic, comparison, subscript, call, unary, increment, conversions | pass | 2940 uses in 982 files, 376 conversion operators |  |
+| `classes/postincrement_assignment.kov` | postincrement_assignment | pass |  |  |
 | `classes/reversed_equality.kov` | `3 == id` and `3 != id` use Id::operator==(int) with the operands reversed, as C++20 does | pass |  |  |
 | `classes/static_members.kov` | static data members (in-class and out-of-line definitions), static functions, static const | pass | 1174 static const members in 719 files |  |
 | `classes/three_way_comparison_user_defined.kov` | a user-written operator<=> returning strong_ordering orders the class (`a < b` is `(a <=> b) < 0`), `x <=> y` of scalars is a strong_ordering, and a defaulted operator<=> uses the members' own | pass |  |  |
@@ -129,6 +132,7 @@ complaint; it turns into a failure of the suite the day it starts passing, so th
 | `templates/member_templates_explicit.kov` | member function templates called with explicit arguments, static member templates | pass |  |  |
 | `templates/nested_template_instantiation.kov` | a class template instantiated with another instantiation of itself (Stack<Stack<int>>) through a variadic push | pass |  |  |
 | `templates/non_type_parameters.kov` | non-type template parameters: ints, bools, defaults, used in the body | pass |  |  |
+| `templates/pack_forwarding_into_call.kov` | pack_forwarding_into_call | pass |  |  |
 | `templates/partial_specialisation.kov` | partial specialisation of class templates | pass | 8 uses in 5 files |  |
 | `templates/requires_clause_before_body.kov` | a requires clause between a member function's qualifiers and its body: `bool operator==(const V&) const requires Comparable<T> { ... }` | pass |  |  |
 | `templates/requires_clauses.kov` | constrained templates (requires clauses) | pass | 1274 requires/concept uses in 609 files |  |

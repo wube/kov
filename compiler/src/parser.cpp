@@ -3326,6 +3326,7 @@ namespace
       // Range-for: `for (decl : range)`. Detect by scanning for ':' before ';' at depth 0.
       {
         int level = 0;
+        int ternary = 0;
         bool isRange = false;
         for (uint32_t i = pos; i < toks.size(); ++i)
         {
@@ -3337,7 +3338,12 @@ namespace
             --level;
           }
           else if (level == 0 && t.is(P::Semi)) break;
-          else if (level == 0 && t.is(P::Colon)) { isRange = true; break; }
+          else if (level == 0 && t.is(P::Question)) ++ternary;
+          else if (level == 0 && t.is(P::Colon))
+          {
+            if (ternary > 0) --ternary;
+            else { isRange = true; break; }
+          }
           else if (t.getKind() == TokenKind::End) break;
         }
         if (isRange)
